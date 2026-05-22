@@ -1,0 +1,744 @@
+# Plan B — Part 5 (Stage 5: AgentCore agent + action groups)
+
+> Continuation of `2026-05-22-plan-b-ux-agent.md`. Re-read the Executor's Contract there before starting.
+
+---
+
+## Stage 5 — AgentCore agent + action groups
+
+### Task 14: System prompt + action group OpenAPI schemas
+
+**Files:**
+- Create: `agent/system_prompt.md`
+- Create: `agent/action_groups.json`
+- Create: `agent/tests/test_action_groups.py`
+- Modify: `pyproject.toml` — add `jsonschema>=4.21` to dev deps (for schema validation in tests)
+
+The agent reasons over Claude Sonnet using a fixed system prompt that names the seven tools, the headline narrative, and the safety rails. `action_groups.json` is the OpenAPI 3.0 contract Bedrock AgentCore consumes when it registers each tool. It must mirror the input/output JSON envelopes already locked in by Tasks 5–11.
+
+- [ ] **Step 1: Write the failing schema test**
+
+`agent/tests/test_action_groups.py`:
+```python
+"""Validate that action_groups.json matches the locked tool contracts."""
+import json
+from pathlib import Path
+
+import pytest
+from jsonschema import Draft202012Validator
+
+ROOT = Path(__file__).resolve().parents[1]
+ACTION_GROUPS = ROOT / "action_groups.json"
+
+EXPECTED_OPERATIONS = {
+    "load_data",
+    "run_baseline_mc",
+    "run_chronos2",
+    "blend_paths",
+    "price_book",
+    "plot",
+    "lookup_use_case",
+}
+
+
+def _load() -> dict:
+    return json.loads(ACTION_GROUPS.read_text())
+
+
+def test_file_is_valid_openapi_3_0():
+    spec = _load()
+    assert spec["openapi"].startswith("3.0"), spec["openapi"]
+    assert "paths" in spec and spec["paths"], "no paths defined"
+
+
+def test_every_required_tool_has_a_path():
+    spec = _load()
+    op_ids = {
+        op["operationId"]
+        for path in spec["paths"].values()
+        for op in path.values()
+        if isinstance(op, dict) and "operationId" in op
+    }
+    missing = EXPECTED_OPERATIONS - op_ids
+    assert not missing, f"missing tool operations: {sorted(missing)}"
+
+
+def test_each_request_schema_is_valid():
+    spec = _load()
+    for path, methods in spec["paths"].items():
+        for verb, op in methods.items():
+            if not isinstance(op, dict) or "requestBody" not in op:
+                continue
+            schema = op["requestBody"]["content"]["application/json"]["schema"]
+            # Will raise if schema itself is malformed.
+            Draft202012Validator.check_schema(schema)
+
+
+def test_load_data_envelope_matches_lambda_contract():
+    spec = _load()
+    schema = spec["paths"]["/load_data"]["post"]["requestBody"][
+        "content"
+    ]["application/json"]["schema"]
+    required = set(schema.get("required", []))
+    assert required == {"session_id", "as_of_date", "lookback_days"}, required
+
+
+def test_blend_paths_w_stress_constrained_to_unit_interval():
+    spec = _load()
+    schema = spec["paths"]["/blend_paths"]["post"]["requestBody"][
+        "content"
+    ]["application/json"]["schema"]
+    w = schema["properties"]["w_stress"]
+    assert w["minimum"] == 0.0
+    assert w["maximum"] == 1.0
+
+
+@pytest.mark.parametrize("op_id", sorted(EXPECTED_OPERATIONS))
+def test_every_operation_documents_responses(op_id):
+    spec = _load()
+    found = False
+    for path, methods in spec["paths"].items():
+        for op in methods.values():
+            if isinstance(op, dict) and op.get("operationId") == op_id:
+                assert "200" in op["responses"], f"{op_id} missing 200 response"
+                found = True
+    assert found, f"{op_id} not found in spec"
+```
+
+- [ ] **Step 2: Add `jsonschema` to dev deps**
+
+In `pyproject.toml`, under `[project.optional-dependencies] dev = [`, append:
+```
+  "jsonschema>=4.21",
+```
+
+Then:
+```bash
+pip install -e ".[dev]"
+```
+
+- [ ] **Step 3: Run, confirm fail**
+
+```bash
+pytest agent/tests/test_action_groups.py -v
+```
+
+Expected: FAIL — `FileNotFoundError: agent/action_groups.json`.
+
+- [ ] **Step 4: Write `agent/system_prompt.md`**
+
+```markdown
+# Numerix × Chronos-2 Demo Copilot — System Prompt
+
+You are a quantitative analyst's copilot built for Numerix. Your role is to demonstrate how Amazon Chronos-2, a time-series foundation model, **augments** Numerix's existing parametric Monte Carlo framework for PFE/XVA exposure calculation. You never replace the parametric pipeline — you reweight or supplement it.
+
+## Narrative arc you support
+
+The user follows §3 of the design spec, beat-by-beat:
+
+1. **Baseline parametric MC** — call `load_data` then `run_baseline_mc`.
+2. **Chronos-2 augmentation** — call `run_chronos2` to draw augmenting paths from the SageMaker endpoint.
+3. **Blend** — call `blend_paths` with a `w_stress` that the user supplies (or defaults to 0.5 in stress regimes).
+4. **Price + exposure** — call `price_book` on both the parametric `PathSet` and the blended `PathSet`, then `plot pfe_overlay` to surface the delta.
+5. **What-if** — accept new `w_stress` or `as_of_date` and re-run from step 3.
+
+## Tools
+
+You have seven action group tools. Always call them with the schemas in your action group spec — never invent fields:
+
+- `load_data(session_id, as_of_date, lookback_days)` → `{panel_uri}`
+- `run_baseline_mc(session_id, panel_uri, horizon, n_paths, seed)` → `{path_set_uri, source: "baseline"}`
+- `run_chronos2(session_id, panel_uri, horizon, n_paths, seed)` → `{path_set_uri, source: "chronos2"}`
+- `blend_paths(session_id, parametric_uri, chronos_uri, w_stress)` → `{path_set_uri, source: "blended"}`
+- `price_book(session_id, path_set_uri)` → `{ee, pfe_975, es_975, dates}`
+- `plot(session_id, kind, path_set_uri | metrics_uri, ...)` → `{png_url}`
+- `lookup_use_case(topic)` → `{title, summary, body}`
+
+## Operating rules
+
+- **Always carry `session_id` through the chain** — every tool needs it. Fabricate one (`uuid4`) only on the very first turn.
+- **Plot every quantitative result.** After every `price_book`, call `plot kind=pfe_overlay`.
+- **Never call `run_baseline_mc` or `run_chronos2` with `n_paths > 5000`** in this demo — it overruns Fargate budget. If asked, run two stages and explain the limit.
+- **If a tool errors, surface the error verbatim to the user.** Don't retry silently.
+- **For "what does Chronos-2 do for X?" questions, prefer `lookup_use_case` over speculation.** The curated briefs are authoritative.
+- **For diagnostics questions** (regime-conditional coverage, joint-tail dependence, distribution distance — see spec §8), call `price_book` on each PathSet (parametric, chronos2, blended) and then `plot kind=pfe_overlay` so the audience can compare the bands directly. Do **not** invent numbers; if the diagnostic isn't reachable through the tool surface, say so.
+
+## What you never do
+
+- You never make up market data, prices, or exposures. If you don't have a `path_set_uri`, you call the right tool to produce one.
+- You never claim Chronos-2 replaces the Numerix MC pipeline. Your job is to demonstrate augmentation.
+- You never invoke tools outside this list, even if asked.
+
+## Tone
+
+You are concise, technically precise, and audience-aware: the user is a senior quant. Use Numerix-native vocabulary (PFE, EE, ES, regime, w_stress). Avoid hedging language. When you produce a chart, name what beat in the narrative it represents.
+```
+
+- [ ] **Step 5: Write `agent/action_groups.json`**
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Chronos2 Demo Action Groups",
+    "version": "0.1.0",
+    "description": "Tool surface for the Numerix × Chronos-2 PoC agent."
+  },
+  "paths": {
+    "/load_data": {
+      "post": {
+        "operationId": "load_data",
+        "summary": "Slice a curated market data panel and stage it in S3.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "as_of_date", "lookback_days"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "as_of_date": { "type": "string", "format": "date" },
+                  "lookback_days": { "type": "integer", "minimum": 1, "maximum": 5000 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Panel ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["panel_uri"],
+                  "properties": {
+                    "panel_uri": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/run_baseline_mc": {
+      "post": {
+        "operationId": "run_baseline_mc",
+        "summary": "Run the parametric Monte Carlo (PCA + Hull-White + GBM) on Fargate.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "panel_uri", "horizon", "n_paths"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "panel_uri": { "type": "string", "format": "uri" },
+                  "horizon": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                  "n_paths": { "type": "integer", "minimum": 1, "maximum": 50000 },
+                  "seed": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "PathSet staged in S3",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["path_set_uri", "source"],
+                  "properties": {
+                    "path_set_uri": { "type": "string", "format": "uri" },
+                    "source": { "type": "string", "enum": ["baseline"] }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "500": { "description": "Fargate task failed" }
+        }
+      }
+    },
+    "/run_chronos2": {
+      "post": {
+        "operationId": "run_chronos2",
+        "summary": "Sample augmenting paths from the Chronos-2 SageMaker endpoint.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "panel_uri", "horizon", "n_paths"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "panel_uri": { "type": "string", "format": "uri" },
+                  "horizon": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                  "n_paths": { "type": "integer", "minimum": 1, "maximum": 50000 },
+                  "seed": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "PathSet staged in S3",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["path_set_uri", "source"],
+                  "properties": {
+                    "path_set_uri": { "type": "string", "format": "uri" },
+                    "source": { "type": "string", "enum": ["chronos2"] }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "502": { "description": "SageMaker endpoint failure" }
+        }
+      }
+    },
+    "/blend_paths": {
+      "post": {
+        "operationId": "blend_paths",
+        "summary": "Importance-weight parametric and Chronos-2 PathSets into one blended PathSet.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "parametric_uri", "chronos_uri", "w_stress"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "parametric_uri": { "type": "string", "format": "uri" },
+                  "chronos_uri": { "type": "string", "format": "uri" },
+                  "w_stress": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Blended PathSet staged in S3",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["path_set_uri", "source"],
+                  "properties": {
+                    "path_set_uri": { "type": "string", "format": "uri" },
+                    "source": { "type": "string", "enum": ["blended"] }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/price_book": {
+      "post": {
+        "operationId": "price_book",
+        "summary": "Price the demo XCCY book on a PathSet and compute EE/PFE/ES.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "path_set_uri"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "path_set_uri": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Exposure metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ee", "pfe_975", "es_975", "dates"],
+                  "properties": {
+                    "ee": { "type": "array", "items": { "type": "number" } },
+                    "pfe_975": { "type": "array", "items": { "type": "number" } },
+                    "es_975": { "type": "array", "items": { "type": "number" } },
+                    "dates": { "type": "array", "items": { "type": "string", "format": "date" } }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/plot": {
+      "post": {
+        "operationId": "plot",
+        "summary": "Render a chart and return a presigned URL.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "kind"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "kind": {
+                    "type": "string",
+                    "enum": ["pfe_overlay", "path_fan", "regime_ribbon"]
+                  },
+                  "path_set_uri": { "type": "string", "format": "uri" },
+                  "metrics_uri": { "type": "string", "format": "uri" },
+                  "title": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Presigned PNG URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["png_url"],
+                  "properties": {
+                    "png_url": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/lookup_use_case": {
+      "post": {
+        "operationId": "lookup_use_case",
+        "summary": "Fetch a curated brief on an adjacent Chronos-2 use case.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["topic"],
+                "properties": {
+                  "topic": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Brief content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["title", "summary", "body"],
+                  "properties": {
+                    "title": { "type": "string" },
+                    "summary": { "type": "string" },
+                    "body": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Topic not in catalog" }
+        }
+      }
+    }
+  }
+}
+```
+
+- [ ] **Step 6: Run, confirm pass**
+
+```bash
+pytest agent/tests/test_action_groups.py -v
+```
+
+Expected: 11 passed (4 named + 7 parametrized).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add agent/system_prompt.md agent/action_groups.json agent/tests/test_action_groups.py pyproject.toml
+git commit -m "feat(agent): system prompt and OpenAPI action groups for 7 tools
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 15: Agent stack — AgentCore agent + action groups + IAM
+
+**Files:**
+- Create: `infra/lib/agent-stack.ts`
+- Create: `infra/test/agent-stack.test.ts`
+- Modify: `infra/bin/app.ts` — instantiate `AgentStack`
+
+The agent stack provisions the Bedrock AgentCore agent itself, binds each action group to the matching Lambda function from the tools stack, and grants the agent's runtime role `bedrock:InvokeModel` (Claude Sonnet) plus `lambda:InvokeFunction` on the tool Lambdas.
+
+> **CDK note:** `aws-cdk-lib` 2.140 ships L1 constructs `CfnAgent` and `CfnAgentActionGroup` under `aws-cdk-lib/aws-bedrock`. We use L1 explicitly because L2 constructs for AgentCore are still preview-only.
+
+- [ ] **Step 1: Write the failing snapshot test**
+
+`infra/test/agent-stack.test.ts`:
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import { Template, Match } from 'aws-cdk-lib/assertions';
+import { AgentStack } from '../lib/agent-stack';
+import { StorageStack } from '../lib/storage-stack';
+import { ToolsStack } from '../lib/tools-stack';
+import { NetworkStack } from '../lib/network-stack';
+
+function build(): { agent: AgentStack; t: Template } {
+  const app = new cdk.App();
+  const network = new NetworkStack(app, 'Net');
+  const storage = new StorageStack(app, 'Storage');
+  const tools = new ToolsStack(app, 'Tools', {
+    vpc: network.vpc,
+    dataBucket: storage.dataBucket,
+    plotsBucket: storage.plotsBucket,
+  });
+  const agent = new AgentStack(app, 'Agent', { tools });
+  return { agent, t: Template.fromStack(agent) };
+}
+
+test('creates exactly one Bedrock agent', () => {
+  const { t } = build();
+  t.resourceCountIs('AWS::Bedrock::Agent', 1);
+});
+
+test('agent uses Claude Sonnet', () => {
+  const { t } = build();
+  t.hasResourceProperties('AWS::Bedrock::Agent', {
+    FoundationModel: Match.stringLikeRegexp('anthropic\\.claude.*sonnet'),
+  });
+});
+
+test('every tool gets an action group', () => {
+  const { t } = build();
+  t.resourceCountIs('AWS::Bedrock::AgentActionGroup', 7);
+});
+
+test('agent role can invoke Bedrock and Lambda', () => {
+  const { t } = build();
+  t.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: Match.arrayWith(['bedrock:InvokeModel']),
+        }),
+        Match.objectLike({
+          Action: 'lambda:InvokeFunction',
+        }),
+      ]),
+    },
+  });
+});
+
+test('exposes agentId and agentAliasId', () => {
+  const { agent } = build();
+  expect(agent.agentId).toBeDefined();
+  expect(agent.agentAliasId).toBeDefined();
+});
+```
+
+- [ ] **Step 2: Run, confirm fail**
+
+```bash
+cd infra && npm test -- agent-stack
+```
+
+Expected: FAIL — `Cannot find module '../lib/agent-stack'`.
+
+- [ ] **Step 3: Implement `infra/lib/agent-stack.ts`**
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as bedrock from 'aws-cdk-lib/aws-bedrock';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { Construct } from 'constructs';
+import { ToolsStack } from './tools-stack';
+
+export interface AgentStackProps extends cdk.StackProps {
+  readonly tools: ToolsStack;
+}
+
+const MODEL_ID = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
+
+const TOOL_OPERATIONS: Array<{ name: string; opId: string; getFn: (t: ToolsStack) => lambda.IFunction }> = [
+  { name: 'LoadData', opId: 'load_data', getFn: (t) => t.loadDataFn },
+  { name: 'RunBaselineMc', opId: 'run_baseline_mc', getFn: (t) => t.runBaselineMcFn },
+  { name: 'RunChronos2', opId: 'run_chronos2', getFn: (t) => t.runChronos2Fn },
+  { name: 'BlendPaths', opId: 'blend_paths', getFn: (t) => t.blendPathsFn },
+  { name: 'PriceBook', opId: 'price_book', getFn: (t) => t.priceBookFn },
+  { name: 'Plot', opId: 'plot', getFn: (t) => t.plotFn },
+  { name: 'LookupUseCase', opId: 'lookup_use_case', getFn: (t) => t.lookupUseCaseFn },
+];
+
+export class AgentStack extends cdk.Stack {
+  public readonly agentId: string;
+  public readonly agentAliasId: string;
+
+  constructor(scope: Construct, id: string, props: AgentStackProps) {
+    super(scope, id, props);
+
+    const systemPrompt = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'agent', 'system_prompt.md'),
+      'utf-8',
+    );
+    const actionGroupsSpec = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'agent', 'action_groups.json'),
+      'utf-8',
+    );
+    const openapi = JSON.parse(actionGroupsSpec);
+
+    // Runtime role assumed by the agent itself.
+    const agentRole = new iam.Role(this, 'AgentRole', {
+      assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
+    });
+
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+        resources: [`arn:aws:bedrock:${this.region}::foundation-model/${MODEL_ID}`],
+      }),
+    );
+
+    for (const { getFn } of TOOL_OPERATIONS) {
+      agentRole.addToPolicy(
+        new iam.PolicyStatement({
+          actions: ['lambda:InvokeFunction'],
+          resources: [getFn(props.tools).functionArn],
+        }),
+      );
+    }
+
+    const agent = new bedrock.CfnAgent(this, 'Agent', {
+      agentName: 'chronos2-demo-copilot',
+      agentResourceRoleArn: agentRole.roleArn,
+      foundationModel: MODEL_ID,
+      instruction: systemPrompt,
+      idleSessionTtlInSeconds: 1800,
+      autoPrepare: true,
+    });
+
+    // One action group per tool. Each binds a Lambda + the slice of OpenAPI for that path.
+    for (const { name, opId, getFn } of TOOL_OPERATIONS) {
+      const fn = getFn(props.tools);
+
+      // Permit the agent to invoke this Lambda.
+      fn.addPermission(`AgentInvoke${name}`, {
+        principal: new iam.ServicePrincipal('bedrock.amazonaws.com'),
+        sourceArn: cdk.Fn.sub(
+          'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/${AgentId}',
+          { AgentId: agent.attrAgentId },
+        ),
+      });
+
+      const slice = {
+        openapi: openapi.openapi,
+        info: openapi.info,
+        paths: { [`/${opId}`]: openapi.paths[`/${opId}`] },
+      };
+
+      new bedrock.CfnAgentActionGroup(this, `Ag${name}`, {
+        agentId: agent.attrAgentId,
+        agentVersion: 'DRAFT',
+        actionGroupName: opId,
+        actionGroupExecutor: { lambda: fn.functionArn },
+        apiSchema: { payload: JSON.stringify(slice) },
+        actionGroupState: 'ENABLED',
+      });
+    }
+
+    const alias = new bedrock.CfnAgentAlias(this, 'Alias', {
+      agentId: agent.attrAgentId,
+      agentAliasName: 'live',
+    });
+    alias.addDependency(agent);
+
+    this.agentId = agent.attrAgentId;
+    this.agentAliasId = alias.attrAgentAliasId;
+
+    new cdk.CfnOutput(this, 'AgentIdOut', { value: this.agentId });
+    new cdk.CfnOutput(this, 'AgentAliasIdOut', { value: this.agentAliasId });
+  }
+}
+```
+
+- [ ] **Step 4: Wire into `infra/bin/app.ts`**
+
+Below the `ToolsStack` instantiation, add:
+
+```typescript
+import { AgentStack } from '../lib/agent-stack';
+
+const agentStack = new AgentStack(app, 'Chronos2DemoAgent', {
+  env,
+  tools,
+});
+agentStack.addDependency(tools);
+```
+
+- [ ] **Step 5: Run tests, confirm pass**
+
+```bash
+cd infra && npm test -- agent-stack
+```
+
+Expected: 5 passed.
+
+- [ ] **Step 6: Synth check**
+
+```bash
+cd infra && npx cdk synth Chronos2DemoAgent > /dev/null
+```
+
+Expected: no errors. (CDK will resolve cross-stack references to `tools.<fn>` ARNs as `Fn::ImportValue` exports.)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add infra/lib/agent-stack.ts infra/test/agent-stack.test.ts infra/bin/app.ts
+git commit -m "feat(infra): agent stack with Bedrock AgentCore + 7 action groups
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
+```
+
+---
+
+> _Continue with `2026-05-22-plan-b-ux-agent-part-6.md` (Stage 6 — API Gateway REST + SSE relay + sessions, Tasks 16–18)._
