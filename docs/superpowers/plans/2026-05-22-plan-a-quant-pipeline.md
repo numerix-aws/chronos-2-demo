@@ -56,8 +56,10 @@ chronos-2-demo/
 │   │   └── regime_ribbon.py            # regime indicator strip
 │   └── infra/
 │       ├── __init__.py
-│       ├── sagemaker_endpoint.py       # deploy/teardown Chronos-2 endpoint
-│       └── s3_io.py                    # upload/download helpers
+│       └── sagemaker_endpoint.py       # deploy/teardown Chronos-2 endpoint
+│                                       # (S3 helpers deferred to Plan B — the
+│                                       #  notebook reads/writes data/curated/
+│                                       #  locally; only Lambda tools need S3)
 ├── tests/
 │   ├── conftest.py                     # shared fixtures (fake panel, fake paths, fake book)
 │   ├── data/
