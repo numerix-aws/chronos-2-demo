@@ -12,6 +12,8 @@ This repo is **docs-only as of 2026-05-22**. The source of truth lives under `do
 
 When the user asks about implementation details, **read the plan files first**. They contain the complete, copy-pasteable code for every module — including failing tests, expected pytest output, and commit messages. Don't reinvent. Don't paraphrase. Plan A part-1 and Plan B part-1 each have a locked-in file-structure tree — follow them exactly.
 
+**Multi-part plans**: files end with `> _Continue with <next-file>._` — read the whole chain before claiming "the plan says X."
+
 ## Project intent
 
 Proof-of-concept for **Numerix** showing how **Amazon Chronos-2** augments (does not replace) their hybrid Monte Carlo framework for PFE/XVA exposure calculation. The headline beat is "correct + reweight": parametric MC and Chronos-2 both produce path sets, a deterministic regime detector emits `w_stress ∈ [0,1]`, and the blender importance-weights paths so the same downstream pricing/exposure code consumes either set. Plan A delivers the Python core + a Jupyter notebook that drives the demo story end-to-end. Plan B will wrap it in the agent + UI.
@@ -41,6 +43,14 @@ Plan A enforces a rigid per-task workflow that future Claude instances must pres
 5. **No covariates in the parametric baseline.** That asymmetry (Chronos-2 sees VIX/MOVE/WTI; baseline doesn't) is part of the value story, not a bug.
 
 If a task has no failing test (Stage 0 bootstrap), the plan says so — follow what's written, not the general TDD shape.
+
+## Plan B architecture invariants (don't "fix" these)
+
+- **Streaming uses a Lambda Function URL with `InvokeMode=RESPONSE_STREAM`**, not API Gateway — REST API GW buffers responses, breaking SSE.
+- **Frontend SSE uses `fetch` + `ReadableStream`**, not `EventSource` — EventSource cannot send the `x-api-key` header the authorizer requires.
+- **AgentCore uses L1 constructs (`CfnAgent`, `CfnAgentActionGroup`)** — L2 is preview-only in CDK 2.140.
+- **Amplify Hosting uses manual zip deploys** (`aws amplify create-deployment` + curl PUT to `zipUploadUrl` + `start-deployment`), not GitHub source.
+- **Sessions table:** PK=`session_id`, SK=`turn_id` (ISO-8601 timestamp + `#role`). Roles: `{user, assistant, tool}`.
 
 ## Module layout (planned)
 
@@ -82,3 +92,5 @@ jupyter lab notebooks/headline_demo.ipynb
 - **When the spec and the plan disagree**: the plan is more recent and detailed; flag the conflict to the user before continuing.
 - **Frequent commits**. Plan A has 30 commits planned; don't merge them.
 - **Subagent-driven execution** (`superpowers:subagent-driven-development`) is the recommended path for grinding through Plan A — fresh subagent per task, two-stage review between tasks. Inline execution via `superpowers:executing-plans` is the alternative.
+- **Cross-cutting rules go here, not in plans.** If a guideline applies to all changes, add it to "Engineering Discipline." Plans reinforce — they don't redefine.
+- **ARCC trigger:** Plan B touches IAM, S3, VPC, Lambda, Secrets Manager, API Gateway. Per `~/.claude/rules/arcc-governance.md`, query `search_arcc` BEFORE examining code on each new infra domain (one query per stack is usually enough).
