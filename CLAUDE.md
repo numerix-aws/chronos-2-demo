@@ -4,22 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-This repo is **docs-only as of 2026-05-22**. The source of truth is two artefacts under `docs/superpowers/`:
+This repo is **docs-only as of 2026-05-22**. The source of truth lives under `docs/superpowers/`:
 
 - `specs/2026-05-22-numerix-chronos2-poc-design.md` — approved design spec
-- `plans/2026-05-22-plan-a-quant-pipeline*.md` — Plan A, split across 8 files (`*.md`, `*-part-2a..2d.md`, `*-part-3a..3c.md`), 30 tasks across 9 stages
+- `plans/2026-05-22-plan-a-quant-pipeline*.md` — Plan A (Python core + notebook), 8 files, 30 tasks across 9 stages
+- `plans/2026-05-22-plan-b-ux-agent*.md` — Plan B (CDK infra, AgentCore copilot, Cloudscape SPA), 9 files, 26 tasks across 10 stages. Depends on Plan A being merged.
 
-When the user asks about implementation details, **read the plan files first**. They contain the complete, copy-pasteable code for every module — including failing tests, expected pytest output, and commit messages. Don't reinvent. Don't paraphrase. Plan A part-1 has the locked-in file-structure tree (`src/chronos2_demo/...`) — follow it exactly.
-
-A second plan ("Plan B — UX") covering the AgentCore copilot, Lambda tools, API Gateway, and Cloudscape SPA is **not yet written**. Items legitimately deferred to Plan B: §5 Curated Knowledge, §7 Agent Behavior & Tool Surface, §10 Adjacent use case briefs, S3 helper utilities, operational latency metrics.
+When the user asks about implementation details, **read the plan files first**. They contain the complete, copy-pasteable code for every module — including failing tests, expected pytest output, and commit messages. Don't reinvent. Don't paraphrase. Plan A part-1 and Plan B part-1 each have a locked-in file-structure tree — follow them exactly.
 
 ## Project intent
 
 Proof-of-concept for **Numerix** showing how **Amazon Chronos-2** augments (does not replace) their hybrid Monte Carlo framework for PFE/XVA exposure calculation. The headline beat is "correct + reweight": parametric MC and Chronos-2 both produce path sets, a deterministic regime detector emits `w_stress ∈ [0,1]`, and the blender importance-weights paths so the same downstream pricing/exposure code consumes either set. Plan A delivers the Python core + a Jupyter notebook that drives the demo story end-to-end. Plan B will wrap it in the agent + UI.
 
-## Plan-execution conventions
+## Engineering Discipline (project-wide)
 
-Before executing any task, read the **"Executor's Contract"** section near the top of `docs/superpowers/plans/2026-05-22-plan-a-quant-pipeline.md`. It applies the Karpathy guidelines (think first, simplicity, surgical changes, verify don't trust) to this plan specifically — most importantly, **don't add code beyond what the task shows**, and **stop and ask** if the plan and reality disagree rather than silently rewriting.
+These rules apply to **every** change in this repo — plan-driven or not. They distill the Karpathy operating guidelines into project-specific rules. Re-read whenever you're tempted to deviate.
+
+**1. Think before coding.** Read the entire task — files, all steps, the test, the implementation, and the commit message — before touching the keyboard. If a test in a plan looks wrong, an implementation looks wrong, or two tasks contradict each other, **stop and ask the user**. Don't pick silently. Don't paper over confusion with extra code.
+
+**2. Simplicity first — the plan IS the minimum.** When a plan exists, the code blocks have been sized intentionally. Do not add: extra error handling for cases the test doesn't cover, type hints beyond what's shown, abstractions ("strategy", "factory", "manager") for single-use code, configurability that wasn't requested, defensive `try/except` around code that can't fail. If you write more lines than the plan, you're wrong — go back and copy what's written. Project-specific calls: the asymmetric covariate decision (parametric baseline doesn't see VIX/MOVE/WTI) and the "Chronos-2 always runs alongside, never replaces" framing are deliberate; do not "fix" them.
+
+**3. Surgical changes only.** Each task names exactly the files it Creates or Modifies. Don't touch others. Don't reformat existing code. Don't rename a variable in module X because you're working in module Y. Don't delete dead code you happen to notice — flag it in your end-of-task summary instead. The diff for one task should trace, line-by-line, to that task's checkboxes — and nothing else.
+
+**4. Goal-driven execution — verify, don't trust.** Each task's success criteria are objective: the failing test fails, the passing test passes, the commit lands. Don't mark a step done because it "should work." Run the command, read the output, then tick the box. If a test passes on the first run before you've written the implementation, something is wrong — stop and investigate. If the expected pytest output in a plan disagrees with what you see, surface it before continuing.
+
+**Edge case:** if you genuinely believe a plan has a bug (test asserts the wrong thing, implementation can't satisfy the test, a type signature is inconsistent across tasks), do **not** silently rewrite. Pause, name the discrepancy, and ask the user. The plan is the source of truth until they say otherwise.
+
+## Plan-execution conventions
 
 Plan A enforces a rigid per-task workflow that future Claude instances must preserve when executing tasks:
 

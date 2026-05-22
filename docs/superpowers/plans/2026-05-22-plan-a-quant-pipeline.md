@@ -12,19 +12,7 @@
 
 ---
 
-## Executor's Contract (Karpathy guidelines, applied)
-
-Every task in this plan is a self-contained, verifiable goal. Read this once before Task 1, then re-read whenever you're tempted to deviate. These rules complement — they do not replace — the per-task TDD steps written below.
-
-**1. Think before coding.** Read the entire task — files, all five steps, the test, the implementation, and the commit message — before touching the keyboard. If a test in the plan looks wrong, the implementation looks wrong, or two tasks contradict each other, **stop and ask the user**. Don't pick silently. Don't paper over confusion with extra code.
-
-**2. Simplicity first — the plan IS the minimum.** The code blocks in each task have been sized intentionally. Do not add: extra error handling for cases the test doesn't cover, type hints beyond what the plan shows, abstractions ("strategy", "factory", "manager") for single-use code, configurability that wasn't requested, defensive `try/except` around code that can't fail. If you write more lines than the plan, you're wrong — go back and copy what's written. The asymmetric covariate decision (parametric baseline doesn't see VIX/MOVE/WTI) and the "Chronos-2 always runs alongside, never replaces" framing are deliberate; do not "fix" them.
-
-**3. Surgical changes only.** Each task names exactly the files it Creates or Modifies. Don't touch others. Don't reformat existing code. Don't rename a variable in module X because you're working in module Y. Don't delete dead code you happen to notice — flag it in your end-of-task summary instead. The diff for one task should trace, line-by-line, to that task's checkboxes — and nothing else.
-
-**4. Goal-driven execution — verify, don't trust.** Each task's success criteria are objective: the failing test fails, the passing test passes, the commit lands. Don't mark a step done because it "should work." Run the command, read the output, then tick the box. If a test passes on the first run before you've written the implementation, something is wrong — stop and investigate. If the expected pytest output in the plan disagrees with what you see, surface it before continuing.
-
-**Edge case:** if you genuinely believe the plan has a bug (test asserts the wrong thing, implementation can't satisfy the test, a type signature is inconsistent across tasks), do **not** silently rewrite. Pause, name the discrepancy, and ask the user. The plan is the source of truth until they say otherwise.
+> **Before Task 1:** read the **Engineering Discipline** section in `CLAUDE.md` at the repo root. It applies repo-wide: think first, simplicity, surgical changes, verify don't trust, stop-and-ask. Plan-A-specific reinforcements (asymmetric covariates, hermetic tests, pinned headline numbers) live in `CLAUDE.md`'s "Plan-execution conventions" section.
 
 ---
 

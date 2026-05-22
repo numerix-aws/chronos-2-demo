@@ -14,7 +14,7 @@
 
 ## Executor's Contract
 
-Plan B inherits the contract from Plan A part-1. Re-read it before Task 1. Plan-B-specific reinforcements:
+Plan B inherits the project-wide **Engineering Discipline** from `CLAUDE.md`. Re-read it before Task 1. Plan-B-specific reinforcements:
 
 - **CDK is code.** Snapshot tests catch drift; resource construct properties are typed. Don't write `cdk.aws_iam.PolicyStatement` from memory — let the typed props guide you, copy from this plan's code blocks.
 - **Tool contracts are the integration points.** Once a tool's input/output JSON schema lands in this plan, every later task — agent action groups, frontend rendering — depends on it being stable. Don't widen schemas mid-plan; if a real need surfaces, stop and ask.
