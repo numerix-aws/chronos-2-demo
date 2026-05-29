@@ -48,3 +48,49 @@ def fit_pca(panel: pd.DataFrame, n_components: int) -> PCAFit:
         explained_variance_ratio=pca.explained_variance_ratio_,
         series=list(panel.columns),
     )
+
+
+@dataclass(frozen=True)
+class FactorDynamics:
+    phi: np.ndarray    # (k,) AR(1) coefficient per factor
+    sigma: np.ndarray  # (k,) innovation std per factor
+
+
+def fit_factor_dynamics(panel: pd.DataFrame, pca: PCAFit) -> FactorDynamics:
+    """Fit AR(1) per factor: f_t = phi * f_{t-1} + sigma * eps_t."""
+    log_rets = np.log(panel).diff().dropna().values
+    standardized = (log_rets - pca.mean) / pca.std
+    factors = standardized @ pca.loadings  # (T-1, k)
+    k = factors.shape[1]
+    phi = np.empty(k)
+    sigma = np.empty(k)
+    for j in range(k):
+        x = factors[:-1, j]
+        y = factors[1:, j]
+        denom = (x * x).sum()
+        phi_j = (x * y).sum() / denom if denom > 1e-12 else 0.0
+        # Clamp to (-0.999, 0.999) for stability.
+        phi_j = float(np.clip(phi_j, -0.999, 0.999))
+        resid = y - phi_j * x
+        sigma_j = float(np.sqrt(max((resid * resid).mean(), 1e-12)))
+        phi[j] = phi_j
+        sigma[j] = sigma_j
+    return FactorDynamics(phi=phi, sigma=sigma)
+
+
+def _sample_factor_paths(
+    dyn: FactorDynamics,
+    n_paths: int,
+    horizon: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Draw (n_paths, horizon, k) factor paths starting from f_0 = 0."""
+    k = dyn.phi.shape[0]
+    eps = rng.standard_normal(size=(n_paths, horizon, k))
+    paths = np.empty_like(eps)
+    f_prev = np.zeros((n_paths, k))
+    for t in range(horizon):
+        f_t = dyn.phi * f_prev + dyn.sigma * eps[:, t, :]
+        paths[:, t, :] = f_t
+        f_prev = f_t
+    return paths
