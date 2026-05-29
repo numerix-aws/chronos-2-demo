@@ -55,3 +55,51 @@ def decode_response(body: str) -> np.ndarray:
     if "samples" not in obj:
         raise KeyError("response missing 'samples'")
     return np.asarray(obj["samples"], dtype=float)
+
+
+import time
+from typing import Optional
+
+
+class Chronos2Client:
+    """Thin wrapper around a SageMaker real-time endpoint."""
+
+    def __init__(
+        self,
+        endpoint_name: str,
+        runtime: Any,
+        max_retries: int = 2,
+        retry_sleep: float = 1.0,
+    ) -> None:
+        self.endpoint_name = endpoint_name
+        self.runtime = runtime
+        self.max_retries = max_retries
+        self.retry_sleep = retry_sleep
+
+    def predict(
+        self,
+        context: pd.DataFrame,
+        horizon: int,
+        n_samples: int,
+        covariates: Optional[pd.DataFrame] = None,
+        conditioning: Optional[Conditioning] = None,
+    ) -> np.ndarray:
+        body = encode_request(context, horizon, n_samples, covariates, conditioning)
+        last_err: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = self.runtime.invoke_endpoint(
+                    EndpointName=self.endpoint_name,
+                    ContentType="application/json",
+                    Accept="application/json",
+                    Body=body,
+                )
+                return decode_response(resp["Body"].read().decode("utf-8"))
+            except Exception as e:  # botocore ClientError, network, etc.
+                last_err = e
+                if attempt < self.max_retries:
+                    time.sleep(self.retry_sleep)
+                    continue
+                raise
+        # unreachable, but keeps type-checkers happy:
+        raise RuntimeError("retry loop exited without return") from last_err
