@@ -94,3 +94,50 @@ def _sample_factor_paths(
         paths[:, t, :] = f_t
         f_prev = f_t
     return paths
+
+
+from chronos2_demo.types import PathSet
+
+
+def simulate_baseline(
+    panel: pd.DataFrame,
+    as_of: str,
+    horizon: int,
+    n_paths: int,
+    n_components: int,
+    seed: int = 0,
+) -> PathSet:
+    """Simulate joint factor paths and project to absolute-level space.
+
+    Steps:
+      1. Fit PCA + factor dynamics on `panel` history up to and including `as_of`.
+      2. Sample (n_paths, horizon, k) factor paths.
+      3. Project to standardized log-return space via loadings.T.
+      4. Reverse standardization, cumulate, exponentiate, multiply by S_{as_of}.
+    """
+    history = panel.loc[:pd.Timestamp(as_of)]
+    pca = fit_pca(history, n_components=n_components)
+    dyn = fit_factor_dynamics(history, pca)
+    rng = np.random.default_rng(seed)
+    factor_paths = _sample_factor_paths(dyn, n_paths, horizon, rng)  # (N, H, k)
+
+    # Project factors back to standardized log-return space.
+    log_rets = np.einsum("nhk,sk->nhs", factor_paths, pca.loadings)
+    # De-standardize: x = log_ret * std + mean.
+    log_rets = log_rets * pca.std + pca.mean
+    # Cumulate to get log levels relative to S_{as_of}.
+    cum_log = np.cumsum(log_rets, axis=1)
+    s0 = panel.loc[pd.Timestamp(as_of)].values  # (n_series,)
+    levels = s0 * np.exp(cum_log)
+
+    horizon_dates = pd.bdate_range(
+        start=pd.Timestamp(as_of) + pd.tseries.offsets.BDay(1), periods=horizon
+    )
+    weights = np.full(n_paths, 1.0 / n_paths)
+    return PathSet(
+        paths=levels,
+        weights=weights,
+        series=list(panel.columns),
+        dates=horizon_dates,
+        source="parametric",
+    )
