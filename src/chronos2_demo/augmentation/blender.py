@@ -58,3 +58,48 @@ def compute_weights(
     w_chr = _engine_weights(pnl_chronos2, tail_share=w_stress,
                             body_share=body_chronos_share)
     return w_par, w_chr
+
+
+import pandas as pd
+from chronos2_demo.types import PathSet
+
+
+def blend_paths(
+    parametric: PathSet,
+    chronos2: PathSet,
+    pnl_parametric: np.ndarray,
+    pnl_chronos2: np.ndarray,
+    w_stress: float,
+    body_chronos_share: float = 0.1,
+    tail_quantile: float = 0.05,
+) -> PathSet:
+    """Stack the two PathSets along the path axis and emit normalized weights.
+
+    Returned weights sum to 1 across all (n_par + n_chr) paths, so the result
+    can be passed straight into `pricing.exposure.compute_pfe(...)` as if it
+    were a single engine's output.
+    """
+    if parametric.series != chronos2.series:
+        raise ValueError("series ordering must match across PathSets")
+    if not parametric.dates.equals(chronos2.dates):
+        raise ValueError("dates must match across PathSets")
+    if parametric.paths.shape[1:] != chronos2.paths.shape[1:]:
+        raise ValueError("horizon / n_series must match")
+
+    w_par, w_chr = compute_weights(
+        pnl_parametric, pnl_chronos2,
+        w_stress=w_stress,
+        body_chronos_share=body_chronos_share,
+        tail_quantile=tail_quantile,
+    )
+    # Each engine's weights sum to 1; combine 50/50 across engines so the
+    # union sums to 1 with each engine's relative weighting preserved.
+    combined = np.concatenate([0.5 * w_par, 0.5 * w_chr])
+    paths = np.concatenate([parametric.paths, chronos2.paths], axis=0)
+    return PathSet(
+        paths=paths,
+        weights=combined,
+        series=list(parametric.series),
+        dates=parametric.dates,
+        source="blended",
+    )
