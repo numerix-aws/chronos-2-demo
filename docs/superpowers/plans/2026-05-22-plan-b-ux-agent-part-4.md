@@ -432,6 +432,9 @@ def ecs_env(aws_creds, monkeypatch):
         # against the EC2 backend, so create real (mocked) ones.
         ec2 = boto3.client("ec2", region_name="us-east-1")
         vpc_id = ec2.create_vpc(CidrBlock="10.0.0.0/16")["Vpc"]["VpcId"]
+        # moto's ECS RunTask reads eni.private_dns_name, which the EC2 ENI model
+        # only populates when the VPC has DNS hostnames enabled.
+        ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsHostnames={"Value": True})
         subnet_id = ec2.create_subnet(
             VpcId=vpc_id, CidrBlock="10.0.1.0/24"
         )["Subnet"]["SubnetId"]
