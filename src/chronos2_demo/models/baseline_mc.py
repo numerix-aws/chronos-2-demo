@@ -16,6 +16,12 @@ import pandas as pd
 from sklearn.decomposition import PCA
 
 
+# Levels are clipped to this positive floor before taking logs so that rate
+# series that touch or cross zero (e.g. EUR_2Y, JPY_2Y) don't poison the whole
+# return panel with NaNs. On strictly-positive panels this is a no-op.
+_LEVEL_FLOOR = 1e-6
+
+
 @dataclass(frozen=True)
 class PCAFit:
     loadings: np.ndarray      # (n_series, k) orthonormal in feature space
@@ -32,7 +38,7 @@ def fit_pca(panel: pd.DataFrame, n_components: int) -> PCAFit:
     variance ratio. Loadings are taken as PCA components.T so that
     `standardized @ loadings == factor_scores`.
     """
-    log_rets = np.log(panel).diff().dropna().values  # (T-1, n_series)
+    log_rets = np.log(panel.clip(lower=_LEVEL_FLOOR)).diff().dropna().values  # (T-1, n_series)
     mean = log_rets.mean(axis=0)
     std = log_rets.std(axis=0, ddof=1)
     # Guard against zero-variance series in tiny test panels.
@@ -58,7 +64,7 @@ class FactorDynamics:
 
 def fit_factor_dynamics(panel: pd.DataFrame, pca: PCAFit) -> FactorDynamics:
     """Fit AR(1) per factor: f_t = phi * f_{t-1} + sigma * eps_t."""
-    log_rets = np.log(panel).diff().dropna().values
+    log_rets = np.log(panel.clip(lower=_LEVEL_FLOOR)).diff().dropna().values
     standardized = (log_rets - pca.mean) / pca.std
     factors = standardized @ pca.loadings  # (T-1, k)
     k = factors.shape[1]
