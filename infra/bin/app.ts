@@ -2,6 +2,7 @@
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { NetworkStack } from '../lib/network-stack';
+import { StorageStack } from '../lib/storage-stack';
 
 const app = new cdk.App();
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1' };
@@ -11,5 +12,6 @@ cdk.Tags.of(app).add('Project', demoTag);
 cdk.Tags.of(app).add('chronos2-demo:teardown', 'on');
 
 const network = new NetworkStack(app, 'Chronos2DemoNetwork', { env });
+const storage = new StorageStack(app, 'Chronos2DemoStorage', { env });
 
 app.synth();
