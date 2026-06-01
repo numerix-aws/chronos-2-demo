@@ -436,7 +436,7 @@ def ecs_env(aws_creds, monkeypatch):
             networkMode="awsvpc",
             cpu="4096",
             memory="8192",
-            containerDefinitions=[{"name": "App", "image": "x", "essential": True}],
+            containerDefinitions=[{"name": "App", "image": "x", "essential": True, "memory": 8192}],
         )["taskDefinition"]["taskDefinitionArn"]
         monkeypatch.setenv("DATA_BUCKET", "test-data")
         monkeypatch.setenv("CLUSTER_ARN", cluster)
