@@ -428,6 +428,17 @@ from tools.lambda_.run_baseline_mc import handler
 @pytest.fixture
 def ecs_env(aws_creds, monkeypatch):
     with mock_aws():
+        # moto's ECS RunTask validates the awsvpc subnets + security groups
+        # against the EC2 backend, so create real (mocked) ones.
+        ec2 = boto3.client("ec2", region_name="us-east-1")
+        vpc_id = ec2.create_vpc(CidrBlock="10.0.0.0/16")["Vpc"]["VpcId"]
+        subnet_id = ec2.create_subnet(
+            VpcId=vpc_id, CidrBlock="10.0.1.0/24"
+        )["Subnet"]["SubnetId"]
+        sg_id = ec2.create_security_group(
+            GroupName="baseline-mc-sg", Description="test", VpcId=vpc_id
+        )["GroupId"]
+
         ecs = boto3.client("ecs", region_name="us-east-1")
         cluster = ecs.create_cluster(clusterName="baseline-mc")["cluster"]["clusterArn"]
         task_def = ecs.register_task_definition(
@@ -442,8 +453,8 @@ def ecs_env(aws_creds, monkeypatch):
         monkeypatch.setenv("CLUSTER_ARN", cluster)
         monkeypatch.setenv("TASK_DEFINITION_ARN", task_def)
         monkeypatch.setenv("CONTAINER_NAME", "App")
-        monkeypatch.setenv("SUBNET_IDS", "subnet-123,subnet-456")
-        monkeypatch.setenv("SECURITY_GROUP_IDS", "sg-123")
+        monkeypatch.setenv("SUBNET_IDS", subnet_id)
+        monkeypatch.setenv("SECURITY_GROUP_IDS", sg_id)
         yield
 
 
