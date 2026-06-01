@@ -257,13 +257,14 @@ test('creates a 5xx alarm for the REST API', () => {
 
 test('creates one error alarm per tool Lambda', () => {
   const { t } = build();
-  // 6 Python Lambdas (load_data, blend_paths, price_book, plot, lookup_use_case, run_chronos2)
-  // + sessions + invoke_agent + sse_relay (Node) + authorizer = at least 6 tool alarms.
+  // 8 Python tool Lambdas (load_data, blend_paths, price_book, plot,
+  // lookup_use_case, run_chronos2, run_baseline_mc, check_baseline_mc)
+  // each get an Errors alarm = at least 8 tool alarms.
   const alarms = t.findResources('AWS::CloudWatch::Alarm');
   const lambdaErrorAlarms = Object.values(alarms).filter(
     (r: any) => r.Properties?.Namespace === 'AWS/Lambda' && r.Properties?.MetricName === 'Errors',
   );
-  expect(lambdaErrorAlarms.length).toBeGreaterThanOrEqual(6);
+  expect(lambdaErrorAlarms.length).toBeGreaterThanOrEqual(8);
 });
 ```
 
@@ -313,12 +314,14 @@ export class ObservabilityStack extends cdk.Stack {
 
     // ---- Per-Lambda error + p95 duration alarm.
     const tool: Record<string, lambda.IFunction> = {
-      load_data: props.tools.loadDataFn,
-      blend_paths: props.tools.blendPathsFn,
-      price_book: props.tools.priceBookFn,
-      plot: props.tools.plotFn,
-      lookup_use_case: props.tools.lookupUseCaseFn,
-      run_chronos2: props.tools.runChronos2Fn,
+      load_data: props.tools.fnLoadData,
+      blend_paths: props.tools.fnBlendPaths,
+      price_book: props.tools.fnPriceBook,
+      plot: props.tools.fnPlot,
+      lookup_use_case: props.tools.fnLookupUseCase,
+      run_chronos2: props.tools.fnRunChronos2,
+      run_baseline_mc: props.tools.fnRunBaselineMc,
+      check_baseline_mc: props.tools.fnCheckBaselineMc,
     };
 
     const dashboardWidgets: cw.IWidget[] = [];

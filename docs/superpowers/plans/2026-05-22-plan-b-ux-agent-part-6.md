@@ -186,16 +186,16 @@ def _create_session() -> dict[str, Any]:
             "created_at": _now_iso(),
         }
     )
-    return responses.ok({"session_id": sid})
+    return responses.http_ok({"session_id": sid})
 
 
 def _append_message(sid: str, body: dict) -> dict[str, Any]:
     role = body.get("role")
     content = body.get("content")
     if role not in VALID_ROLES:
-        return responses.error(f"invalid role: {role!r}", status=400)
+        return responses.http_error(f"invalid role: {role!r}", status=400)
     if not isinstance(content, str) or not content:
-        return responses.error("content must be a non-empty string", status=400)
+        return responses.http_error("content must be a non-empty string", status=400)
 
     turn_id = f"{_now_iso()}#{role}"
     item = {
@@ -210,7 +210,7 @@ def _append_message(sid: str, body: dict) -> dict[str, Any]:
         item["trace_id"] = str(body["trace_id"])
 
     _table().put_item(Item=item)
-    return responses.ok({"turn_id": turn_id})
+    return responses.http_ok({"turn_id": turn_id})
 
 
 def _list_messages(sid: str) -> dict[str, Any]:
@@ -223,7 +223,7 @@ def _list_messages(sid: str) -> dict[str, Any]:
         for item in resp.get("Items", [])
         if item.get("role") in VALID_ROLES
     ]
-    return responses.ok({"messages": messages})
+    return responses.http_ok({"messages": messages})
 
 
 def handler(event: dict, _context) -> dict[str, Any]:
@@ -239,7 +239,7 @@ def handler(event: dict, _context) -> dict[str, Any]:
     if method == "GET" and resource == "/sessions/{sid}/messages" and sid:
         return _list_messages(sid)
 
-    return responses.error(f"no route for {method} {resource}", status=404)
+    return responses.http_error(f"no route for {method} {resource}", status=404)
 ```
 
 - [ ] **Step 4: Run tests, confirm pass**
@@ -400,7 +400,7 @@ def handler(event: dict, _context) -> dict[str, Any]:
     sid = body.get("session_id")
     prompt = body.get("prompt")
     if not sid or not prompt:
-        return responses.error("session_id and prompt required", status=400)
+        return responses.http_error("session_id and prompt required", status=400)
 
     _persist(sid, "user", prompt)
 
@@ -413,7 +413,7 @@ def handler(event: dict, _context) -> dict[str, Any]:
     text = b"".join(parts).decode("utf-8", errors="replace")
 
     _persist(sid, "assistant", text)
-    return responses.ok({"text": text})
+    return responses.http_ok({"text": text})
 ```
 
 - [ ] **Step 4: Run tests, confirm pass**
@@ -896,7 +896,7 @@ export class ApiStack extends cdk.Stack {
     });
 
     const authorizer = new apigw.RequestAuthorizer(this, 'ApiKeyAuthorizer', {
-      handler: props.tools.authorizerFn,
+      handler: props.tools.fnAuthorizer,
       identitySources: [apigw.IdentitySource.header('x-api-key')],
       resultsCacheTtl: cdk.Duration.minutes(5),
     });

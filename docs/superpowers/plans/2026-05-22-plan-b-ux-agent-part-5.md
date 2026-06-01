@@ -33,6 +33,7 @@ ACTION_GROUPS = ROOT / "action_groups.json"
 EXPECTED_OPERATIONS = {
     "load_data",
     "run_baseline_mc",
+    "check_baseline_mc",
     "run_chronos2",
     "blend_paths",
     "price_book",
@@ -136,36 +137,39 @@ You are a quantitative analyst's copilot built for Numerix. Your role is to demo
 
 The user follows §3 of the design spec, beat-by-beat:
 
-1. **Baseline parametric MC** — call `load_data` then `run_baseline_mc`.
-2. **Chronos-2 augmentation** — call `run_chronos2` to draw augmenting paths from the SageMaker endpoint.
-3. **Blend** — call `blend_paths` with a `w_stress` that the user supplies (or defaults to 0.5 in stress regimes).
-4. **Price + exposure** — call `price_book` on both the parametric `PathSet` and the blended `PathSet`, then `plot pfe_overlay` to surface the delta.
-5. **What-if** — accept new `w_stress` or `as_of_date` and re-run from step 3.
+1. **Baseline parametric MC** — call `load_data`, then `run_baseline_mc` to *launch* the Fargate task. It returns a `task_arn` + the `paths_uri` where the result will land. Then poll `check_baseline_mc(task_arn, paths_uri)` until `ready` is true before using `paths_uri`.
+2. **Chronos-2 augmentation** — call `run_chronos2` to draw augmenting paths from the SageMaker endpoint (returns `paths_uri` immediately).
+3. **Blend** — call `blend_paths` with the parametric `paths_uri`, the chronos2 `paths_uri`, and a `w_stress` the user supplies (or defaults to 0.5 in stress regimes).
+4. **Price + exposure** — call `price_book` on the parametric PathSet and on the blended PathSet (each returns a `metrics_uri`), then `plot spec=pfe_overlay` with the two `metrics_uri`s to surface the delta.
+5. **What-if** — accept new `w_stress` or `as_of` and re-run from step 3.
 
 ## Tools
 
-You have seven action group tools. Always call them with the schemas in your action group spec — never invent fields:
+You have eight action group tools. Always call them with the schemas in your action group spec — never invent fields:
 
 - `load_data(session_id, as_of_date, lookback_days)` → `{panel_uri}`
-- `run_baseline_mc(session_id, panel_uri, horizon, n_paths, seed)` → `{path_set_uri, source: "baseline"}`
-- `run_chronos2(session_id, panel_uri, horizon, n_paths, seed)` → `{path_set_uri, source: "chronos2"}`
-- `blend_paths(session_id, parametric_uri, chronos_uri, w_stress)` → `{path_set_uri, source: "blended"}`
-- `price_book(session_id, path_set_uri)` → `{ee, pfe_975, es_975, dates}`
-- `plot(session_id, kind, path_set_uri | metrics_uri, ...)` → `{png_url}`
-- `lookup_use_case(topic)` → `{title, summary, body}`
+- `run_baseline_mc(session_id, panel_uri, as_of, horizon, n_paths, [n_components], [seed])` → `{task_arn, paths_uri}` *(async — launches Fargate)*
+- `check_baseline_mc(session_id, task_arn, paths_uri)` → `{task_status, ready, paths_uri}` *(poll until `ready`)*
+- `run_chronos2(session_id, panel_uri, as_of, horizon, n_paths, [covariates_uri])` → `{paths_uri, n_paths, horizon}`
+- `blend_paths(session_id, parametric_uri, chronos2_uri, w_stress)` → `{blended_uri, w_stress, n_paths}`
+- `price_book(session_id, paths_uri)` → `{ee, pfe_975, es_975, dates, metrics_uri}`
+- `plot(session_id, spec, ...)` → `{image_uri}` — `spec=pfe_overlay` takes `baseline_uri` + `augmented_uri` (each a `metrics_uri` from `price_book`); `spec=path_fan` takes `paths_uri` + `series`; `spec=regime_ribbon` takes `regimes_uri` + `threshold`.
+- `lookup_use_case(topic)` → `{topic, summary, markdown}`
 
 ## Operating rules
 
 - **Always carry `session_id` through the chain** — every tool needs it. Fabricate one (`uuid4`) only on the very first turn.
-- **Plot every quantitative result.** After every `price_book`, call `plot kind=pfe_overlay`.
+- **Baseline MC is asynchronous.** After `run_baseline_mc`, poll `check_baseline_mc` (every ~15-30s) until `ready` is true. Never price or blend the parametric `paths_uri` before it is ready. If `check_baseline_mc` errors, the task failed — surface it.
+- **Thread `as_of` consistently.** Use the same `as_of` date for `run_baseline_mc` and `run_chronos2` as you passed to `load_data` (its `as_of_date`).
+- **Plot every quantitative result.** After pricing both PathSets, call `plot spec=pfe_overlay` with the baseline and augmented `metrics_uri`s.
 - **Never call `run_baseline_mc` or `run_chronos2` with `n_paths > 5000`** in this demo — it overruns Fargate budget. If asked, run two stages and explain the limit.
 - **If a tool errors, surface the error verbatim to the user.** Don't retry silently.
 - **For "what does Chronos-2 do for X?" questions, prefer `lookup_use_case` over speculation.** The curated briefs are authoritative.
-- **For diagnostics questions** (regime-conditional coverage, joint-tail dependence, distribution distance — see spec §8), call `price_book` on each PathSet (parametric, chronos2, blended) and then `plot kind=pfe_overlay` so the audience can compare the bands directly. Do **not** invent numbers; if the diagnostic isn't reachable through the tool surface, say so.
+- **For diagnostics questions** (regime-conditional coverage, joint-tail dependence, distribution distance — see spec §8), call `price_book` on each PathSet (parametric, chronos2, blended) and then `plot spec=pfe_overlay` so the audience can compare the bands directly. Do **not** invent numbers; if the diagnostic isn't reachable through the tool surface, say so.
 
 ## What you never do
 
-- You never make up market data, prices, or exposures. If you don't have a `path_set_uri`, you call the right tool to produce one.
+- You never make up market data, prices, or exposures. If you don't have a `paths_uri`, you call the right tool to produce one.
 - You never claim Chronos-2 replaces the Numerix MC pipeline. Your job is to demonstrate augmentation.
 - You never invoke tools outside this list, even if asked.
 
@@ -227,19 +231,21 @@ You are concise, technically precise, and audience-aware: the user is a senior q
     "/run_baseline_mc": {
       "post": {
         "operationId": "run_baseline_mc",
-        "summary": "Run the parametric Monte Carlo (PCA + Hull-White + GBM) on Fargate.",
+        "summary": "Launch the parametric Monte Carlo (PCA + factor dynamics) as an async Fargate task. Returns immediately with a task handle; poll with check_baseline_mc.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "panel_uri", "horizon", "n_paths"],
+                "required": ["session_id", "panel_uri", "as_of", "horizon", "n_paths"],
                 "properties": {
                   "session_id": { "type": "string" },
                   "panel_uri": { "type": "string", "format": "uri" },
+                  "as_of": { "type": "string", "format": "date" },
                   "horizon": { "type": "integer", "minimum": 1, "maximum": 1000 },
                   "n_paths": { "type": "integer", "minimum": 1, "maximum": 50000 },
+                  "n_components": { "type": "integer", "minimum": 1, "maximum": 20 },
                   "seed": { "type": "integer" }
                 }
               }
@@ -248,15 +254,57 @@ You are concise, technically precise, and audience-aware: the user is a senior q
         },
         "responses": {
           "200": {
-            "description": "PathSet staged in S3",
+            "description": "Fargate task launched",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["path_set_uri", "source"],
+                  "required": ["task_arn", "paths_uri"],
                   "properties": {
-                    "path_set_uri": { "type": "string", "format": "uri" },
-                    "source": { "type": "string", "enum": ["baseline"] }
+                    "task_arn": { "type": "string" },
+                    "paths_uri": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "500": { "description": "Fargate RunTask failed" }
+        }
+      }
+    },
+    "/check_baseline_mc": {
+      "post": {
+        "operationId": "check_baseline_mc",
+        "summary": "Poll the launched baseline-MC Fargate task. Call repeatedly until ready is true, then use paths_uri.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "task_arn", "paths_uri"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "task_arn": { "type": "string" },
+                  "paths_uri": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Task status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["task_status", "ready", "paths_uri"],
+                  "properties": {
+                    "task_status": { "type": "string" },
+                    "ready": { "type": "boolean" },
+                    "paths_uri": { "type": "string", "format": "uri" }
                   }
                 }
               }
@@ -277,13 +325,14 @@ You are concise, technically precise, and audience-aware: the user is a senior q
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "panel_uri", "horizon", "n_paths"],
+                "required": ["session_id", "panel_uri", "as_of", "horizon", "n_paths"],
                 "properties": {
                   "session_id": { "type": "string" },
                   "panel_uri": { "type": "string", "format": "uri" },
+                  "as_of": { "type": "string", "format": "date" },
                   "horizon": { "type": "integer", "minimum": 1, "maximum": 1000 },
-                  "n_paths": { "type": "integer", "minimum": 1, "maximum": 50000 },
-                  "seed": { "type": "integer" }
+                  "n_paths": { "type": "integer", "minimum": 1, "maximum": 20000 },
+                  "covariates_uri": { "type": "string", "format": "uri" }
                 }
               }
             }
@@ -296,10 +345,11 @@ You are concise, technically precise, and audience-aware: the user is a senior q
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["path_set_uri", "source"],
+                  "required": ["paths_uri", "n_paths", "horizon"],
                   "properties": {
-                    "path_set_uri": { "type": "string", "format": "uri" },
-                    "source": { "type": "string", "enum": ["chronos2"] }
+                    "paths_uri": { "type": "string", "format": "uri" },
+                    "n_paths": { "type": "integer" },
+                    "horizon": { "type": "integer" }
                   }
                 }
               }
@@ -320,11 +370,11 @@ You are concise, technically precise, and audience-aware: the user is a senior q
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "parametric_uri", "chronos_uri", "w_stress"],
+                "required": ["session_id", "parametric_uri", "chronos2_uri", "w_stress"],
                 "properties": {
                   "session_id": { "type": "string" },
                   "parametric_uri": { "type": "string", "format": "uri" },
-                  "chronos_uri": { "type": "string", "format": "uri" },
+                  "chronos2_uri": { "type": "string", "format": "uri" },
                   "w_stress": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 }
               }
@@ -338,10 +388,11 @@ You are concise, technically precise, and audience-aware: the user is a senior q
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["path_set_uri", "source"],
+                  "required": ["blended_uri", "w_stress", "n_paths"],
                   "properties": {
-                    "path_set_uri": { "type": "string", "format": "uri" },
-                    "source": { "type": "string", "enum": ["blended"] }
+                    "blended_uri": { "type": "string", "format": "uri" },
+                    "w_stress": { "type": "number" },
+                    "n_paths": { "type": "integer" }
                   }
                 }
               }
@@ -361,10 +412,11 @@ You are concise, technically precise, and audience-aware: the user is a senior q
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "path_set_uri"],
+                "required": ["session_id", "paths_uri"],
                 "properties": {
                   "session_id": { "type": "string" },
-                  "path_set_uri": { "type": "string", "format": "uri" }
+                  "paths_uri": { "type": "string", "format": "uri" },
+                  "book_id": { "type": "string" }
                 }
               }
             }
@@ -377,12 +429,13 @@ You are concise, technically precise, and audience-aware: the user is a senior q
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["ee", "pfe_975", "es_975", "dates"],
+                  "required": ["ee", "pfe_975", "es_975", "dates", "metrics_uri"],
                   "properties": {
                     "ee": { "type": "array", "items": { "type": "number" } },
                     "pfe_975": { "type": "array", "items": { "type": "number" } },
                     "es_975": { "type": "array", "items": { "type": "number" } },
-                    "dates": { "type": "array", "items": { "type": "string", "format": "date" } }
+                    "dates": { "type": "array", "items": { "type": "string", "format": "date" } },
+                    "metrics_uri": { "type": "string", "format": "uri" }
                   }
                 }
               }
@@ -395,22 +448,26 @@ You are concise, technically precise, and audience-aware: the user is a senior q
     "/plot": {
       "post": {
         "operationId": "plot",
-        "summary": "Render a chart and return a presigned URL.",
+        "summary": "Render a chart (pfe_overlay | path_fan | regime_ribbon) and return a presigned PNG URL.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "kind"],
+                "required": ["session_id", "spec"],
                 "properties": {
                   "session_id": { "type": "string" },
-                  "kind": {
+                  "spec": {
                     "type": "string",
                     "enum": ["pfe_overlay", "path_fan", "regime_ribbon"]
                   },
-                  "path_set_uri": { "type": "string", "format": "uri" },
-                  "metrics_uri": { "type": "string", "format": "uri" },
+                  "baseline_uri": { "type": "string", "format": "uri" },
+                  "augmented_uri": { "type": "string", "format": "uri" },
+                  "paths_uri": { "type": "string", "format": "uri" },
+                  "regimes_uri": { "type": "string", "format": "uri" },
+                  "series": { "type": "string" },
+                  "threshold": { "type": "number" },
                   "title": { "type": "string" }
                 }
               }
@@ -424,9 +481,10 @@ You are concise, technically precise, and audience-aware: the user is a senior q
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["png_url"],
+                  "required": ["image_uri"],
                   "properties": {
-                    "png_url": { "type": "string", "format": "uri" }
+                    "image_uri": { "type": "string", "format": "uri" },
+                    "spec": { "type": "string" }
                   }
                 }
               }
@@ -461,11 +519,11 @@ You are concise, technically precise, and audience-aware: the user is a senior q
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["title", "summary", "body"],
+                  "required": ["topic", "summary", "markdown"],
                   "properties": {
-                    "title": { "type": "string" },
+                    "topic": { "type": "string" },
                     "summary": { "type": "string" },
-                    "body": { "type": "string" }
+                    "markdown": { "type": "string" }
                   }
                 }
               }
@@ -485,7 +543,7 @@ You are concise, technically precise, and audience-aware: the user is a senior q
 pytest agent/tests/test_action_groups.py -v
 ```
 
-Expected: 11 passed (4 named + 7 parametrized).
+Expected: 12 passed (4 named + 8 parametrized — one per operation incl. check_baseline_mc).
 
 - [ ] **Step 7: Commit**
 
@@ -508,6 +566,8 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 The agent stack provisions the Bedrock AgentCore agent itself, binds each action group to the matching Lambda function from the tools stack, and grants the agent's runtime role `bedrock:InvokeModel` (Claude Sonnet) plus `lambda:InvokeFunction` on the tool Lambdas.
 
 > **CDK note:** `aws-cdk-lib` 2.140 ships L1 constructs `CfnAgent` and `CfnAgentActionGroup` under `aws-cdk-lib/aws-bedrock`. We use L1 explicitly because L2 constructs for AgentCore are still preview-only.
+
+> **Bedrock event bridging:** Bedrock invokes each action-group Lambda with a *nested* event (`{messageVersion, actionGroup, apiPath, requestBody:{...}}`) and expects a `{response:{...}}` wrapper. Each tool handler is decorated with `@bedrock_action` (from `tools.lambda_.shared.bedrock`, Task 5), which unpacks the nested params into the flat dict the handler expects and re-wraps the `{status,result}` envelope into Bedrock's response shape. The decorator passes flat events through unchanged, so the handlers' unit tests (Tasks 6–11) still exercise them directly. There are **8** action groups now — the async baseline flow adds `check_baseline_mc` alongside `run_baseline_mc`.
 
 - [ ] **Step 1: Write the failing snapshot test**
 
@@ -547,7 +607,7 @@ test('agent uses Claude Sonnet', () => {
 
 test('every tool gets an action group', () => {
   const { t } = build();
-  t.resourceCountIs('AWS::Bedrock::AgentActionGroup', 7);
+  t.resourceCountIs('AWS::Bedrock::AgentActionGroup', 8);
 });
 
 test('agent role can invoke Bedrock and Lambda', () => {
@@ -600,13 +660,14 @@ export interface AgentStackProps extends cdk.StackProps {
 const MODEL_ID = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
 
 const TOOL_OPERATIONS: Array<{ name: string; opId: string; getFn: (t: ToolsStack) => lambda.IFunction }> = [
-  { name: 'LoadData', opId: 'load_data', getFn: (t) => t.loadDataFn },
-  { name: 'RunBaselineMc', opId: 'run_baseline_mc', getFn: (t) => t.runBaselineMcFn },
-  { name: 'RunChronos2', opId: 'run_chronos2', getFn: (t) => t.runChronos2Fn },
-  { name: 'BlendPaths', opId: 'blend_paths', getFn: (t) => t.blendPathsFn },
-  { name: 'PriceBook', opId: 'price_book', getFn: (t) => t.priceBookFn },
-  { name: 'Plot', opId: 'plot', getFn: (t) => t.plotFn },
-  { name: 'LookupUseCase', opId: 'lookup_use_case', getFn: (t) => t.lookupUseCaseFn },
+  { name: 'LoadData', opId: 'load_data', getFn: (t) => t.fnLoadData },
+  { name: 'RunBaselineMc', opId: 'run_baseline_mc', getFn: (t) => t.fnRunBaselineMc },
+  { name: 'CheckBaselineMc', opId: 'check_baseline_mc', getFn: (t) => t.fnCheckBaselineMc },
+  { name: 'RunChronos2', opId: 'run_chronos2', getFn: (t) => t.fnRunChronos2 },
+  { name: 'BlendPaths', opId: 'blend_paths', getFn: (t) => t.fnBlendPaths },
+  { name: 'PriceBook', opId: 'price_book', getFn: (t) => t.fnPriceBook },
+  { name: 'Plot', opId: 'plot', getFn: (t) => t.fnPlot },
+  { name: 'LookupUseCase', opId: 'lookup_use_case', getFn: (t) => t.fnLookupUseCase },
 ];
 
 export class AgentStack extends cdk.Stack {

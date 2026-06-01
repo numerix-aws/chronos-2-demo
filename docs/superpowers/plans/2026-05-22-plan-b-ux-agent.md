@@ -138,7 +138,7 @@ chronos-2-demo/
 - **Stage 0 — Repo bootstrap & CDK app skeleton** (Tasks 1–2)
 - **Stage 1 — Storage + curated knowledge briefs** (Tasks 3–4)
 - **Stage 2 — Lambda glue tools** (Tasks 5–9)
-- **Stage 3 — Fargate baseline MC + Chronos-2 proxy** (Tasks 10–12)
+- **Stage 3 — Fargate baseline MC + Chronos-2 proxy** (Tasks 10–12, incl. async-Fargate launcher/poll Tasks 11a–11b)
 - **Stage 4 — Tools stack wiring & IAM** (Task 13)
 - **Stage 5 — AgentCore agent + action groups** (Tasks 14–15)
 - **Stage 6 — API Gateway REST + SSE + authorizer** (Tasks 16–18)

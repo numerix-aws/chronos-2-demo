@@ -406,9 +406,11 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - Create: `tools/lambda/shared/__init__.py` (empty)
 - Create: `tools/lambda/shared/responses.py`
 - Create: `tools/lambda/shared/s3_io.py`
+- Create: `tools/lambda/shared/bedrock.py`
 - Create: `tools/tests/conftest.py`
 - Create: `tools/tests/test_responses.py`
 - Create: `tools/tests/test_s3_io.py`
+- Create: `tools/tests/test_bedrock_adapter.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -458,6 +460,25 @@ def test_ok_round_trips_through_json():
     import json
     out = responses.ok({"arr": [1, 2, 3]})
     assert json.loads(json.dumps(out)) == out
+
+
+def test_http_ok_wraps_body_with_status_code():
+    import json
+    out = responses.http_ok({"session_id": "s1"})
+    assert out["statusCode"] == 200
+    assert json.loads(out["body"]) == {"session_id": "s1"}
+
+
+def test_http_error_defaults_to_400_with_error_key():
+    import json
+    out = responses.http_error("bad role")
+    assert out["statusCode"] == 400
+    assert json.loads(out["body"]) == {"error": "bad role"}
+
+
+def test_http_error_custom_status():
+    out = responses.http_error("nope", status=404)
+    assert out["statusCode"] == 404
 ```
 
 `tools/tests/test_s3_io.py`:
@@ -483,10 +504,75 @@ def test_upload_png_returns_signed_uri(s3):
     assert "test-plots" in signed
 ```
 
+`tools/tests/test_bedrock_adapter.py`:
+```python
+"""The @bedrock_action adapter bridges Bedrock's nested action-group event
+shape to the flat-dict handlers (Tasks 6-11) and re-wraps the {status,result}
+envelope into Bedrock's {response} shape. Handlers stay flat + unit-testable
+on their own; this adapter is applied only at the agent-stack boundary."""
+import json
+
+from tools.lambda_.shared.bedrock import bedrock_action
+from tools.lambda_.shared import responses
+
+
+def _bedrock_event(action_group: str, api_path: str, props: dict) -> dict:
+    """Minimal Bedrock action-group invocation event."""
+    return {
+        "messageVersion": "1.0",
+        "actionGroup": action_group,
+        "apiPath": api_path,
+        "httpMethod": "POST",
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "properties": [
+                        {"name": k, "type": "string", "value": v}
+                        for k, v in props.items()
+                    ]
+                }
+            }
+        },
+    }
+
+
+def test_adapter_unpacks_properties_into_flat_event():
+    seen = {}
+
+    @bedrock_action
+    def handler(event, _ctx):
+        seen.update(event)
+        return responses.ok({"echo": event["topic"]})
+
+    handler(_bedrock_event("ag", "/lookup_use_case", {"topic": "frtb_ima_es"}), None)
+    assert seen["topic"] == "frtb_ima_es"
+
+
+def test_adapter_wraps_ok_envelope_into_bedrock_response():
+    @bedrock_action
+    def handler(event, _ctx):
+        return responses.ok({"panel_uri": "s3://b/k"})
+
+    out = handler(_bedrock_event("ag", "/load_data", {"as_of_date": "2022-06-30"}), None)
+    body = out["response"]["responseBody"]["application/json"]["body"]
+    assert out["response"]["apiPath"] == "/load_data"
+    assert json.loads(body) == {"status": "ok", "result": {"panel_uri": "s3://b/k"}}
+    assert out["response"]["httpStatusCode"] == 200
+
+
+def test_adapter_maps_error_envelope_to_400():
+    @bedrock_action
+    def handler(event, _ctx):
+        return responses.error("bad input")
+
+    out = handler(_bedrock_event("ag", "/load_data", {}), None)
+    assert out["response"]["httpStatusCode"] == 400
+```
+
 - [ ] **Step 2: Run, confirm fail**
 
 ```bash
-pytest tools/tests/test_responses.py tools/tests/test_s3_io.py -v
+pytest tools/tests/test_responses.py tools/tests/test_s3_io.py tools/tests/test_bedrock_adapter.py -v
 ```
 
 Expected: FAIL — modules missing.
@@ -558,7 +644,16 @@ def s3(aws_creds):
 - [ ] **Step 4: Implement `tools/lambda/shared/responses.py`**
 
 ```python
-"""JSON response envelope for Lambda tool handlers."""
+"""JSON response envelope for Lambda tool handlers.
+
+Two envelope families:
+  * `ok` / `error` — the tool-handler envelope (`{"status": ..., ...}`) that
+    the Bedrock action-group adapter consumes (Tasks 6-11).
+  * `http_ok` / `http_error` — an API-Gateway proxy envelope
+    (`{"statusCode": int, "body": json}`) for the REST handlers that sit
+    directly behind API Gateway (sessions, invoke_agent — Tasks 16-17).
+"""
+import json
 
 
 def ok(result: dict) -> dict:
@@ -567,6 +662,14 @@ def ok(result: dict) -> dict:
 
 def error(message: str) -> dict:
     return {"status": "error", "message": message}
+
+
+def http_ok(body: dict, status: int = 200) -> dict:
+    return {"statusCode": status, "body": json.dumps(body)}
+
+
+def http_error(message: str, status: int = 400) -> dict:
+    return {"statusCode": status, "body": json.dumps({"error": message})}
 ```
 
 - [ ] **Step 5: Implement `tools/lambda/shared/s3_io.py`**
@@ -602,6 +705,73 @@ def upload_png_signed(data: bytes, bucket: str, key: str, expires_in: int = 300)
     )
 ```
 
+- [ ] **Step 5b: Implement `tools/lambda/shared/bedrock.py`**
+
+```python
+"""Adapter bridging Bedrock action-group invocations to flat-dict handlers.
+
+Bedrock invokes an action-group Lambda with a nested event:
+
+    {"messageVersion": "1.0", "actionGroup": "...", "apiPath": "/load_data",
+     "httpMethod": "POST",
+     "requestBody": {"content": {"application/json": {"properties": [
+         {"name": "as_of_date", "type": "string", "value": "2022-06-30"}, ...]}}}}
+
+and expects a nested response:
+
+    {"messageVersion": "1.0", "response": {"actionGroup": ..., "apiPath": ...,
+     "httpMethod": ..., "httpStatusCode": 200,
+     "responseBody": {"application/json": {"body": "<json string>"}}}}
+
+Our tool handlers (Tasks 6-11) take a FLAT event ({"as_of_date": ...}) and
+return the {"status": ...} envelope. `@bedrock_action` wraps such a handler so
+the same function works both in unit tests (flat) and behind AgentCore (nested).
+"""
+from __future__ import annotations
+
+import json
+from functools import wraps
+
+
+def _flatten(event: dict) -> dict:
+    """Pull Bedrock requestBody properties + parameters into a flat dict.
+
+    A flat event (no 'messageVersion') is passed through unchanged so handlers
+    stay directly unit-testable.
+    """
+    if "messageVersion" not in event:
+        return event
+    flat: dict = {}
+    for p in event.get("parameters", []) or []:
+        flat[p["name"]] = p.get("value")
+    content = (event.get("requestBody", {}) or {}).get("content", {}) or {}
+    props = (content.get("application/json", {}) or {}).get("properties", []) or []
+    for p in props:
+        flat[p["name"]] = p.get("value")
+    return flat
+
+
+def bedrock_action(handler):
+    @wraps(handler)
+    def wrapper(event: dict, ctx):
+        if "messageVersion" not in event:
+            return handler(event, ctx)  # flat path (unit tests / direct invoke)
+        envelope = handler(_flatten(event), ctx)
+        status_code = 200 if envelope.get("status") == "ok" else 400
+        return {
+            "messageVersion": "1.0",
+            "response": {
+                "actionGroup": event.get("actionGroup"),
+                "apiPath": event.get("apiPath"),
+                "httpMethod": event.get("httpMethod", "POST"),
+                "httpStatusCode": status_code,
+                "responseBody": {"application/json": {"body": json.dumps(envelope)}},
+            },
+        }
+
+    return wrapper
+```
+
 - [ ] **Step 6: Add `moto` to dev deps**
 
 Modify `pyproject.toml` (Plan A's). Add `"moto[s3]>=5.0"` to `[project.optional-dependencies] dev`:
@@ -625,10 +795,10 @@ pip install -e ".[dev]"
 - [ ] **Step 7: Run tests, confirm pass**
 
 ```bash
-pytest tools/tests/test_responses.py tools/tests/test_s3_io.py -v
+pytest tools/tests/test_responses.py tools/tests/test_s3_io.py tools/tests/test_bedrock_adapter.py -v
 ```
 
-Expected: 5 passed.
+Expected: 11 passed (6 responses + 2 s3_io + 3 bedrock adapter).
 
 - [ ] **Step 8: Commit**
 
@@ -636,8 +806,9 @@ Expected: 5 passed.
 git add tools/__init__.py tools/lambda_/__init__.py \
         tools/lambda/shared/ \
         tools/tests/conftest.py tools/tests/test_responses.py tools/tests/test_s3_io.py \
+        tools/tests/test_bedrock_adapter.py \
         pyproject.toml
-git commit -m "feat(tools): shared response envelope + S3 IO helpers
+git commit -m "feat(tools): shared response envelope + S3 IO + Bedrock adapter
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```

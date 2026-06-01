@@ -95,8 +95,10 @@ from datetime import datetime
 import pandas as pd
 
 from tools.lambda_.shared import responses, s3_io
+from tools.lambda_.shared.bedrock import bedrock_action
 
 
+@bedrock_action
 def handler(event: dict, _ctx) -> dict:
     try:
         as_of = datetime.fromisoformat(event["as_of_date"])
@@ -166,8 +168,18 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - Create: `tools/tests/test_blend_paths.py`
 
 This is a thin Lambda wrapper around Plan A's `augmentation.blender`.
-It downloads two PathSet handles (parametric + chronos2), runs the
-blender, uploads the resulting blended PathSet, and returns the URI.
+It downloads two PathSet handles (parametric + chronos2), derives each
+engine's terminal-MtM P&L by valuing the demo book (`pricing.book` +
+`pricing.exposure.portfolio_mtm(...)[:, -1]`), runs
+`blender.blend_paths(parametric, chronos2, pnl_parametric, pnl_chronos2,
+w_stress=...)`, uploads the resulting blended PathSet, and returns the URI.
+
+> **Why P&L is computed here:** Plan A's `blend_paths` importance-weights
+> each engine by its terminal-MtM distribution, so the wrapper must price the
+> book on both PathSets first. The book ships inside the Lambda layer and is
+> read from `os.environ["BOOK_PATH"]` (Task 13 sets this), because
+> `book.DEFAULT_BOOK_PATH` resolves under `/opt` inside a Lambda. Fixtures use
+> the book's real FX/rate series so `portfolio_mtm` can value them.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -179,15 +191,19 @@ import pandas as pd
 import pickle
 import pytest
 from tools.lambda_.blend_paths import handler
+from chronos2_demo.pricing.book import DEFAULT_BOOK_PATH
 from chronos2_demo.types import PathSet
 
+# Series the demo book values against (EUR/JPY/GBP legs + USD rate tenors).
+SERIES = ["USDEUR", "USDJPY", "USDGBP", "USD_5Y", "EUR_5Y", "JPY_5Y", "GBP_5Y"]
 
-def _seed_pathset(s3_client, bucket, key, n_paths=100, horizon=10, n_series=3, seed=0):
+
+def _seed_pathset(s3_client, bucket, key, n_paths=100, horizon=21, seed=0):
     rng = np.random.default_rng(seed)
     ps = PathSet(
-        paths=rng.normal(1.0, 0.05, size=(n_paths, horizon, n_series)),
+        paths=rng.normal(1.0, 0.02, size=(n_paths, horizon, len(SERIES))),
         weights=np.full(n_paths, 1.0 / n_paths),
-        series=[f"S{i}" for i in range(n_series)],
+        series=SERIES,
         dates=pd.bdate_range("2022-07-01", periods=horizon),
         source="parametric",
     )
@@ -199,6 +215,7 @@ def _seed_pathset(s3_client, bucket, key, n_paths=100, horizon=10, n_series=3, s
 
 def test_blend_paths_returns_blended_uri(s3, monkeypatch):
     monkeypatch.setenv("DATA_BUCKET", "test-data")
+    monkeypatch.setenv("BOOK_PATH", str(DEFAULT_BOOK_PATH))
     para_uri = _seed_pathset(s3, "test-data", "para.pkl", seed=0)
     chr_uri = _seed_pathset(s3, "test-data", "chr.pkl", seed=1)
     out = handler.handler(
@@ -212,6 +229,7 @@ def test_blend_paths_returns_blended_uri(s3, monkeypatch):
 
 def test_blend_paths_rejects_w_stress_out_of_range(s3, monkeypatch):
     monkeypatch.setenv("DATA_BUCKET", "test-data")
+    monkeypatch.setenv("BOOK_PATH", str(DEFAULT_BOOK_PATH))
     para_uri = _seed_pathset(s3, "test-data", "p.pkl")
     chr_uri = _seed_pathset(s3, "test-data", "c.pkl")
     out = handler.handler(
@@ -247,7 +265,9 @@ import uuid
 import boto3
 
 from chronos2_demo.augmentation import blender
+from chronos2_demo.pricing import book as book_mod, exposure
 from tools.lambda_.shared import responses
+from tools.lambda_.shared.bedrock import bedrock_action
 
 
 def _download_pickle(uri: str):
@@ -263,6 +283,7 @@ def _upload_pickle(obj, bucket: str, key: str) -> str:
     return f"s3://{bucket}/{key}"
 
 
+@bedrock_action
 def handler(event: dict, _ctx) -> dict:
     try:
         w_stress = float(event["w_stress"])
@@ -277,7 +298,15 @@ def handler(event: dict, _ctx) -> dict:
     except KeyError as e:
         return responses.error(f"missing input uri: {e}")
 
-    blended = blender.blend(para, chr2, w_stress=w_stress)
+    # Plan A's blender importance-weights each engine by its terminal-MtM P&L,
+    # so price the demo book on both PathSets first. The book ships in the layer.
+    swaps = book_mod.load_book(os.environ["BOOK_PATH"])
+    pnl_parametric = exposure.portfolio_mtm(swaps, para)[:, -1]
+    pnl_chronos2 = exposure.portfolio_mtm(swaps, chr2)[:, -1]
+
+    blended = blender.blend_paths(
+        para, chr2, pnl_parametric, pnl_chronos2, w_stress=w_stress
+    )
 
     bucket = os.environ["DATA_BUCKET"]
     sid = uuid.uuid4().hex[:12]
@@ -330,13 +359,15 @@ import pandas as pd
 import pickle
 import pytest
 from tools.lambda_.price_book import handler
+from chronos2_demo.pricing.book import DEFAULT_BOOK_PATH
 from chronos2_demo.types import PathSet
 
 
 def _seed_pathset(s3_client, bucket, key):
     rng = np.random.default_rng(0)
     n_paths, horizon = 200, 21
-    series = ["USDEUR", "USDJPY", "USD_5Y", "EUR_5Y", "JPY_5Y"]
+    # Series the demo book values against (EUR/JPY/GBP legs + USD rate tenors).
+    series = ["USDEUR", "USDJPY", "USDGBP", "USD_5Y", "EUR_5Y", "JPY_5Y", "GBP_5Y"]
     ps = PathSet(
         paths=rng.normal(1.0, 0.02, size=(n_paths, horizon, len(series))),
         weights=np.full(n_paths, 1.0 / n_paths),
@@ -352,17 +383,20 @@ def _seed_pathset(s3_client, bucket, key):
 
 def test_price_book_returns_metric_summary(s3, monkeypatch):
     monkeypatch.setenv("DATA_BUCKET", "test-data")
+    monkeypatch.setenv("BOOK_PATH", str(DEFAULT_BOOK_PATH))
     uri = _seed_pathset(s3, "test-data", "ps.pkl")
     out = handler.handler({"paths_uri": uri, "book_id": "demo"}, None)
     assert out["status"] == "ok"
     r = out["result"]
-    for k in ("ee", "pfe_975", "es_975", "dates"):
+    for k in ("ee", "pfe_975", "es_975", "dates", "metrics_uri"):
         assert k in r
     assert len(r["ee"]) == len(r["dates"]) == 21
+    assert r["metrics_uri"].startswith("s3://test-data/")
 
 
 def test_price_book_rejects_unknown_book(s3, monkeypatch):
     monkeypatch.setenv("DATA_BUCKET", "test-data")
+    monkeypatch.setenv("BOOK_PATH", str(DEFAULT_BOOK_PATH))
     uri = _seed_pathset(s3, "test-data", "ps.pkl")
     out = handler.handler({"paths_uri": uri, "book_id": "unknown"}, None)
     assert out["status"] == "error"
@@ -382,16 +416,24 @@ Expected: FAIL — handler missing.
 """price_book tool: value the demo XCCY book on a PathSet → EE/PFE/ES.
 
 Inputs:  {"paths_uri": str, "book_id": "demo"}
-Outputs: {"ee": [..], "pfe_975": [..], "es_975": [..], "dates": ["YYYY-MM-DD", ...]}
+Outputs: {"ee": [..], "pfe_975": [..], "es_975": [..], "dates": ["YYYY-MM-DD", ...],
+          "metrics_uri": str}
+
+The metrics are also written to S3 as JSON so the `plot pfe_overlay` tool
+(which reads baseline/augmented metrics from S3 URIs) can consume them.
 """
 from __future__ import annotations
 import io
+import json
+import os
 import pickle
+import uuid
 
 import boto3
 
 from chronos2_demo.pricing import book as book_mod, exposure
 from tools.lambda_.shared import responses
+from tools.lambda_.shared.bedrock import bedrock_action
 
 
 def _download_pickle(uri: str):
@@ -400,6 +442,7 @@ def _download_pickle(uri: str):
     return pickle.load(io.BytesIO(obj["Body"].read()))
 
 
+@bedrock_action
 def handler(event: dict, _ctx) -> dict:
     book_id = event.get("book_id", "demo")
     if book_id != "demo":
@@ -409,14 +452,22 @@ def handler(event: dict, _ctx) -> dict:
     except KeyError:
         return responses.error("missing paths_uri")
 
-    book = book_mod.demo_book()
-    metrics = exposure.compute_metrics(ps, book)
-    return responses.ok({
+    # The demo book ships in the Lambda layer; BOOK_PATH is set by Task 13.
+    book = book_mod.load_book(os.environ["BOOK_PATH"])
+    metrics = exposure.compute_metrics(book, ps)
+    result = {
         "ee": [float(x) for x in metrics["ee"]],
         "pfe_975": [float(x) for x in metrics["pfe_975"]],
         "es_975": [float(x) for x in metrics["es_975"]],
         "dates": [d.strftime("%Y-%m-%d") for d in metrics["dates"]],
-    })
+    }
+
+    # Stage the metrics as JSON for the plot tool's pfe_overlay.
+    bucket = os.environ["DATA_BUCKET"]
+    key = f"sessions/{uuid.uuid4().hex[:12]}/metrics.json"
+    boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=json.dumps(result).encode())
+    result["metrics_uri"] = f"s3://{bucket}/{key}"
+    return responses.ok(result)
 ```
 
 - [ ] **Step 4: Run tests, confirm pass**
@@ -583,6 +634,7 @@ import pandas as pd
 
 from chronos2_demo.plotting import pfe_overlay, path_samples, regime_ribbon
 from tools.lambda_.shared import responses, s3_io
+from tools.lambda_.shared.bedrock import bedrock_action
 
 
 def _download_json(uri: str) -> dict:
@@ -610,6 +662,7 @@ def _publish(png: bytes) -> str:
     return s3_io.upload_png_signed(png, bucket=bucket, key=key, expires_in=900)
 
 
+@bedrock_action
 def handler(event: dict, _ctx) -> dict:
     spec = event.get("spec")
     title = event.get("title", "")
@@ -657,6 +710,7 @@ import os
 from pathlib import Path
 
 from tools.lambda_.shared import responses
+from tools.lambda_.shared.bedrock import bedrock_action
 
 
 def _index() -> dict:
@@ -664,6 +718,7 @@ def _index() -> dict:
     return json.loads((root / "index.json").read_text())
 
 
+@bedrock_action
 def handler(event: dict, _ctx) -> dict:
     idx = _index()
     topic = event.get("topic")
