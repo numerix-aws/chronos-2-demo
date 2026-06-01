@@ -6,6 +6,8 @@ data/raw/
 data/curated/
 # Sample book is small and committed for reproducibility:
 !data/sample_book.json
+# Frozen headline regression fixture is committed:
+!tests/fixtures/headline_panel.parquet
 .pytest_cache/
 .DS_Store
 *.egg-info/
