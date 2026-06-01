@@ -1,0 +1,30 @@
+{
+  "stress_test_design": {
+    "file": "stress_test_design.md",
+    "summary": "Augment regulatory and internal stress tests with FM-generated regime-aware overlays."
+  },
+  "im_vm_forecasting": {
+    "file": "im_vm_forecasting.md",
+    "summary": "Apply correct+reweight to IM/VM forecasting via joint probabilistic paths with covariate conditioning."
+  },
+  "frtb_ima_es": {
+    "file": "frtb_ima_es.md",
+    "summary": "Build a challenger ES alongside FRTB IMA stressed-ES using FM-augmented tail paths."
+  },
+  "market_data_gap_filling": {
+    "file": "market_data_gap_filling.md",
+    "summary": "Fill stale or sparse market series with FM conditioning on observable cross-asset features."
+  },
+  "scenario_limits": {
+    "file": "scenario_limits.md",
+    "summary": "Replace fixed predefined scenarios with continuous regime-weighted FM scenario manifolds for limits."
+  },
+  "long_context_windows": {
+    "file": "long_context_windows.md",
+    "summary": "Use multi-decade conditioning history for regime characterization beyond rolling windows."
+  },
+  "temporal_hierarchies": {
+    "file": "temporal_hierarchies.md",
+    "summary": "Joint intraday/daily/macro forecasting in one model: intraday PFE, vol-surface forecasting, event windows."
+  }
+}
