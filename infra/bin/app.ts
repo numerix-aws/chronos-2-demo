@@ -4,6 +4,7 @@ import * as cdk from 'aws-cdk-lib';
 import { NetworkStack } from '../lib/network-stack';
 import { StorageStack } from '../lib/storage-stack';
 import { ToolsStack } from '../lib/tools-stack';
+import { AgentStack } from '../lib/agent-stack';
 
 const app = new cdk.App();
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1' };
@@ -22,5 +23,11 @@ const tools = new ToolsStack(app, 'Chronos2DemoTools', {
   plotsBucket: storage.plotsBucket,
   chronos2EndpointName,
 });
+
+const agentStack = new AgentStack(app, 'Chronos2DemoAgent', {
+  env,
+  tools,
+});
+agentStack.addDependency(tools);
 
 app.synth();
