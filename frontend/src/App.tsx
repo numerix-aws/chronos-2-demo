@@ -2,6 +2,7 @@ import { AppLayout, ContentLayout, Header, SpaceBetween } from '@cloudscape-desi
 import '@cloudscape-design/global-styles/index.css';
 import { useEffect, useState } from 'react';
 import { ChatPanel } from './components/ChatPanel';
+import { WhatIfForm, type WhatIfParams } from './components/WhatIfForm';
 import { ApiClient, type Message } from './api/client';
 import { streamAgent } from './api/stream';
 import { loadSession } from './state/session';
@@ -52,6 +53,14 @@ export function App() {
     setStreaming(false);
   };
 
+  const handleApply = (p: WhatIfParams) => {
+    const prompt =
+      `Re-run the demo with as_of_date=${p.as_of_date}, lookback_days=${p.lookback_days}, ` +
+      `horizon=${p.horizon}, n_paths=${p.n_paths}, w_stress=${p.w_stress}. ` +
+      `Compare PFE against the previous run and explain the delta.`;
+    void handleSend(prompt);
+  };
+
   return (
     <AppLayout
       navigationHide
@@ -70,8 +79,8 @@ export function App() {
               <ChatPanel messages={messages} onSend={handleSend} streaming={streaming} />
             </section>
             <section aria-label="What-if" role="region">
-              {/* WhatIfForm mounts here in Task 22 */}
               <Header variant="h2">What-if parameters</Header>
+              <WhatIfForm onApply={handleApply} disabled={streaming} />
             </section>
           </SpaceBetween>
         </ContentLayout>
