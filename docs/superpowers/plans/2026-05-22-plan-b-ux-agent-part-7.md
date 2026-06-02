@@ -851,7 +851,9 @@ describe('WhatIfForm', () => {
     await userEvent.type(screen.getByLabelText(/w_stress/i), '1.5');
     await userEvent.click(screen.getByRole('button', { name: /apply/i }));
     expect(onApply).not.toHaveBeenCalled();
-    expect(screen.getByText(/between 0 and 1/i)).toBeInTheDocument();
+    // Cloudscape <Form errorText> renders the message twice (visible node +
+    // hidden ARIA live-region), so getByText throws on >1 match.
+    expect(screen.getAllByText(/between 0 and 1/i).length).toBeGreaterThan(0);
   });
 
   it('disables apply when disabled prop is true', () => {
@@ -957,7 +959,15 @@ export function WhatIfForm({ onApply, disabled }: WhatIfFormProps) {
       <Form
         errorText={err ?? undefined}
         actions={
-          <Button variant="primary" disabled={disabled} formAction="submit">
+          // onClick mirrors formAction="submit" so the click path works under
+          // happy-dom (which doesn't fire implicit submit for a button nested
+          // in Cloudscape's <Form actions> slot); harmless in a real browser.
+          <Button
+            variant="primary"
+            disabled={disabled}
+            formAction="submit"
+            onClick={() => submit()}
+          >
             Apply
           </Button>
         }
