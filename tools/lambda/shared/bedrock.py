@@ -1,62 +1,24 @@
-"""Adapter bridging Bedrock action-group invocations to flat-dict handlers.
+"""Adapter for AgentCore Gateway → flat-dict tool handlers.
 
-Bedrock invokes an action-group Lambda with a nested event:
+AgentCore Gateway invokes a Lambda target with the tool's input arguments as a
+**flat** event dict, e.g. ``{"as_of_date": "2022-06-30", "lookback_days": 60}``,
+and expects any valid JSON object back. (The invoked tool's name arrives out of
+band on ``context.client_context.custom['bedrockAgentCoreToolName']`` — we don't
+need it, since each tool is its own Lambda.)
 
-    {"messageVersion": "1.0", "actionGroup": "...", "apiPath": "/load_data",
-     "httpMethod": "POST",
-     "requestBody": {"content": {"application/json": {"properties": [
-         {"name": "as_of_date", "type": "string", "value": "2022-06-30"}, ...]}}}}
-
-and expects a nested response:
-
-    {"messageVersion": "1.0", "response": {"actionGroup": ..., "apiPath": ...,
-     "httpMethod": ..., "httpStatusCode": 200,
-     "responseBody": {"application/json": {"body": "<json string>"}}}}
-
-Our tool handlers take a FLAT event ({"as_of_date": ...}) and return the
-{"status": ...} envelope. `@bedrock_action` wraps such a handler so the same
-function works both in unit tests (flat) and behind AgentCore (nested).
+Our tool handlers already take that flat event and return a JSON-serializable
+dict, so the Gateway contract needs no translation. ``@bedrock_action`` is kept
+as a thin pass-through so the handler import sites stay stable and we have one
+seam to evolve if the Gateway contract ever changes.
 """
 from __future__ import annotations
 
-import json
 from functools import wraps
-
-
-def _flatten(event: dict) -> dict:
-    """Pull Bedrock requestBody properties + parameters into a flat dict.
-
-    A flat event (no 'messageVersion') is passed through unchanged so handlers
-    stay directly unit-testable.
-    """
-    if "messageVersion" not in event:
-        return event
-    flat: dict = {}
-    for p in event.get("parameters", []) or []:
-        flat[p["name"]] = p.get("value")
-    content = (event.get("requestBody", {}) or {}).get("content", {}) or {}
-    props = (content.get("application/json", {}) or {}).get("properties", []) or []
-    for p in props:
-        flat[p["name"]] = p.get("value")
-    return flat
 
 
 def bedrock_action(handler):
     @wraps(handler)
     def wrapper(event: dict, ctx):
-        if "messageVersion" not in event:
-            return handler(event, ctx)  # flat path (unit tests / direct invoke)
-        envelope = handler(_flatten(event), ctx)
-        status_code = 200 if envelope.get("status") == "ok" else 400
-        return {
-            "messageVersion": "1.0",
-            "response": {
-                "actionGroup": event.get("actionGroup"),
-                "apiPath": event.get("apiPath"),
-                "httpMethod": event.get("httpMethod", "POST"),
-                "httpStatusCode": status_code,
-                "responseBody": {"application/json": {"body": json.dumps(envelope)}},
-            },
-        }
+        return handler(event, ctx)
 
     return wrapper

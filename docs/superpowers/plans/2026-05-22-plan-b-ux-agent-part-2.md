@@ -506,37 +506,13 @@ def test_upload_png_returns_signed_uri(s3):
 
 `tools/tests/test_bedrock_adapter.py`:
 ```python
-"""The @bedrock_action adapter bridges Bedrock's nested action-group event
-shape to the flat-dict handlers (Tasks 6-11) and re-wraps the {status,result}
-envelope into Bedrock's {response} shape. Handlers stay flat + unit-testable
-on their own; this adapter is applied only at the agent-stack boundary."""
-import json
-
+"""@bedrock_action is a pass-through for AgentCore Gateway: Gateway delivers
+flat tool arguments and accepts the handler's JSON dict unchanged."""
 from tools.lambda_.shared.bedrock import bedrock_action
 from tools.lambda_.shared import responses
 
 
-def _bedrock_event(action_group: str, api_path: str, props: dict) -> dict:
-    """Minimal Bedrock action-group invocation event."""
-    return {
-        "messageVersion": "1.0",
-        "actionGroup": action_group,
-        "apiPath": api_path,
-        "httpMethod": "POST",
-        "requestBody": {
-            "content": {
-                "application/json": {
-                    "properties": [
-                        {"name": k, "type": "string", "value": v}
-                        for k, v in props.items()
-                    ]
-                }
-            }
-        },
-    }
-
-
-def test_adapter_unpacks_properties_into_flat_event():
+def test_adapter_passes_flat_event_through():
     seen = {}
 
     @bedrock_action
@@ -544,30 +520,35 @@ def test_adapter_unpacks_properties_into_flat_event():
         seen.update(event)
         return responses.ok({"echo": event["topic"]})
 
-    handler(_bedrock_event("ag", "/lookup_use_case", {"topic": "frtb_ima_es"}), None)
+    out = handler({"topic": "frtb_ima_es"}, None)
     assert seen["topic"] == "frtb_ima_es"
+    assert out == {"status": "ok", "result": {"echo": "frtb_ima_es"}}
 
 
-def test_adapter_wraps_ok_envelope_into_bedrock_response():
+def test_adapter_returns_handler_dict_unchanged():
     @bedrock_action
     def handler(event, _ctx):
         return responses.ok({"panel_uri": "s3://b/k"})
 
-    out = handler(_bedrock_event("ag", "/load_data", {"as_of_date": "2022-06-30"}), None)
-    body = out["response"]["responseBody"]["application/json"]["body"]
-    assert out["response"]["apiPath"] == "/load_data"
-    assert json.loads(body) == {"status": "ok", "result": {"panel_uri": "s3://b/k"}}
-    assert out["response"]["httpStatusCode"] == 200
+    out = handler({"as_of_date": "2022-06-30"}, None)
+    assert out == {"status": "ok", "result": {"panel_uri": "s3://b/k"}}
 
 
-def test_adapter_maps_error_envelope_to_400():
+def test_adapter_preserves_error_envelope():
     @bedrock_action
     def handler(event, _ctx):
         return responses.error("bad input")
 
-    out = handler(_bedrock_event("ag", "/load_data", {}), None)
-    assert out["response"]["httpStatusCode"] == 400
+    out = handler({}, None)
+    assert out == {"status": "error", "message": "bad input"}
 ```
+
+> **AgentCore Gateway note:** Gateway invokes each Lambda target with the tool's
+> input arguments as a *flat* event dict and accepts the handler's returned dict
+> as-is (the tool name arrives on `context.client_context.custom`, unused here
+> since each tool is its own Lambda). So `@bedrock_action` is a thin
+> pass-through — one stable seam, no event translation. Handlers (Tasks 6–11b)
+> are unchanged.
 
 - [ ] **Step 2: Run, confirm fail**
 
@@ -708,66 +689,28 @@ def upload_png_signed(data: bytes, bucket: str, key: str, expires_in: int = 300)
 - [ ] **Step 5b: Implement `tools/lambda/shared/bedrock.py`**
 
 ```python
-"""Adapter bridging Bedrock action-group invocations to flat-dict handlers.
+"""Adapter for AgentCore Gateway → flat-dict tool handlers.
 
-Bedrock invokes an action-group Lambda with a nested event:
+AgentCore Gateway invokes a Lambda target with the tool's input arguments as a
+**flat** event dict, e.g. ``{"as_of_date": "2022-06-30", "lookback_days": 60}``,
+and expects any valid JSON object back. (The invoked tool's name arrives out of
+band on ``context.client_context.custom['bedrockAgentCoreToolName']`` — we don't
+need it, since each tool is its own Lambda.)
 
-    {"messageVersion": "1.0", "actionGroup": "...", "apiPath": "/load_data",
-     "httpMethod": "POST",
-     "requestBody": {"content": {"application/json": {"properties": [
-         {"name": "as_of_date", "type": "string", "value": "2022-06-30"}, ...]}}}}
-
-and expects a nested response:
-
-    {"messageVersion": "1.0", "response": {"actionGroup": ..., "apiPath": ...,
-     "httpMethod": ..., "httpStatusCode": 200,
-     "responseBody": {"application/json": {"body": "<json string>"}}}}
-
-Our tool handlers (Tasks 6-11) take a FLAT event ({"as_of_date": ...}) and
-return the {"status": ...} envelope. `@bedrock_action` wraps such a handler so
-the same function works both in unit tests (flat) and behind AgentCore (nested).
+Our tool handlers already take that flat event and return a JSON-serializable
+dict, so the Gateway contract needs no translation. ``@bedrock_action`` is kept
+as a thin pass-through so the handler import sites stay stable and we have one
+seam to evolve if the Gateway contract ever changes.
 """
 from __future__ import annotations
 
-import json
 from functools import wraps
-
-
-def _flatten(event: dict) -> dict:
-    """Pull Bedrock requestBody properties + parameters into a flat dict.
-
-    A flat event (no 'messageVersion') is passed through unchanged so handlers
-    stay directly unit-testable.
-    """
-    if "messageVersion" not in event:
-        return event
-    flat: dict = {}
-    for p in event.get("parameters", []) or []:
-        flat[p["name"]] = p.get("value")
-    content = (event.get("requestBody", {}) or {}).get("content", {}) or {}
-    props = (content.get("application/json", {}) or {}).get("properties", []) or []
-    for p in props:
-        flat[p["name"]] = p.get("value")
-    return flat
 
 
 def bedrock_action(handler):
     @wraps(handler)
     def wrapper(event: dict, ctx):
-        if "messageVersion" not in event:
-            return handler(event, ctx)  # flat path (unit tests / direct invoke)
-        envelope = handler(_flatten(event), ctx)
-        status_code = 200 if envelope.get("status") == "ok" else 400
-        return {
-            "messageVersion": "1.0",
-            "response": {
-                "actionGroup": event.get("actionGroup"),
-                "apiPath": event.get("apiPath"),
-                "httpMethod": event.get("httpMethod", "POST"),
-                "httpStatusCode": status_code,
-                "responseBody": {"application/json": {"body": json.dumps(envelope)}},
-            },
-        }
+        return handler(event, ctx)
 
     return wrapper
 ```
