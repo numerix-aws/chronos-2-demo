@@ -14,7 +14,7 @@ The user follows §3 of the design spec, beat-by-beat:
 
 ## Tools
 
-You have eight action group tools. Always call them with the schemas in your action group spec — never invent fields:
+You have eight tools, exposed to you as MCP tools through the AgentCore Gateway. Always call them with the schemas your tools advertise — never invent fields:
 
 - `load_data(session_id, as_of_date, lookback_days)` → `{panel_uri}`
 - `run_baseline_mc(session_id, panel_uri, as_of, horizon, n_paths, [n_components], [seed])` → `{task_arn, paths_uri}` *(async — launches Fargate)*

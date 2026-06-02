@@ -48,7 +48,7 @@ If a task has no failing test (Stage 0 bootstrap), the plan says so — follow w
 
 - **Streaming uses a Lambda Function URL with `InvokeMode=RESPONSE_STREAM`**, not API Gateway — REST API GW buffers responses, breaking SSE.
 - **Frontend SSE uses `fetch` + `ReadableStream`**, not `EventSource` — EventSource cannot send the `x-api-key` header the authorizer requires.
-- **AgentCore uses L1 constructs (`CfnAgent`, `CfnAgentActionGroup`)** — L2 is preview-only in CDK 2.140.
+- **Agent layer is Amazon Bedrock AgentCore** (not classic Bedrock Agents). L1 constructs from `aws-cdk-lib/aws-bedrockagentcore`: `CfnGateway` + `CfnGatewayTarget` (the 8 tool Lambdas as MCP tools), `CfnRuntime` + `CfnRuntimeEndpoint` (a containerized Strands agent). Invoked via `bedrock-agentcore:InvokeAgentRuntime`. The installed CDK (2.257.0) has **no** `CfnAgentActionGroup`; classic `CfnAgent`+action-groups are deliberately not used. Gateway delivers flat tool-arg events to the Lambdas, so `@bedrock_action` is a pass-through.
 - **Amplify Hosting uses manual zip deploys** (`aws amplify create-deployment` + curl PUT to `zipUploadUrl` + `start-deployment`), not GitHub source.
 - **Sessions table:** PK=`session_id`, SK=`turn_id` (ISO-8601 timestamp + `#role`). Roles: `{user, assistant, tool}`.
 

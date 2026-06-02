@@ -1,12 +1,12 @@
-# Plan B — Part 5 (Stage 5: AgentCore agent + action groups)
+# Plan B — Part 5 (Stage 5: AgentCore Gateway + Runtime agent)
 
 > Continuation of `2026-05-22-plan-b-ux-agent.md`. Re-read the Executor's Contract there before starting.
 
 ---
 
-## Stage 5 — AgentCore agent + action groups
+## Stage 5 — AgentCore Gateway + Runtime agent
 
-### Task 14: System prompt + action group OpenAPI schemas
+### Task 14: System prompt + tool schemas
 
 **Files:**
 - Create: `agent/system_prompt.md`
@@ -14,7 +14,7 @@
 - Create: `agent/tests/test_action_groups.py`
 - Modify: `pyproject.toml` — add `jsonschema>=4.21` to dev deps (for schema validation in tests)
 
-The agent reasons over Claude Sonnet using a fixed system prompt that names the seven tools, the headline narrative, and the safety rails. `action_groups.json` is the OpenAPI 3.0 contract Bedrock AgentCore consumes when it registers each tool. It must mirror the input/output JSON envelopes already locked in by Tasks 5–11.
+The agent reasons over Claude Sonnet using a fixed system prompt that names the eight tools, the headline narrative, and the safety rails. `action_groups.json` holds the per-tool input/output JSON schemas; Task 15 turns each entry into an AgentCore Gateway MCP **tool schema** (`toolSchema.inlinePayload`). It must mirror the input/output JSON envelopes already locked in by Tasks 5–11. (The filename is retained for continuity; despite the historical name it is no longer a classic Bedrock action-group OpenAPI doc consumed by `CfnAgent`.)
 
 - [ ] **Step 1: Write the failing schema test**
 
@@ -145,7 +145,7 @@ The user follows §3 of the design spec, beat-by-beat:
 
 ## Tools
 
-You have eight action group tools. Always call them with the schemas in your action group spec — never invent fields:
+You have eight tools, exposed to you as MCP tools through the AgentCore Gateway. Always call them with the schemas your tools advertise — never invent fields:
 
 - `load_data(session_id, as_of_date, lookback_days)` → `{panel_uri}`
 - `run_baseline_mc(session_id, panel_uri, as_of, horizon, n_paths, [n_components], [seed])` → `{task_arn, paths_uri}` *(async — launches Fargate)*
@@ -549,25 +549,51 @@ Expected: 13 passed (5 named + 8 parametrized — one per operation incl. check_
 
 ```bash
 git add agent/system_prompt.md agent/action_groups.json agent/tests/test_action_groups.py pyproject.toml
-git commit -m "feat(agent): system prompt and OpenAPI action groups for 7 tools
+git commit -m "feat(agent): system prompt and tool schemas for 8 tools
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 15: Agent stack — AgentCore agent + action groups + IAM
+### Task 15: Agent stack — AgentCore Gateway + Runtime (Strands)
 
 **Files:**
 - Create: `infra/lib/agent-stack.ts`
 - Create: `infra/test/agent-stack.test.ts`
+- Create: `agent/runtime/Dockerfile`
+- Create: `agent/runtime/agent.py`
+- Create: `agent/runtime/requirements.txt`
 - Modify: `infra/bin/app.ts` — instantiate `AgentStack`
 
-The agent stack provisions the Bedrock AgentCore agent itself, binds each action group to the matching Lambda function from the tools stack, and grants the agent's runtime role `bedrock:InvokeModel` (Claude Sonnet) plus `lambda:InvokeFunction` on the tool Lambdas.
+The agent layer is built on **Amazon Bedrock AgentCore primitives** (not classic
+Bedrock Agents). Two pieces:
 
-> **CDK note:** `aws-cdk-lib` 2.140 ships L1 constructs `CfnAgent` and `CfnAgentActionGroup` under `aws-cdk-lib/aws-bedrock`. We use L1 explicitly because L2 constructs for AgentCore are still preview-only.
+1. **Gateway + 8 GatewayTargets** (`AWS::BedrockAgentCore::Gateway` /
+   `GatewayTarget`) — each of the 8 tool Lambdas is exposed as an MCP tool. The
+   per-tool `toolSchema.inlinePayload` is derived from `agent/action_groups.json`
+   (the request body's `properties`/`required` → `inputSchema`; the 200 response
+   body → `outputSchema`).
+2. **Runtime + RuntimeEndpoint** (`AWS::BedrockAgentCore::Runtime` /
+   `RuntimeEndpoint`) — a containerized **Strands Agents** app that reasons with
+   Claude Sonnet, connects to the Gateway as its MCP tool source, and is invoked
+   via `bedrock-agentcore:InvokeAgentRuntime` (Tasks 17/18).
 
-> **Bedrock event bridging:** Bedrock invokes each action-group Lambda with a *nested* event (`{messageVersion, actionGroup, apiPath, requestBody:{...}}`) and expects a `{response:{...}}` wrapper. Each tool handler is decorated with `@bedrock_action` (from `tools.lambda_.shared.bedrock`, Task 5), which unpacks the nested params into the flat dict the handler expects and re-wraps the `{status,result}` envelope into Bedrock's response shape. The decorator passes flat events through unchanged, so the handlers' unit tests (Tasks 6–11) still exercise them directly. There are **8** action groups now — the async baseline flow adds `check_baseline_mc` alongside `run_baseline_mc`.
+> **CDK note:** the AgentCore L1 constructs live in `aws-cdk-lib/aws-bedrockagentcore`
+> (verified present in the installed CDK 2.257.0): `CfnGateway`, `CfnGatewayTarget`,
+> `CfnRuntime`, `CfnRuntimeEndpoint`. The legacy `aws-cdk-lib/aws-bedrock` `CfnAgent`
+> path is NOT used — classic action-group resources don't exist in this CDK.
+
+> **Container image (out-of-band, like Fargate baseline_mc):** the agent image is
+> referenced by `<ecrRepo>:latest`; it is built and pushed by the runbook (Task 26),
+> NOT bundled during synth. So the snapshot test does not need Docker for the agent
+> image — only the `CoreLayer` (via ToolsStack in the build helper) needs `CDK_DOCKER=finch`.
+
+> **Gateway → Lambda contract:** Gateway invokes each tool Lambda with the flat
+> tool-argument event our handlers already accept; the `@bedrock_action`
+> pass-through (Task 5) keeps the handler import sites stable. Auth from the
+> Runtime to the Gateway uses the Gateway's `AWS_IAM` authorizer (the Runtime role
+> is granted `bedrock-agentcore` access); the container SigV4-signs MCP calls.
 
 - [ ] **Step 1: Write the failing snapshot test**
 
@@ -593,61 +619,139 @@ function build(): { agent: AgentStack; t: Template } {
   return { agent, t: Template.fromStack(agent) };
 }
 
-test('creates exactly one Bedrock agent', () => {
+test('creates one AgentCore Gateway (MCP)', () => {
   const { t } = build();
-  t.resourceCountIs('AWS::Bedrock::Agent', 1);
-});
-
-test('agent uses Claude Sonnet', () => {
-  const { t } = build();
-  t.hasResourceProperties('AWS::Bedrock::Agent', {
-    FoundationModel: Match.stringLikeRegexp('anthropic\\.claude.*sonnet'),
+  t.resourceCountIs('AWS::BedrockAgentCore::Gateway', 1);
+  t.hasResourceProperties('AWS::BedrockAgentCore::Gateway', {
+    ProtocolType: 'MCP',
   });
 });
 
-test('every tool gets an action group', () => {
+test('creates one gateway target per tool (8)', () => {
   const { t } = build();
-  t.resourceCountIs('AWS::Bedrock::AgentActionGroup', 8);
+  t.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 8);
 });
 
-test('agent role can invoke Bedrock and Lambda', () => {
+test('creates a containerized Runtime + endpoint', () => {
+  const { t } = build();
+  t.resourceCountIs('AWS::BedrockAgentCore::Runtime', 1);
+  t.resourceCountIs('AWS::BedrockAgentCore::RuntimeEndpoint', 1);
+});
+
+test('runtime role can invoke the model and the gateway', () => {
   const { t } = build();
   t.hasResourceProperties('AWS::IAM::Policy', {
     PolicyDocument: {
       Statement: Match.arrayWith([
-        Match.objectLike({
-          Action: Match.arrayWith(['bedrock:InvokeModel']),
-        }),
-        Match.objectLike({
-          Action: 'lambda:InvokeFunction',
-        }),
+        Match.objectLike({ Action: Match.arrayWith(['bedrock:InvokeModel']) }),
       ]),
     },
   });
 });
 
-test('exposes agentId and agentAliasId', () => {
+test('exposes gatewayUrl, runtimeArn, runtimeEndpointArn', () => {
   const { agent } = build();
-  expect(agent.agentId).toBeDefined();
-  expect(agent.agentAliasId).toBeDefined();
+  expect(agent.gatewayUrl).toBeDefined();
+  expect(agent.runtimeArn).toBeDefined();
+  expect(agent.runtimeEndpointArn).toBeDefined();
 });
 ```
 
 - [ ] **Step 2: Run, confirm fail**
 
 ```bash
-cd infra && npm test -- agent-stack
+cd infra && CDK_DOCKER=finch npm test -- agent-stack
 ```
 
 Expected: FAIL — `Cannot find module '../lib/agent-stack'`.
 
-- [ ] **Step 3: Implement `infra/lib/agent-stack.ts`**
+- [ ] **Step 3: Create the agent container (`agent/runtime/`)**
+
+`agent/runtime/requirements.txt`:
+```
+bedrock-agentcore>=0.1
+strands-agents>=0.1
+mcp>=1.2
+boto3>=1.34
+```
+
+`agent/runtime/agent.py`:
+```python
+"""AgentCore Runtime entrypoint: a Strands agent fronting the Chronos-2 tools.
+
+The agent reasons with Claude Sonnet and calls the demo's 8 tools through the
+AgentCore Gateway (MCP). The Gateway uses AWS_IAM auth, so MCP calls are
+SigV4-signed with the Runtime's execution-role credentials.
+"""
+import os
+
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from strands import Agent
+from strands.models import BedrockModel
+from strands.tools.mcp import MCPClient
+from mcp.client.streamable_http import streamablehttp_client
+
+app = BedrockAgentCoreApp()
+
+_HERE = os.path.dirname(__file__)
+SYSTEM_PROMPT = open(os.path.join(_HERE, "system_prompt.md"), encoding="utf-8").read()
+GATEWAY_URL = os.environ["GATEWAY_URL"]
+MODEL_ID = os.environ.get("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+
+
+def _gateway() -> MCPClient:
+    # SigV4-signed streamable-HTTP transport to the AWS_IAM gateway.
+    return MCPClient(lambda: streamablehttp_client(GATEWAY_URL))
+
+
+@app.entrypoint
+def invoke(payload: dict) -> str:
+    prompt = payload.get("prompt", "")
+    with _gateway() as gateway:
+        tools = gateway.list_tools_sync()
+        agent = Agent(
+            model=BedrockModel(model_id=MODEL_ID),
+            system_prompt=SYSTEM_PROMPT,
+            tools=tools,
+        )
+        return str(agent(prompt))
+
+
+if __name__ == "__main__":
+    app.run()
+```
+
+`agent/runtime/Dockerfile`:
+```dockerfile
+FROM public.ecr.aws/docker/library/python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+
+COPY agent/runtime/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY agent/runtime/agent.py /app/agent.py
+COPY agent/system_prompt.md /app/system_prompt.md
+
+# AgentCore Runtime serves the agent on port 8080 (/invocations + /ping).
+EXPOSE 8080
+CMD ["python", "/app/agent.py"]
+```
+
+> The container's Gateway/MCP/SigV4 wiring is exercised by the container smoke
+> build (Task 26 runbook) and the deploy-time E2E (Task 25) — not by unit tests.
+> If the Strands MCP transport needs an explicit SigV4 auth callback in this SDK
+> version, adjust `_gateway()` at that point and log it.
+
+- [ ] **Step 4: Implement `infra/lib/agent-stack.ts`**
 
 ```typescript
 import * as cdk from 'aws-cdk-lib';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as bedrock from 'aws-cdk-lib/aws-bedrock';
+import * as agentcore from 'aws-cdk-lib/aws-bedrockagentcore';
+import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { Construct } from 'constructs';
@@ -670,98 +774,125 @@ const TOOL_OPERATIONS: Array<{ name: string; opId: string; getFn: (t: ToolsStack
   { name: 'LookupUseCase', opId: 'lookup_use_case', getFn: (t) => t.fnLookupUseCase },
 ];
 
+// Map an action_groups.json path's request body to an MCP inline tool schema.
+function toolSchemaFor(opId: string, openapi: any) {
+  const op = openapi.paths[`/${opId}`].post;
+  const input = op.requestBody.content['application/json'].schema;
+  const ok = op.responses['200']?.content?.['application/json']?.schema;
+  const tool: any = {
+    name: opId,
+    description: op.summary ?? opId,
+    inputSchema: input,
+  };
+  if (ok) tool.outputSchema = ok;
+  return tool;
+}
+
 export class AgentStack extends cdk.Stack {
-  public readonly agentId: string;
-  public readonly agentAliasId: string;
+  public readonly gatewayUrl: string;
+  public readonly runtimeArn: string;
+  public readonly runtimeEndpointArn: string;
 
   constructor(scope: Construct, id: string, props: AgentStackProps) {
     super(scope, id, props);
 
-    const systemPrompt = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'agent', 'system_prompt.md'),
-      'utf-8',
+    const repoRoot = path.resolve(__dirname, '..', '..');
+    const openapi = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, 'agent', 'action_groups.json'), 'utf-8'),
     );
-    const actionGroupsSpec = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'agent', 'action_groups.json'),
-      'utf-8',
-    );
-    const openapi = JSON.parse(actionGroupsSpec);
 
-    // Runtime role assumed by the agent itself.
-    const agentRole = new iam.Role(this, 'AgentRole', {
-      assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
+    // ---- Gateway role: invoke the tool Lambdas.
+    const gatewayRole = new iam.Role(this, 'GatewayRole', {
+      assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
     });
-
-    agentRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-        resources: [`arn:aws:bedrock:${this.region}::foundation-model/${MODEL_ID}`],
-      }),
-    );
-
     for (const { getFn } of TOOL_OPERATIONS) {
-      agentRole.addToPolicy(
-        new iam.PolicyStatement({
-          actions: ['lambda:InvokeFunction'],
-          resources: [getFn(props.tools).functionArn],
-        }),
-      );
+      getFn(props.tools).grantInvoke(gatewayRole);
     }
 
-    const agent = new bedrock.CfnAgent(this, 'Agent', {
-      agentName: 'chronos2-demo-copilot',
-      agentResourceRoleArn: agentRole.roleArn,
-      foundationModel: MODEL_ID,
-      instruction: systemPrompt,
-      idleSessionTtlInSeconds: 1800,
-      autoPrepare: true,
+    // ---- Gateway (MCP, AWS_IAM inbound auth).
+    const gateway = new agentcore.CfnGateway(this, 'Gateway', {
+      name: 'chronos2-demo-gateway',
+      protocolType: 'MCP',
+      authorizerType: 'AWS_IAM',
+      roleArn: gatewayRole.roleArn,
     });
 
-    // One action group per tool. Each binds a Lambda + the slice of OpenAPI for that path.
+    // ---- One MCP Lambda target per tool.
     for (const { name, opId, getFn } of TOOL_OPERATIONS) {
       const fn = getFn(props.tools);
-
-      // Permit the agent to invoke this Lambda.
-      fn.addPermission(`AgentInvoke${name}`, {
-        principal: new iam.ServicePrincipal('bedrock.amazonaws.com'),
-        sourceArn: cdk.Fn.sub(
-          'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/${AgentId}',
-          { AgentId: agent.attrAgentId },
-        ),
+      const target = new agentcore.CfnGatewayTarget(this, `Target${name}`, {
+        name: opId,
+        gatewayIdentifier: gateway.attrGatewayIdentifier,
+        targetConfiguration: {
+          mcp: {
+            lambda: {
+              lambdaArn: fn.functionArn,
+              toolSchema: { inlinePayload: [toolSchemaFor(opId, openapi)] },
+            },
+          },
+        },
+        credentialProviderConfigurations: [
+          { credentialProviderType: 'GATEWAY_IAM_ROLE' },
+        ],
       });
-
-      const slice = {
-        openapi: openapi.openapi,
-        info: openapi.info,
-        paths: { [`/${opId}`]: openapi.paths[`/${opId}`] },
-      };
-
-      new bedrock.CfnAgentActionGroup(this, `Ag${name}`, {
-        agentId: agent.attrAgentId,
-        agentVersion: 'DRAFT',
-        actionGroupName: opId,
-        actionGroupExecutor: { lambda: fn.functionArn },
-        apiSchema: { payload: JSON.stringify(slice) },
-        actionGroupState: 'ENABLED',
-      });
+      target.addDependency(gateway);
     }
 
-    const alias = new bedrock.CfnAgentAlias(this, 'Alias', {
-      agentId: agent.attrAgentId,
-      agentAliasName: 'live',
+    // ---- Agent container image (built + pushed out of band; see runbook).
+    const agentRepo = new ecr.Repository(this, 'AgentRuntimeRepo', {
+      imageScanOnPush: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      emptyOnDelete: true,
     });
-    alias.addDependency(agent);
 
-    this.agentId = agent.attrAgentId;
-    this.agentAliasId = alias.attrAgentAliasId;
+    // ---- Runtime execution role: invoke the model + reach the gateway.
+    const runtimeRole = new iam.Role(this, 'RuntimeRole', {
+      assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
+    });
+    runtimeRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+      resources: [`arn:aws:bedrock:${this.region}::foundation-model/${MODEL_ID}`],
+    }));
+    runtimeRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['bedrock-agentcore:InvokeGateway', 'bedrock-agentcore:GetGateway'],
+      resources: [gateway.attrGatewayArn],
+    }));
 
-    new cdk.CfnOutput(this, 'AgentIdOut', { value: this.agentId });
-    new cdk.CfnOutput(this, 'AgentAliasIdOut', { value: this.agentAliasId });
+    // ---- Runtime + endpoint.
+    const runtime = new agentcore.CfnRuntime(this, 'Runtime', {
+      agentRuntimeName: 'chronos2_demo_copilot',
+      roleArn: runtimeRole.roleArn,
+      networkConfiguration: { networkMode: 'PUBLIC' },
+      agentRuntimeArtifact: {
+        containerConfiguration: {
+          containerUri: `${agentRepo.repositoryUri}:latest`,
+        },
+      },
+      environmentVariables: {
+        GATEWAY_URL: gateway.attrGatewayUrl,
+        MODEL_ID,
+      },
+    });
+    runtime.addDependency(gateway);
+
+    const endpoint = new agentcore.CfnRuntimeEndpoint(this, 'RuntimeEndpoint', {
+      agentRuntimeId: runtime.attrAgentRuntimeId,
+      name: 'live',
+    });
+    endpoint.addDependency(runtime);
+
+    this.gatewayUrl = gateway.attrGatewayUrl;
+    this.runtimeArn = runtime.attrAgentRuntimeArn;
+    this.runtimeEndpointArn = endpoint.ref;
+
+    new cdk.CfnOutput(this, 'GatewayUrlOut', { value: this.gatewayUrl });
+    new cdk.CfnOutput(this, 'RuntimeArnOut', { value: this.runtimeArn });
+    new cdk.CfnOutput(this, 'AgentRepoUriOut', { value: agentRepo.repositoryUri });
   }
 }
 ```
 
-- [ ] **Step 4: Wire into `infra/bin/app.ts`**
+- [ ] **Step 5: Wire into `infra/bin/app.ts`**
 
 Below the `ToolsStack` instantiation, add:
 
@@ -775,29 +906,35 @@ const agentStack = new AgentStack(app, 'Chronos2DemoAgent', {
 agentStack.addDependency(tools);
 ```
 
-- [ ] **Step 5: Run tests, confirm pass**
+- [ ] **Step 6: Run tests, confirm pass**
 
 ```bash
-cd infra && npm test -- agent-stack
+cd infra && CDK_DOCKER=finch npm test -- agent-stack
 ```
 
-Expected: 5 passed.
+Expected: 5 passed. (Bundles the `CoreLayer` via finch — slow first run.)
 
-- [ ] **Step 6: Synth check**
+- [ ] **Step 7: Synth check**
 
 ```bash
-cd infra && npx cdk synth Chronos2DemoAgent > /dev/null
+cd infra && CDK_DOCKER=finch npx cdk synth Chronos2DemoAgent > /dev/null
 ```
 
-Expected: no errors. (CDK will resolve cross-stack references to `tools.<fn>` ARNs as `Fn::ImportValue` exports.)
+Expected: no errors.
 
-- [ ] **Step 7: Commit**
+> If a `CfnGatewayTarget` / `CfnRuntime` property name or enum (e.g.
+> `credentialProviderType`, `networkMode`, `protocolType`) is rejected by the
+> installed CDK's typings, STOP and reconcile against the construct's `.d.ts`
+> before guessing — these L1 prop shapes are version-specific.
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add infra/lib/agent-stack.ts infra/test/agent-stack.test.ts infra/bin/app.ts
-git commit -m "feat(infra): agent stack with Bedrock AgentCore + 7 action groups
+git add infra/lib/agent-stack.ts infra/test/agent-stack.test.ts \
+        agent/runtime/ infra/bin/app.ts
+git commit -m "feat(infra): agent stack on AgentCore Gateway + Runtime (Strands)
 
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---

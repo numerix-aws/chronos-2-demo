@@ -267,7 +267,12 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - Create: `tools/lambda/invoke_agent/handler.py`
 - Create: `tools/tests/test_invoke_agent.py`
 
-The frontend POSTs `{session_id, prompt}` to `/invoke`. The Lambda calls `bedrock-agent-runtime.invoke_agent` with `enableTrace=True`, persists the user turn and assistant turn into DynamoDB, and returns the final text. Streaming is handled by **Task 18's SSE relay**, not here — this Lambda is the synchronous fallback used by tests and "skip animation" toggles.
+The frontend POSTs `{session_id, prompt}` to `/invoke`. The Lambda calls `bedrock-agentcore.invoke_agent_runtime` against the AgentCore Runtime endpoint, persists the user turn and assistant turn into DynamoDB, and returns the final text. Streaming is handled by **Task 18's SSE relay**, not here — this Lambda is the synchronous fallback used by tests and "skip animation" toggles.
+
+> `invoke_agent_runtime(agentRuntimeArn, runtimeSessionId, payload)` returns
+> `{"contentType": ..., "response": <iterable of byte chunks>}`. For the
+> synchronous path we concatenate the chunks into the final text. Env var:
+> `AGENT_RUNTIME_ARN` (the Runtime endpoint ARN from the agent stack).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -289,16 +294,12 @@ def _event(body: dict) -> dict:
 @pytest.fixture
 def env(sessions_table, monkeypatch):
     monkeypatch.setenv("SESSIONS_TABLE", sessions_table)
-    monkeypatch.setenv("AGENT_ID", "AGENT123")
-    monkeypatch.setenv("AGENT_ALIAS_ID", "ALIAS456")
+    monkeypatch.setenv("AGENT_RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:000:runtime/x/endpoint/live")
 
 
 def _fake_agent_response(text: str) -> dict:
-    """Shape mirrors bedrock-agent-runtime invoke_agent streaming response."""
-    chunks = [
-        {"chunk": {"bytes": text.encode("utf-8")}},
-    ]
-    return {"completion": iter(chunks), "contentType": "application/json"}
+    """Shape mirrors bedrock-agentcore invoke_agent_runtime response."""
+    return {"contentType": "application/json", "response": iter([text.encode("utf-8")])}
 
 
 def test_invoke_persists_turns_and_returns_text(env):
@@ -316,14 +317,10 @@ def test_invoke_persists_turns_and_returns_text(env):
 
 def test_invoke_concatenates_multiple_chunks(env):
     body = {"session_id": "s1", "prompt": "x"}
-    chunks = [
-        {"chunk": {"bytes": b"hello "}},
-        {"chunk": {"bytes": b"world"}},
-    ]
     with patch.object(
         handler,
         "_invoke_agent",
-        return_value={"completion": iter(chunks), "contentType": "application/json"},
+        return_value={"contentType": "application/json", "response": iter([b"hello ", b"world"])},
     ):
         resp = handler.handler(_event(body), None)
     assert json.loads(resp["body"])["text"] == "hello world"
@@ -365,18 +362,16 @@ _AGENT_RUNTIME = None
 def _agent_runtime():
     global _AGENT_RUNTIME
     if _AGENT_RUNTIME is None:
-        _AGENT_RUNTIME = boto3.client("bedrock-agent-runtime")
+        _AGENT_RUNTIME = boto3.client("bedrock-agentcore")
     return _AGENT_RUNTIME
 
 
 def _invoke_agent(session_id: str, prompt: str) -> dict:
     """Thin wrapper so tests can patch a single seam."""
-    return _agent_runtime().invoke_agent(
-        agentId=os.environ["AGENT_ID"],
-        agentAliasId=os.environ["AGENT_ALIAS_ID"],
-        sessionId=session_id,
-        inputText=prompt,
-        enableTrace=True,
+    return _agent_runtime().invoke_agent_runtime(
+        agentRuntimeArn=os.environ["AGENT_RUNTIME_ARN"],
+        runtimeSessionId=session_id,
+        payload=json.dumps({"prompt": prompt}).encode("utf-8"),
     )
 
 
@@ -406,10 +401,8 @@ def handler(event: dict, _context) -> dict[str, Any]:
 
     raw = _invoke_agent(sid, prompt)
     parts: list[bytes] = []
-    for ev in raw["completion"]:
-        chunk = ev.get("chunk")
-        if chunk and "bytes" in chunk:
-            parts.append(chunk["bytes"])
+    for chunk in raw["response"]:
+        parts.append(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
     text = b"".join(parts).decode("utf-8", errors="replace")
 
     _persist(sid, "assistant", text)
@@ -470,8 +463,7 @@ from tools.lambda_.sse_relay import handler
 
 @pytest.fixture
 def env(monkeypatch):
-    monkeypatch.setenv("AGENT_ID", "AGENT123")
-    monkeypatch.setenv("AGENT_ALIAS_ID", "ALIAS456")
+    monkeypatch.setenv("AGENT_RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:000:runtime/x/endpoint/live")
     monkeypatch.setenv("API_KEY_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:000:secret:k")
 
 
@@ -486,11 +478,9 @@ def test_format_sse_event_handles_multiline():
 
 
 def test_iter_chunks_yields_decoded_text(env):
-    completion = iter([
-        {"chunk": {"bytes": b"hello "}},
-        {"chunk": {"bytes": b"world"}},
-    ])
-    out = list(handler._iter_chunks({"completion": completion}))
+    # invoke_agent_runtime returns {"response": <iterable of byte chunks>}.
+    raw = {"contentType": "application/json", "response": iter([b"hello ", b"world"])}
+    out = list(handler._iter_chunks(raw))
     assert out == ["hello ", "world"]
 
 
@@ -522,18 +512,11 @@ Expected: FAIL — `ModuleNotFoundError: tools.lambda_.sse_relay`.
 ```python
 """Lambda Function URL SSE relay.
 
-Bedrock AgentCore returns a streaming response. We re-emit each chunk as a
-Server-Sent Event ("data: <text>\\n\\n"). The runtime entrypoint is invoked
-by AWS Lambda's streaming runtime — `lambda_handler.streamifyResponse` in
-Node, or a custom runtime in Python (use `awslambdaric` with response
-streaming enabled).
-
-Because the standard Python runtime does not yet support streamifyResponse,
-this Lambda is deployed via the **Node.js shim** (`tools/lambda/sse_relay/index.mjs`)
-that calls into a `boto3` subprocess only if you really must — but in practice
-we ship this as a Node 20 runtime function (see CDK below). The Python module
-exists for unit-testing the parsing helpers and the auth check; the Node
-deployable wraps the same logic.
+AgentCore Runtime returns a streaming response from `invoke_agent_runtime`. We
+re-emit each chunk as a Server-Sent Event ("data: <text>\\n\\n"). The actual
+deployable is the Node 20 streaming entrypoint (`index.mjs`); this Python module
+exists for unit-testing the parsing helpers and the auth check, and the Node
+shim mirrors the same logic.
 """
 from __future__ import annotations
 
@@ -569,21 +552,22 @@ def _sse(text: str) -> str:
 
 
 def _iter_chunks(raw: dict) -> Iterator[str]:
-    for ev in raw["completion"]:
-        chunk = ev.get("chunk")
-        if chunk and "bytes" in chunk:
-            yield chunk["bytes"].decode("utf-8", errors="replace")
+    # invoke_agent_runtime returns {"response": <iterable of byte chunks>}.
+    for chunk in raw["response"]:
+        yield (chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8")).decode(
+            "utf-8", errors="replace"
+        )
 
 
 def stream_sse(session_id: str, prompt: str) -> Iterable[str]:
     """Generator suitable for a streaming HTTP body."""
-    rt = boto3.client("bedrock-agent-runtime")
-    raw = rt.invoke_agent(
-        agentId=os.environ["AGENT_ID"],
-        agentAliasId=os.environ["AGENT_ALIAS_ID"],
-        sessionId=session_id,
-        inputText=prompt,
-        enableTrace=False,
+    import json
+
+    rt = boto3.client("bedrock-agentcore")
+    raw = rt.invoke_agent_runtime(
+        agentRuntimeArn=os.environ["AGENT_RUNTIME_ARN"],
+        runtimeSessionId=session_id,
+        payload=json.dumps({"prompt": prompt}).encode("utf-8"),
     )
     for chunk in _iter_chunks(raw):
         yield _sse(chunk)
@@ -596,12 +580,12 @@ Also create `tools/lambda/sse_relay/index.mjs` (the actual Node 20 streaming ent
 // Node 20 streaming entrypoint for the SSE relay.
 // Wraps Bedrock AgentCore's streaming response into Server-Sent Events.
 import {
-  BedrockAgentRuntimeClient,
-  InvokeAgentCommand,
-} from '@aws-sdk/client-bedrock-agent-runtime';
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
-const agentClient = new BedrockAgentRuntimeClient({});
+const agentClient = new BedrockAgentCoreClient({});
 const secretsClient = new SecretsManagerClient({});
 
 let cachedKey = null;
@@ -648,19 +632,16 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
   responseStream.setContentType('text/event-stream');
 
   try {
-    const cmd = new InvokeAgentCommand({
-      agentId: process.env.AGENT_ID,
-      agentAliasId: process.env.AGENT_ALIAS_ID,
-      sessionId,
-      inputText: prompt,
-      enableTrace: false,
+    const cmd = new InvokeAgentRuntimeCommand({
+      agentRuntimeArn: process.env.AGENT_RUNTIME_ARN,
+      runtimeSessionId: sessionId,
+      payload: new TextEncoder().encode(JSON.stringify({ prompt })),
     });
     const response = await agentClient.send(cmd);
-    for await (const evt of response.completion) {
-      if (evt.chunk?.bytes) {
-        const text = Buffer.from(evt.chunk.bytes).toString('utf-8');
-        responseStream.write(sseFrame(text));
-      }
+    // The streaming body is an async iterable of byte chunks.
+    for await (const chunk of response.response) {
+      const text = Buffer.from(chunk).toString('utf-8');
+      responseStream.write(sseFrame(text));
     }
     responseStream.write(sseFrame('[DONE]'));
   } catch (err) {
@@ -679,7 +660,7 @@ And `tools/lambda/sse_relay/package.json`:
   "version": "0.1.0",
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-bedrock-agent-runtime": "^3.600.0",
+    "@aws-sdk/client-bedrock-agentcore": "^3.600.0",
     "@aws-sdk/client-secrets-manager": "^3.600.0"
   }
 }
@@ -829,18 +810,15 @@ export class ApiStack extends cdk.Stack {
       layers: [props.tools.coreLayer],
       environment: {
         SESSIONS_TABLE: sessionsTable.tableName,
-        AGENT_ID: props.agent.agentId,
-        AGENT_ALIAS_ID: props.agent.agentAliasId,
+        AGENT_RUNTIME_ARN: props.agent.runtimeEndpointArn,
       },
       timeout: cdk.Duration.minutes(2),
     });
     sessionsTable.grantReadWriteData(invokeFn);
     invokeFn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['bedrock:InvokeAgent'],
-        resources: [
-          `arn:aws:bedrock:${this.region}:${this.account}:agent-alias/${props.agent.agentId}/${props.agent.agentAliasId}`,
-        ],
+        actions: ['bedrock-agentcore:InvokeAgentRuntime'],
+        resources: [props.agent.runtimeArn, `${props.agent.runtimeArn}/*`],
       }),
     );
 
@@ -851,18 +829,15 @@ export class ApiStack extends cdk.Stack {
       handler: 'handler',
       timeout: cdk.Duration.minutes(2),
       environment: {
-        AGENT_ID: props.agent.agentId,
-        AGENT_ALIAS_ID: props.agent.agentAliasId,
+        AGENT_RUNTIME_ARN: props.agent.runtimeEndpointArn,
         API_KEY_SECRET_ARN: props.tools.apiKeySecretArn,
       },
       bundling: { format: nodejs.OutputFormat.ESM, target: 'node20' },
     });
     sseFn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['bedrock:InvokeAgent'],
-        resources: [
-          `arn:aws:bedrock:${this.region}:${this.account}:agent-alias/${props.agent.agentId}/${props.agent.agentAliasId}`,
-        ],
+        actions: ['bedrock-agentcore:InvokeAgentRuntime'],
+        resources: [props.agent.runtimeArn, `${props.agent.runtimeArn}/*`],
       }),
     );
     sseFn.addToRolePolicy(
