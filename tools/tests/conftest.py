@@ -40,3 +40,23 @@ def s3(aws_creds):
         client.create_bucket(Bucket="test-data")
         client.create_bucket(Bucket="test-plots")
         yield client
+
+
+@pytest.fixture
+def sessions_table(monkeypatch):
+    """Mocked DynamoDB sessions table; returns the table name."""
+    with mock_aws():
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        ddb.create_table(
+            TableName="sessions",
+            KeySchema=[
+                {"AttributeName": "session_id", "KeyType": "HASH"},
+                {"AttributeName": "turn_id", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "session_id", "AttributeType": "S"},
+                {"AttributeName": "turn_id", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        yield "sessions"
