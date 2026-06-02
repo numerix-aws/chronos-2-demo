@@ -287,22 +287,22 @@ import { ApiClient } from '../../src/api/client';
 
 describe('ApiClient', () => {
   beforeEach(() => {
-    global.fetch = vi.fn();
+    globalThis.fetch = vi.fn();
   });
 
   it('attaches x-api-key header to every request', async () => {
-    (global.fetch as any).mockResolvedValue({
+    (globalThis.fetch as any).mockResolvedValue({
       ok: true,
       json: async () => ({ session_id: 'abc' }),
     });
     const c = new ApiClient('https://api.example/', 'KEY');
     await c.createSession();
-    const [, init] = (global.fetch as any).mock.calls[0];
+    const [, init] = (globalThis.fetch as any).mock.calls[0];
     expect(init.headers['x-api-key']).toBe('KEY');
   });
 
   it('throws on non-ok response with body text', async () => {
-    (global.fetch as any).mockResolvedValue({
+    (globalThis.fetch as any).mockResolvedValue({
       ok: false,
       status: 401,
       text: async () => 'unauthorized',
@@ -312,10 +312,10 @@ describe('ApiClient', () => {
   });
 
   it('listMessages GETs the right URL', async () => {
-    (global.fetch as any).mockResolvedValue({ ok: true, json: async () => ({ messages: [] }) });
+    (globalThis.fetch as any).mockResolvedValue({ ok: true, json: async () => ({ messages: [] }) });
     const c = new ApiClient('https://api.example/', 'K');
     await c.listMessages('SID');
-    expect((global.fetch as any).mock.calls[0][0]).toBe(
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
       'https://api.example/sessions/SID/messages',
     );
   });
