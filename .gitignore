@@ -13,6 +13,8 @@ data/curated/
 *.egg-info/
 dist/
 build/
+cdk.out/
+cdk.context.json
 infra/cdk.out/
 infra/node_modules/
 infra/dist/
