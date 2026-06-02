@@ -543,7 +543,7 @@ You are concise, technically precise, and audience-aware: the user is a senior q
 pytest agent/tests/test_action_groups.py -v
 ```
 
-Expected: 12 passed (4 named + 8 parametrized — one per operation incl. check_baseline_mc).
+Expected: 13 passed (5 named + 8 parametrized — one per operation incl. check_baseline_mc).
 
 - [ ] **Step 7: Commit**
 
