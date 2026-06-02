@@ -826,13 +826,18 @@ export class ApiStack extends cdk.Stack {
     const sseFn = new nodejs.NodejsFunction(this, 'SseRelayFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
       entry: path.join(__dirname, '..', '..', 'tools', 'lambda', 'sse_relay', 'index.mjs'),
+      // entry lives outside infra/, so point projectRoot/depsLockFilePath at the
+      // repo root + infra lockfile; otherwise NodejsFunction throws PathNotUnderRoot.
+      projectRoot: path.join(__dirname, '..', '..'),
+      depsLockFilePath: path.join(__dirname, '..', 'package-lock.json'),
       handler: 'handler',
       timeout: cdk.Duration.minutes(2),
       environment: {
         AGENT_RUNTIME_ARN: props.agent.runtimeEndpointArn,
         API_KEY_SECRET_ARN: props.tools.apiKeySecretArn,
       },
-      bundling: { format: nodejs.OutputFormat.ESM, target: 'node20' },
+      // @aws-sdk/* ships in the Node 20 Lambda runtime — don't bundle it.
+      bundling: { format: nodejs.OutputFormat.ESM, target: 'node20', externalModules: ['@aws-sdk/*'] },
     });
     sseFn.addToRolePolicy(
       new iam.PolicyStatement({
@@ -870,8 +875,18 @@ export class ApiStack extends cdk.Stack {
       },
     });
 
+    // Import the authorizer by ARN so the auto-generated API-Gateway invoke
+    // permission is scoped to THIS stack. Passing props.tools.fnAuthorizer
+    // directly makes CDK add that permission in ToolsStack pointing at this
+    // RestApi, creating a Tools<->Api dependency cycle (Api already depends on
+    // Tools for coreLayer/apiKeySecretArn).
+    const authorizerFn = lambda.Function.fromFunctionAttributes(this, 'ImportedAuthorizerFn', {
+      functionArn: props.tools.fnAuthorizer.functionArn,
+      sameEnvironment: true,
+    });
+
     const authorizer = new apigw.RequestAuthorizer(this, 'ApiKeyAuthorizer', {
-      handler: props.tools.fnAuthorizer,
+      handler: authorizerFn,
       identitySources: [apigw.IdentitySource.header('x-api-key')],
       resultsCacheTtl: cdk.Duration.minutes(5),
     });

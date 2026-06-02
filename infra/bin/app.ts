@@ -5,6 +5,7 @@ import { NetworkStack } from '../lib/network-stack';
 import { StorageStack } from '../lib/storage-stack';
 import { ToolsStack } from '../lib/tools-stack';
 import { AgentStack } from '../lib/agent-stack';
+import { ApiStack } from '../lib/api-stack';
 
 const app = new cdk.App();
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1' };
@@ -29,5 +30,12 @@ const agentStack = new AgentStack(app, 'Chronos2DemoAgent', {
   tools,
 });
 agentStack.addDependency(tools);
+
+const apiStack = new ApiStack(app, 'Chronos2DemoApi', {
+  env,
+  tools,
+  agent: agentStack,
+});
+apiStack.addDependency(agentStack);
 
 app.synth();
