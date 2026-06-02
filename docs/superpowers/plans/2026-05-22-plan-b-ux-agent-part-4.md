@@ -1053,6 +1053,9 @@ export class ToolsStack extends cdk.Stack {
       code: lambda.Code.fromAsset(repoRoot, {
         bundling: {
           image: lambda.Runtime.PYTHON_3_11.bundlingImage,
+          // Force the x86_64 Lambda target regardless of the build host's arch
+          // (e.g. Apple Silicon), so the wheels match the Lambda architecture.
+          platform: 'linux/amd64',
           command: [
             'bash', '-c', [
               'mkdir -p /asset-output/python',
@@ -1063,7 +1066,10 @@ export class ToolsStack extends cdk.Stack {
               'cp -r tools/lambda/shared /asset-output/python/tools/lambda_/shared',
               'mkdir -p /asset-output/python/data',
               'cp data/sample_book.json /asset-output/python/data/sample_book.json',
-              'pip install --target /asset-output/python numpy scipy pandas scikit-learn matplotlib pyarrow boto3',
+              // --only-binary=:all: forces manylinux wheels; without it pip pulls
+              // the latest numpy sdist, which has no cp311 wheel and fails to
+              // compile under the build image's GCC.
+              'pip install --only-binary=:all: --target /asset-output/python numpy scipy pandas scikit-learn matplotlib pyarrow boto3',
             ].join(' && '),
           ],
         },
