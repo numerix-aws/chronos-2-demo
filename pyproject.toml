@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-cov>=4.1", "jupyterlab>=4.0", "ipykernel>=6.29", "moto[s3]>=5.0"]
+dev = ["pytest>=8.0", "pytest-cov>=4.1", "jupyterlab>=4.0", "ipykernel>=6.29", "moto[s3]>=5.0", "jsonschema>=4.21"]
 
 [build-system]
 requires = ["setuptools>=68"]

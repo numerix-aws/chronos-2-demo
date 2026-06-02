@@ -1,0 +1,354 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Chronos2 Demo Action Groups",
+    "version": "0.1.0",
+    "description": "Tool surface for the Numerix × Chronos-2 PoC agent."
+  },
+  "paths": {
+    "/load_data": {
+      "post": {
+        "operationId": "load_data",
+        "summary": "Slice a curated market data panel and stage it in S3.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "as_of_date", "lookback_days"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "as_of_date": { "type": "string", "format": "date" },
+                  "lookback_days": { "type": "integer", "minimum": 1, "maximum": 5000 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Panel ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["panel_uri"],
+                  "properties": {
+                    "panel_uri": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/run_baseline_mc": {
+      "post": {
+        "operationId": "run_baseline_mc",
+        "summary": "Launch the parametric Monte Carlo (PCA + factor dynamics) as an async Fargate task. Returns immediately with a task handle; poll with check_baseline_mc.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "panel_uri", "as_of", "horizon", "n_paths"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "panel_uri": { "type": "string", "format": "uri" },
+                  "as_of": { "type": "string", "format": "date" },
+                  "horizon": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                  "n_paths": { "type": "integer", "minimum": 1, "maximum": 50000 },
+                  "n_components": { "type": "integer", "minimum": 1, "maximum": 20 },
+                  "seed": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Fargate task launched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["task_arn", "paths_uri"],
+                  "properties": {
+                    "task_arn": { "type": "string" },
+                    "paths_uri": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "500": { "description": "Fargate RunTask failed" }
+        }
+      }
+    },
+    "/check_baseline_mc": {
+      "post": {
+        "operationId": "check_baseline_mc",
+        "summary": "Poll the launched baseline-MC Fargate task. Call repeatedly until ready is true, then use paths_uri.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "task_arn", "paths_uri"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "task_arn": { "type": "string" },
+                  "paths_uri": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Task status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["task_status", "ready", "paths_uri"],
+                  "properties": {
+                    "task_status": { "type": "string" },
+                    "ready": { "type": "boolean" },
+                    "paths_uri": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "500": { "description": "Fargate task failed" }
+        }
+      }
+    },
+    "/run_chronos2": {
+      "post": {
+        "operationId": "run_chronos2",
+        "summary": "Sample augmenting paths from the Chronos-2 SageMaker endpoint.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "panel_uri", "as_of", "horizon", "n_paths"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "panel_uri": { "type": "string", "format": "uri" },
+                  "as_of": { "type": "string", "format": "date" },
+                  "horizon": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                  "n_paths": { "type": "integer", "minimum": 1, "maximum": 20000 },
+                  "covariates_uri": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "PathSet staged in S3",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["paths_uri", "n_paths", "horizon"],
+                  "properties": {
+                    "paths_uri": { "type": "string", "format": "uri" },
+                    "n_paths": { "type": "integer" },
+                    "horizon": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "502": { "description": "SageMaker endpoint failure" }
+        }
+      }
+    },
+    "/blend_paths": {
+      "post": {
+        "operationId": "blend_paths",
+        "summary": "Importance-weight parametric and Chronos-2 PathSets into one blended PathSet.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "parametric_uri", "chronos2_uri", "w_stress"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "parametric_uri": { "type": "string", "format": "uri" },
+                  "chronos2_uri": { "type": "string", "format": "uri" },
+                  "w_stress": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Blended PathSet staged in S3",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["blended_uri", "w_stress", "n_paths"],
+                  "properties": {
+                    "blended_uri": { "type": "string", "format": "uri" },
+                    "w_stress": { "type": "number" },
+                    "n_paths": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/price_book": {
+      "post": {
+        "operationId": "price_book",
+        "summary": "Price the demo XCCY book on a PathSet and compute EE/PFE/ES.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "paths_uri"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "paths_uri": { "type": "string", "format": "uri" },
+                  "book_id": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Exposure metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ee", "pfe_975", "es_975", "dates", "metrics_uri"],
+                  "properties": {
+                    "ee": { "type": "array", "items": { "type": "number" } },
+                    "pfe_975": { "type": "array", "items": { "type": "number" } },
+                    "es_975": { "type": "array", "items": { "type": "number" } },
+                    "dates": { "type": "array", "items": { "type": "string", "format": "date" } },
+                    "metrics_uri": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/plot": {
+      "post": {
+        "operationId": "plot",
+        "summary": "Render a chart (pfe_overlay | path_fan | regime_ribbon) and return a presigned PNG URL.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "spec"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "spec": {
+                    "type": "string",
+                    "enum": ["pfe_overlay", "path_fan", "regime_ribbon"]
+                  },
+                  "baseline_uri": { "type": "string", "format": "uri" },
+                  "augmented_uri": { "type": "string", "format": "uri" },
+                  "paths_uri": { "type": "string", "format": "uri" },
+                  "regimes_uri": { "type": "string", "format": "uri" },
+                  "series": { "type": "string" },
+                  "threshold": { "type": "number" },
+                  "title": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Presigned PNG URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["image_uri"],
+                  "properties": {
+                    "image_uri": { "type": "string", "format": "uri" },
+                    "spec": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/lookup_use_case": {
+      "post": {
+        "operationId": "lookup_use_case",
+        "summary": "Fetch a curated brief on an adjacent Chronos-2 use case.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["topic"],
+                "properties": {
+                  "topic": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Brief content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["topic", "summary", "markdown"],
+                  "properties": {
+                    "topic": { "type": "string" },
+                    "summary": { "type": "string" },
+                    "markdown": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Topic not in catalog" }
+        }
+      }
+    }
+  }
+}
