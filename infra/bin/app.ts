@@ -7,6 +7,7 @@ import { ToolsStack } from '../lib/tools-stack';
 import { AgentStack } from '../lib/agent-stack';
 import { ApiStack } from '../lib/api-stack';
 import { FrontendStack } from '../lib/frontend-stack';
+import { ObservabilityStack } from '../lib/observability-stack';
 
 const app = new cdk.App();
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1' };
@@ -44,5 +45,12 @@ const frontendStack = new FrontendStack(app, 'Chronos2DemoFrontend', {
   api: apiStack,
 });
 frontendStack.addDependency(apiStack);
+
+const obsStack = new ObservabilityStack(app, 'Chronos2DemoObservability', {
+  env,
+  tools,
+  api: apiStack,
+});
+obsStack.addDependency(apiStack);
 
 app.synth();
