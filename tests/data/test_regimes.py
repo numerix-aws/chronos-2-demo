@@ -41,3 +41,25 @@ def test_w_stress_features_exposed():
     panel = _shocked_panel()
     feats = regimes.regime_features(panel, window=20)
     assert {"rolling_vol", "rates_fx_corr", "vol_of_vol"} <= set(feats.columns)
+
+
+def test_split_excludes_equity_and_credit_from_fx_rates():
+    idx = pd.bdate_range("2020-01-02", periods=300)
+    cols = ["USDEUR", "USDJPY", "USD_2Y", "USD_5Y", "SPX", "US_IG_OAS"]
+    panel = pd.DataFrame(np.ones((300, 6)), index=idx, columns=cols)
+    fx, rates = regimes._split_fx_rates(panel)
+    assert list(fx.columns) == ["USDEUR", "USDJPY"]
+    assert list(rates.columns) == ["USD_2Y", "USD_5Y"]
+    # Equity/credit are in neither bucket.
+    assert "SPX" not in fx.columns and "SPX" not in rates.columns
+    assert "US_IG_OAS" not in fx.columns and "US_IG_OAS" not in rates.columns
+
+
+def test_regime_features_still_three_columns_with_cross_asset():
+    idx = pd.bdate_range("2020-01-02", periods=300)
+    cols = ["USDEUR", "USD_2Y", "SPX", "US_HY_OAS"]
+    rng = np.random.default_rng(0)
+    panel = pd.DataFrame(1.0 + rng.normal(0, 0.01, size=(300, 4)).cumsum(axis=0),
+                         index=idx, columns=cols)
+    feats = regimes.regime_features(panel, window=20)
+    assert {"rolling_vol", "rates_fx_corr", "vol_of_vol"} == set(feats.columns)

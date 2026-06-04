@@ -10,13 +10,17 @@ The rules are intentionally simple so the demo can display the function.
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-
-FX_PREFIX_LEN = 6  # "USDEUR" etc; rates columns contain "_"
-
+from chronos2_demo import config
 
 def _split_fx_rates(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split panel into (fx, rates) for the correlation feature.
+
+    FX is exactly the configured FX_PAIRS present in the panel; rates is the
+    tenor-suffixed columns. Equity/credit (and anything else) are excluded —
+    they feed rolling_vol via the full panel but not rates_fx_corr.
+    """
     rates = panel.filter(regex="_(2Y|5Y|10Y)$")
-    fx = panel[[c for c in panel.columns if c not in rates.columns]]
+    fx = panel[[c for c in panel.columns if c in config.FX_PAIRS]]
     return fx, rates
 
 
