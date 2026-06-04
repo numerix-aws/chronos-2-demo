@@ -40,14 +40,20 @@ python scripts/snapshot_data.py --fred-api-key $FRED_API_KEY
 
 This produces `data/curated/panel.parquet` and `data/curated/covariates.parquet`.
 
-### Deploy the Chronos-2 SageMaker endpoint
+### Deploy the Chronos-2 endpoint (AutoGluon Cloud)
+
+Deploys the real `amazon/chronos-2` model via AutoGluon Cloud. Requires the
+`deploy` extra (`pip install -e ".[deploy]"`). Serverless is the default —
+it scales to zero between demos — and needs an S3 cache for the model artifact:
 
 ```bash
-python scripts/deploy_chronos2_endpoint.py --action deploy --model-name chronos2-demo
+python scripts/deploy_chronos2_endpoint.py --action deploy \
+  --cache-uri s3://YOUR-BUCKET/fm-cache
 ```
 
-Wait until `aws sagemaker describe-endpoint --endpoint-name chronos2-demo-ep` shows
-`InService`. The default instance type is `ml.g5.xlarge`.
+The endpoint returns per-series quantiles; the client reconstructs joint paths.
+For lowest latency you can deploy a GPU real-time endpoint instead
+(`--mode realtime --instance-type ml.g5.xlarge`).
 
 When done with the demo:
 
