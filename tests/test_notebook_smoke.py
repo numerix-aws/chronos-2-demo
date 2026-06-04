@@ -4,8 +4,6 @@ The notebook itself is committed but not executed in CI. This test mirrors the
 notebook's logic against synthetic data so refactors break the test before
 they break the demo.
 """
-import json
-from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
@@ -32,15 +30,25 @@ def _synthetic_panel(n=600, seed=0):
                         index=pd.bdate_range("2020-01-02", periods=n))
 
 
+class _FakeEndpoint:
+    """AutoGluon endpoint stand-in: returns a long-format quantile DataFrame."""
+    def predict(self, data, target, id_column, timestamp_column,
+                prediction_length, known_covariates=None):
+        items = list(dict.fromkeys(data[id_column]))
+        future = pd.bdate_range("2022-07-01", periods=prediction_length)
+        rows = []
+        for item in items:
+            for t in range(prediction_length):
+                row = {id_column: item, timestamp_column: future[t], "mean": 1.0}
+                for ql in chronos2_client.Q_LEVELS:
+                    row[str(ql)] = 1.0 + (ql - 0.5) * 0.02
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+
 def _mock_chronos_client(n_paths, horizon, n_series):
-    rt = MagicMock()
-    samples = (np.full((n_paths, horizon, n_series), 1.0)
-               + np.random.default_rng(0).normal(0, 0.001,
-                                                  size=(n_paths, horizon, n_series)))
-    body = MagicMock()
-    body.read.return_value = json.dumps({"samples": samples.tolist()}).encode("utf-8")
-    rt.invoke_endpoint.return_value = {"Body": body}
-    return chronos2_client.Chronos2Client(endpoint_name="ep", runtime=rt)
+    # The endpoint returns per-series quantiles; the client reconstructs paths.
+    return chronos2_client.Chronos2Client(endpoint=_FakeEndpoint())
 
 
 def test_full_pipeline_runs_end_to_end():
