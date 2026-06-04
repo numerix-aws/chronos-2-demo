@@ -10,6 +10,10 @@ FX_PAIRS = ["USDEUR", "USDJPY", "USDGBP", "USDCHF", "USDCAD"]
 RATES_CCYS = ["USD", "EUR", "JPY", "GBP"]
 RATES_TENORS = ["2Y", "5Y", "10Y"]
 COVARIATES = ["VIX", "MOVE", "WTI"]
+# Cross-asset priced factors (added 2026-06-04). Modeled jointly by BOTH engines
+# — NOT covariates. See spec §4.
+EQUITY_INDICES = ["SPX", "NIKKEI225"]
+CREDIT_SPREADS = ["US_IG_OAS", "US_HY_OAS"]
 
 # Specific stress windows used in the demo. Pin these so the headline is reproducible.
 STRESS_WINDOWS = [

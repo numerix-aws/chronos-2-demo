@@ -39,3 +39,11 @@ def fetch_ecb_fx(base_ccy: str, quote_ccy: str) -> pd.Series:
     s = df.set_index("TIME_PERIOD")["OBS_VALUE"].astype(float)
     s.name = f"{base_ccy}{quote_ccy}"
     return s
+
+
+_CREDIT_FRED_IDS = {"US_IG_OAS": "BAMLC0A0CM", "US_HY_OAS": "BAMLH0A0HYM2"}
+
+
+def fetch_credit_oas(name: str, api_key: str) -> pd.Series:
+    """Fetch an ICE BofA OAS series from FRED, renamed to the panel column."""
+    return fetch_fred_series(_CREDIT_FRED_IDS[name], api_key=api_key).rename(name)

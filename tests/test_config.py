@@ -24,3 +24,14 @@ def test_stress_windows_present():
     names = {w["name"] for w in config.STRESS_WINDOWS}
     assert "2022_rate_hike" in names
     assert "2020_covid" in names
+
+
+def test_equity_and_credit_factor_universe():
+    from chronos2_demo import config
+    assert config.EQUITY_INDICES == ["SPX", "NIKKEI225"]
+    assert config.CREDIT_SPREADS == ["US_IG_OAS", "US_HY_OAS"]
+    # No overlap with FX / rates / covariates.
+    overlap = set(config.EQUITY_INDICES + config.CREDIT_SPREADS) & (
+        set(config.FX_PAIRS) | set(config.COVARIATES)
+    )
+    assert overlap == set()
