@@ -26,9 +26,9 @@ test('creates one AgentCore Gateway (MCP)', () => {
   });
 });
 
-test('creates one gateway target per tool (8)', () => {
+test('creates one gateway target per tool (9)', () => {
   const { t } = build();
-  t.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 8);
+  t.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 9);
 });
 
 test('creates a containerized Runtime + endpoint', () => {

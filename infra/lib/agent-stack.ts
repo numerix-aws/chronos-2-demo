@@ -19,6 +19,7 @@ const TOOL_OPERATIONS: Array<{ name: string; opId: string; getFn: (t: ToolsStack
   { name: 'RunBaselineMc', opId: 'run_baseline_mc', getFn: (t) => t.fnRunBaselineMc },
   { name: 'CheckBaselineMc', opId: 'check_baseline_mc', getFn: (t) => t.fnCheckBaselineMc },
   { name: 'RunChronos2', opId: 'run_chronos2', getFn: (t) => t.fnRunChronos2 },
+  { name: 'CheckChronos2', opId: 'check_chronos2', getFn: (t) => t.fnCheckChronos2 },
   { name: 'BlendPaths', opId: 'blend_paths', getFn: (t) => t.fnBlendPaths },
   { name: 'PriceBook', opId: 'price_book', getFn: (t) => t.fnPriceBook },
   { name: 'Plot', opId: 'plot', getFn: (t) => t.fnPlot },
