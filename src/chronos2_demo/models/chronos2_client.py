@@ -217,3 +217,46 @@ class Chronos2Client:
                 raise
         # unreachable, but keeps type-checkers happy:
         raise RuntimeError("retry loop exited without return") from last_err
+
+
+from chronos2_demo.types import PathSet
+
+
+def simulate_chronos2(
+    client: Chronos2Client,
+    panel: pd.DataFrame,
+    as_of: str,
+    horizon: int,
+    n_paths: int,
+    lookback_days: int = 504,
+    covariates: Optional[pd.DataFrame] = None,
+    conditioning: Optional[Conditioning] = None,
+    seed: int = 0,
+) -> PathSet:
+    """Slice the lookback window, call the endpoint, return a PathSet.
+
+    Both unconditional and conditional calls flow through here. When
+    `conditioning` is supplied, the source is "chronos2_conditional" so the
+    augmentation layer can apply w_stress=1 by convention. `seed` makes the
+    client-side path reconstruction deterministic.
+    """
+    as_of_ts = pd.Timestamp(as_of)
+    history = panel.loc[:as_of_ts].tail(lookback_days)
+    cov_slice = None
+    if covariates is not None:
+        cov_slice = covariates.loc[history.index]
+    samples = client.predict(history, horizon=horizon, n_samples=n_paths,
+                             covariates=cov_slice, conditioning=conditioning,
+                             seed=seed)
+    horizon_dates = pd.bdate_range(
+        start=as_of_ts + pd.tseries.offsets.BDay(1), periods=horizon
+    )
+    weights = np.full(n_paths, 1.0 / n_paths)
+    source: str = "chronos2_conditional" if conditioning is not None else "chronos2"
+    return PathSet(
+        paths=samples,
+        weights=weights,
+        series=list(panel.columns),
+        dates=horizon_dates,
+        source=source,  # type: ignore[arg-type]
+    )
