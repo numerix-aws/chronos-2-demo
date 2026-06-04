@@ -83,11 +83,18 @@ src/chronos2_demo/
   pricing/                  # XCCY book, swap valuation, EE/PFE/ES
   diagnostics/              # coverage, tail dependence, distribution distance
   plotting/                 # PFE overlay, path fans, regime ribbon
-  infra/                    # SageMaker endpoint helpers
+  infra/                    # Chronos-2 deploy/teardown via AutoGluon Cloud
 notebooks/headline_demo.ipynb
 scripts/snapshot_data.py
 scripts/deploy_chronos2_endpoint.py
 tests/                      # full test suite
+
+# Plan B (UX + agent) — wraps the Plan A package
+agent/                      # AgentCore copilot: 9 tool schemas, system prompt, Strands runtime, knowledge briefs
+tools/                      # tool implementations: lambda/ handlers + fargate/ (baseline_mc, run_chronos2) workers
+infra/                      # CDK app: 7 stacks (network, storage, tools, agent, api, frontend, observability)
+frontend/                   # Cloudscape React SPA (chat + what-if panel, SSE streaming)
+docs/runbook.md             # deploy / demo / teardown runbook
 ```
 
 ## Running the test suite

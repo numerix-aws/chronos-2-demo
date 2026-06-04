@@ -978,7 +978,7 @@ git add infra/lib/agent-stack.ts infra/test/agent-stack.test.ts \
         agent/runtime/ infra/bin/app.ts
 git commit -m "feat(infra): agent stack on AgentCore Gateway + Runtime (Strands)
 
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
 ---

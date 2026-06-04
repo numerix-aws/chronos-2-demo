@@ -452,4 +452,4 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 ---
 
-> _Continue with `2026-05-22-plan-a-quant-pipeline-part-2b.md` (Stage 3 — Chronos-2 client & SageMaker deployment, Tasks 11–14)._
+> _Continue with `2026-05-22-plan-a-quant-pipeline-part-2b.md` (Stage 3 — Chronos-2 client & AutoGluon Cloud deployment, Tasks 11–14)._

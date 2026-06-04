@@ -7,8 +7,8 @@ profile named `chronos2-demo` with admin in the demo account.
 ## Prerequisites
 
 - Plan A merged: `pip install -e ".[dev]" && pytest` is green.
-- Plan A SageMaker endpoint deployed: `chronos2_demo.infra.sagemaker_endpoint.deploy_demo_endpoint()` returns an endpoint name (record it).
-- Local toolchain: Node 20+, Python 3.11, Docker (for CDK Lambda layer bundling), AWS CLI v2.
+- Plan A Chronos-2 endpoint deployed via AutoGluon Cloud: `pip install -e ".[deploy]"` then `python scripts/deploy_chronos2_endpoint.py --action deploy --cache-uri s3://YOUR-BUCKET/fm-cache` (serverless default). Record the endpoint name (`chronos2-demo-ep`). It serves per-series quantiles; the client reconstructs joint paths. The Chronos-2 endpoint call runs in the `chronos2` Fargate task (AutoGluon SDK is too heavy for Lambda), so the task role holds `sagemaker:InvokeEndpoint`.
+- Local toolchain: Node 20+, Python 3.11, Docker (for CDK Lambda layer bundling **and the two Fargate images**), AWS CLI v2.
 - Bedrock model access: Claude 3.5 Sonnet enabled in the target account/region.
 - CDK bootstrap: `cd infra && npx cdk bootstrap aws://ACCOUNT/us-east-1` (one-time).
 
@@ -37,6 +37,31 @@ Capture these outputs (printed at the end of `cdk deploy`):
 - `Chronos2DemoTools.ApiKeySecretArnOut` → `API_KEY_SECRET_ARN`
 - `Chronos2DemoFrontend.AmplifyAppIdOut` → `AMPLIFY_APP_ID`
 - `Chronos2DemoFrontend.AmplifyDomainOut` → `APP_URL`
+
+### 1a. Build and push the two Fargate images
+
+The `cdk deploy` creates two **empty** ECR repos (`baseline_mc`, `chronos2`); the
+Fargate tasks need `:latest` images pushed before the agent can run them. Build
+and push both from the repo root (the chronos2 image bundles `autogluon-cloud`,
+so it is large — allow several minutes):
+
+```bash
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+ECR=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
+aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR
+
+# Resolve the two repo names from the ToolsStack (CDK auto-names them).
+BASELINE_REPO=$(aws ecr describe-repositories \
+  --query "repositories[?contains(repositoryName,'baselinemcrepo')].repositoryName | [0]" --output text)
+CHRONOS2_REPO=$(aws ecr describe-repositories \
+  --query "repositories[?contains(repositoryName,'chronos2repo')].repositoryName | [0]" --output text)
+
+docker build -f tools/fargate/baseline_mc/Dockerfile -t $ECR/$BASELINE_REPO:latest .
+docker push $ECR/$BASELINE_REPO:latest
+
+docker build -f tools/fargate/run_chronos2/Dockerfile -t $ECR/$CHRONOS2_REPO:latest .
+docker push $ECR/$CHRONOS2_REPO:latest
+```
 
 Fetch the API key from Secrets Manager:
 ```bash
@@ -151,7 +176,9 @@ Expected: empty list.
 | `cdk deploy` fails on Lambda layer asset | Docker not running locally | Start Docker Desktop; or set `--no-bundle` if using a pre-built layer asset |
 | `bedrock-agentcore:InvokeAgentRuntime` AccessDenied | Claude 3.5 Sonnet not enabled in the account/region | Bedrock console → Model access → Request access |
 | Streaming endpoint returns 401 | Wrong API key in browser localStorage | Clear `localStorage["chronos2-demo-session"]`, reload, paste new key |
-| Fargate baseline-MC task ENOSPC | Low ephemeral storage | Edit `tools-stack.ts` Fargate task `ephemeralStorageGiB` and redeploy |
+| Fargate task ENOSPC (baseline-MC or chronos2) | Low ephemeral storage; the chronos2 image is large (AutoGluon) | Edit the relevant `tools-stack.ts` Fargate task `ephemeralStorageGiB` and redeploy |
+| chronos2 task fails immediately / `CannotPullContainerError` | ECR image not pushed after first `cdk deploy` | Run the §1a build-and-push step for the `chronos2` repo |
+| chronos2 task `AccessDenied` on `sagemaker:InvokeEndpoint` | Endpoint name mismatch | Confirm `CHRONOS2_ENDPOINT` matches the deployed AutoGluon endpoint; the task role is scoped to that exact name |
 | Empty transcript after `/invoke` | Gateway target not invoking tool Lambda | Check `cloudwatch logs tail /aws/lambda/<tool-fn>` and the agent's `bedrock-agentcore:InvokeAgentRuntime` trace in CloudWatch |
 | SSE stream cuts off mid-stream | Lambda timeout shorter than agent latency | Bump `sseFn` timeout in `api-stack.ts` (max 15 min for Function URL streaming) |
 | Build fails on `npm run e2e` for first time | Playwright browsers not installed | `npx playwright install --with-deps chromium` |

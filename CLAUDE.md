@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-This repo is **docs-only as of 2026-05-22**. The source of truth lives under `docs/superpowers/`:
+**Plan A + Plan B are code-complete on `main` as of 2026-06-04** (96 core tests + 69 tools/agent tests passing). The shipped code is the primary source of truth; the design docs under `docs/superpowers/` remain the authoritative *reference* for intent, task history, and copy-pasteable module code:
 
-- `specs/2026-05-22-numerix-chronos2-poc-design.md` — approved design spec
+- `specs/2026-05-22-numerix-chronos2-poc-design.md` — original design spec (2026-05-22). **Intentionally not updated** after the 2026-06-04 AutoGluon/quantile/Fargate/9-tool re-architecture — see the "spec vs plan" rule below. Treat architectural details here as historical unless they match the code.
 - `plans/2026-05-22-plan-a-quant-pipeline*.md` — Plan A (Python core + notebook), 8 files, 30 tasks across 9 stages
-- `plans/2026-05-22-plan-b-ux-agent*.md` — Plan B (CDK infra, AgentCore copilot, Cloudscape SPA), 9 files, 26 tasks across 10 stages. Depends on Plan A being merged.
+- `plans/2026-05-22-plan-b-ux-agent*.md` — Plan B (CDK infra, AgentCore copilot, Cloudscape SPA), 9 files, 26 tasks across 10 stages.
 
-When the user asks about implementation details, **read the plan files first**. They contain the complete, copy-pasteable code for every module — including failing tests, expected pytest output, and commit messages. Don't reinvent. Don't paraphrase. Plan A part-1 and Plan B part-1 each have a locked-in file-structure tree — follow them exactly.
+When the user asks about implementation details, **read the shipped code first, then the plan files** — the plans contain the complete, copy-pasteable code for every module (including failing tests, expected pytest output, and commit messages) and explain *why* each piece exists. Don't reinvent. Don't paraphrase. Plan A part-1 and Plan B part-1 each have a locked-in file-structure tree.
 
 **Multi-part plans**: files end with `> _Continue with <next-file>._` — read the whole chain before claiming "the plan says X."
 
@@ -38,7 +38,7 @@ Plan A enforces a rigid per-task workflow that future Claude instances must pres
 
 1. **5-step TDD pattern per task**: write failing test → run, confirm fail → implement minimal code → run, confirm pass → commit. Each step is a checkbox in the plan; tick them in order, never batch.
 2. **One commit per task** with the message exactly as written in the plan, including the `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>` trailer.
-3. **Tests are hermetic**. Network and SageMaker calls are mocked; matplotlib uses `Agg`; the `PathSet` dataclass and shared fixtures live in `tests/conftest.py`. Don't introduce live network calls into the test suite.
+3. **Tests are hermetic**. Network and SageMaker/AutoGluon calls are mocked; matplotlib uses `Agg`; the `PathSet` dataclass lives in `src/chronos2_demo/types.py`, and shared fixtures live in `tests/conftest.py`. Don't introduce live network calls into the test suite.
 4. **Pinned numbers** (Task 29) — the headline PFE delta is computed once from a frozen synthetic panel under fixed seeds and asserted with a regression test. Keep `tests/fixtures/headline_panel.parquet` checked in (it bypasses the `data/` gitignore via a `!tests/fixtures/` exception).
 5. **No covariates in the parametric baseline.** That asymmetry (Chronos-2 sees VIX/MOVE/WTI; baseline doesn't) is part of the value story, not a bug.
 
@@ -54,9 +54,9 @@ If a task has no failing test (Stage 0 bootstrap), the plan says so — follow w
 - **Amplify Hosting uses manual zip deploys** (`aws amplify create-deployment` + curl PUT to `zipUploadUrl` + `start-deployment`), not GitHub source.
 - **Sessions table:** PK=`session_id`, SK=`turn_id` (ISO-8601 timestamp + `#role`). Roles: `{user, assistant, tool}`.
 
-## Module layout (planned)
+## Module layout
 
-The plan locks in this structure under `src/chronos2_demo/` — each subdirectory is one responsibility:
+The Plan A package lives under `src/chronos2_demo/` — each subdirectory is one responsibility:
 
 - `data/` — fetchers, alignment, covariates, regime labels
 - `models/baseline_mc.py` — PCA + Hull-White + GBM joint sampler (Stage 2)
@@ -67,12 +67,20 @@ The plan locks in this structure under `src/chronos2_demo/` — each subdirector
 - `plotting/` — thin matplotlib helpers, return `Figure` objects (Stage 7)
 - `infra/sagemaker_endpoint.py` — Chronos-2 deploy/teardown via AutoGluon Cloud (`deploy_demo_endpoint`/`delete_demo_endpoint`/`open_endpoint`; serverless default) (Stage 3)
 
-Tests mirror this tree under `tests/`. The `PathSet` dataclass (Task 7 territory) — `paths: ndarray (n_paths, horizon, n_series)`, `weights`, `series`, `dates`, `source` — is the shared contract between engines, blender, pricing, and diagnostics. **Don't change its shape without updating every consumer.**
+Tests mirror this tree under `tests/`. The `PathSet` dataclass (`src/chronos2_demo/types.py`, Task 6 territory) — `paths: ndarray (n_paths, horizon, n_series)`, `weights`, `series`, `dates`, `source` — is the shared contract between engines, blender, pricing, and diagnostics. **Don't change its shape without updating every consumer.**
 
-## Once code exists (Stage 0 onward)
+Plan B wraps that package in these top-level directories (each its own deploy/test surface):
+
+- `agent/` — AgentCore copilot: `action_groups.json` (9 tool schemas), `system_prompt.md`, `runtime/` (containerized Strands agent), `knowledge/` (use-case briefs), `tests/`
+- `tools/` — tool implementations: `lambda/` (9 tool handlers + sessions/invoke/sse_relay/authorizer + `shared/`) and `fargate/` (`baseline_mc`, `run_chronos2` async workers); `tests/`
+- `infra/` — CDK app (TypeScript): 7 stacks under `lib/` (network, storage, tools, agent, api, frontend, observability) + `test/` jest snapshots
+- `frontend/` — Cloudscape React SPA (Vite + vitest + Playwright): chat panel, what-if form, SSE streaming
+- `scripts/` — `snapshot_data.py`, `deploy_chronos2_endpoint.py`; `docs/runbook.md` — deploy/demo/teardown runbook
+
+## Commands
 
 ```bash
-# bootstrap (Task 1)
+# bootstrap
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 

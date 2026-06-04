@@ -1,8 +1,10 @@
 # Numerix x Chronos-2 PoC — Design
 
-**Status:** Approved (pending user spec review)
-**Date:** 2026-05-22
+**Status:** Approved — implemented (Plan A + Plan B code-complete on `main`, 2026-06-04)
+**Date:** 2026-05-22 (Chronos-2 deployment/serving sections refreshed 2026-06-04)
 **Author:** Brainstorming session output
+
+> **2026-06-04 re-architecture note.** The original design assumed Chronos-2 ran on a hand-rolled **SageMaker real-time endpoint returning sample paths**. The implemented system instead deploys Chronos-2 via **AutoGluon Cloud (serverless default)**, which returns **per-series quantiles**; the client reconstructs joint `(n_paths, horizon, n_series)` paths client-side via inverse-CDF marginals coupled by a lookback Gaussian copula. The two `run_*` tools became **async ECS Fargate tasks** with paired `check_*` poll tools (so the live tool surface is **9 tools**, not 7). §5–§9 below have been updated to reflect this; the augmentation story, narrative, and evaluation are unchanged.
 
 ## 1. Purpose & Audience
 
@@ -81,10 +83,11 @@ A ~10-minute live story arc in six beats:
               ▼
    ┌─────────────────────┐    ┌──────────────────────────────────┐
    │ Baseline MC Tool    │    │ Chronos-2 Inference Tool         │
-   │ ECS Fargate task    │◄──►│ SageMaker real-time endpoint     │
-   │ Hull-White + GBM    │    │ (joint multi-series forecast,    │
-   │ + PCA correlation   │    │  optional exogenous covariates,  │
-   │ (no covariates)     │    │  optional conditioning prefix)   │
+   │ ECS Fargate task    │◄──►│ ECS Fargate task → AutoGluon     │
+   │ Hull-White + GBM    │    │ Cloud serverless endpoint        │
+   │ + PCA correlation   │    │ (per-series quantiles → joint    │
+   │ (no covariates)     │    │  paths via lookback copula;      │
+   │                     │    │  covariates; optional cond.)     │
    └──────────┬──────────┘    └──────────────┬───────────────────┘
               │                              │
               └──────────┬───────────────────┘
@@ -113,7 +116,7 @@ A ~10-minute live story arc in six beats:
 
 - **Data Tool** — fetches and aligns the FX/rates panel and covariate block from S3, attaches regime labels.
 - **Baseline MC Tool** — parametric joint scenario engine: PCA on factor returns + Hull-White short-rate dynamics + GBM-style FX, Cholesky-driven joint sampling. Does **not** consume covariates.
-- **Chronos-2 Inference Tool** — wraps a SageMaker real-time endpoint. Supports unconditional joint forecast, conditioning by prefix observations, and exogenous covariates.
+- **Chronos-2 Inference Tool** — an async ECS Fargate task that calls a Chronos-2 endpoint deployed via AutoGluon Cloud (serverless default). The endpoint returns per-series probabilistic **quantiles**; the client reconstructs joint paths via a lookback Gaussian copula. Supports unconditional joint forecast, conditioning by prefix observations, and exogenous covariates. (Launched by a thin `run_chronos2` Lambda; polled via `check_chronos2`.)
 - **Reweighting / Regime Tool** — the augmentation layer. Detects regime, scores parametric vs. Chronos-2 path sets against historical conditional behavior, produces a blended weighted path tensor.
 - **Pricing & Exposure Tool** — the "Numerix machinery" stand-in: XCCY book valuation along each path → EE/PFE/ES. Identical interface for parametric, augmented, or Chronos-2-only inputs.
 - **Plotting Tool** — emits chart artifacts (PNG to S3) the front-end renders.
@@ -129,7 +132,7 @@ The piece quants will scrutinize first.
 
 **Step 1 — Generate two parallel path sets.** Both keyed off the same as-of date and same lookback context.
 - **Parametric:** N=5,000 joint paths over horizon H (e.g., 1y daily). PCA + Hull-White + GBM-style FX, Cholesky-driven joint sampling.
-- **Chronos-2:** N=5,000 joint paths via SageMaker. Multi-series probabilistic forecast over the same horizon, conditioned on the same context **plus exogenous covariates** (VIX, MOVE, WTI).
+- **Chronos-2:** N=5,000 joint paths via the AutoGluon Cloud endpoint. The endpoint returns per-series probabilistic quantiles over the same horizon (conditioned on the same context **plus exogenous covariates** — VIX, MOVE, WTI); the client reconstructs the joint `(n_paths, horizon, n_series)` set by inverse-CDF marginal sampling coupled with a lookback Gaussian copula (cross-series correlation estimated from the shared lookback window).
 
 **Step 2 — Detect regime context.** Look at the trailing 20–60 days of realized factor behavior up to the as-of date. Compute a small, transparent feature set (rolling vol, FX-rates correlation level, vol-of-vol). Map to a regime weight `w_stress ∈ [0, 1]`:
 - `0` = calm regime → trust parametric
@@ -161,13 +164,17 @@ The regime detector is a **deterministic rule set**, not a learned model. It is 
 
 | Tool | Purpose | Returns |
 |---|---|---|
-| `load_data(as_of_date, lookback_days)` | Aligned panel + covariates + regime labels from S3 | DataFrame handle (S3 URI) |
-| `run_baseline_mc(panel, horizon, n_paths)` | Parametric joint scenarios (no covariates) | Paths handle |
-| `run_chronos2(panel, horizon, n_paths, covariates?, conditioning?)` | Chronos-2 joint forecast (zero-shot) | Paths handle |
-| `blend_paths(parametric_paths, chronos_paths, regime_features)` | Reweighting / regime augmentation | Weighted paths handle |
-| `price_book(book_id, paths, weights)` | XCCY exposure → EE/PFE/ES | Metrics + per-time-bucket tensor |
+| `load_data(as_of_date, lookback_days)` | Aligned panel + covariates + regime labels from S3 | Panel handle (S3 URI) |
+| `run_baseline_mc(panel, horizon, n_paths)` | Launch parametric joint scenarios (no covariates) as an async Fargate task | `{task_arn, paths_uri}` |
+| `check_baseline_mc(task_arn, paths_uri)` | Poll the baseline-MC Fargate task | `{task_status, ready, paths_uri}` |
+| `run_chronos2(panel, horizon, n_paths, covariates?)` | Launch Chronos-2 joint forecast (zero-shot) as an async Fargate task | `{task_arn, paths_uri}` |
+| `check_chronos2(task_arn, paths_uri)` | Poll the Chronos-2 Fargate task | `{task_status, ready, paths_uri}` |
+| `blend_paths(parametric_paths, chronos_paths, w_stress)` | Reweighting / regime augmentation | Weighted paths handle |
+| `price_book(paths)` | XCCY exposure → EE/PFE/ES | Metrics + per-time-bucket tensor |
 | `plot(spec)` | Renders fan charts, PFE overlays, regime ribbons | Image S3 URI |
 | `lookup_use_case(topic)` | Curated knowledge for the closing tour | Markdown brief |
+
+> The two `run_*` tools are **asynchronous launchers** (they start a Fargate task and return a handle); the agent polls the matching `check_*` tool until `ready` before consuming `paths_uri`. The conditioning/what-if prefix is supported by the core `simulate_chronos2` but is not yet wired through the agent's `run_chronos2` tool schema (deferred follow-up; see Plan B part-4).
 
 **Constraints on the agent:**
 - Cannot author math or run code outside this tool surface.
@@ -205,15 +212,15 @@ All three are computed once and **pinned** for the demo so headlines do not drif
 | API | API Gateway + Lambda authorizer | Demo-grade API key; Cognito-swappable |
 | Agent | Bedrock AgentCore | Claude (Sonnet-class default); CloudWatch traces |
 | Data tool | Lambda | Reads S3 panel + covariates |
-| Baseline MC | ECS Fargate task | Python (numpy/scipy); on-demand |
-| Chronos-2 | SageMaker real-time endpoint | One ml.g5.xlarge (or similar); stoppable between demos |
+| Baseline MC | ECS Fargate task (launcher + poll Lambdas) | Python (numpy/scipy); on-demand; own ECR image |
+| Chronos-2 | ECS Fargate task (launcher + poll Lambdas) → AutoGluon Cloud serverless endpoint | Fargate image bundles `autogluon-cloud` (too heavy for a Lambda layer); task role holds `sagemaker:InvokeEndpoint`. Serverless endpoint = CPU, scales to zero between demos (`ml.g5.xlarge` realtime is an optional fallback). |
 | Blend / pricing | Lambda | Pure Python; vectorized over paths |
 | Plotting | Lambda | matplotlib → S3 PNG; FE renders the URI |
 | Storage | S3 | Panel, covariates, regime labels, sample book, plots, traces |
-| Observability | CloudWatch Logs + X-Ray | AgentCore tool traces |
+| Observability | CloudWatch Logs + X-Ray | AgentCore tool traces; per-Lambda error alarms + dashboard |
 | IAM | Per-tool least-privilege roles | Standard |
 
-**Cost shape:** dominated by SageMaker endpoint when running. Stop between demos. Single-region (us-east-1).
+**Cost shape:** the serverless Chronos-2 endpoint scales to zero between demos, so steady-state cost is near-zero; the dominant run-time cost is the two on-demand Fargate tasks while a scenario set is generating. Single-region (us-east-1).
 
 ## 10. Closing Tour: Adjacent Use Cases
 

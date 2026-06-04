@@ -4,9 +4,9 @@
 
 **Goal:** Build the end-to-end quant pipeline (data → parallel scenario engines → regime-aware augmentation → XCCY pricing/PFE → diagnostics) in pure Python, drivable from a Jupyter notebook that walks the headline demo narrative.
 
-**Architecture:** Python 3.11 package `chronos2_demo` with focused modules per responsibility (data, regime detection, baseline MC, Chronos-2 client, augmentation, pricing, plotting, diagnostics). Chronos-2 runs on a SageMaker real-time endpoint accessed via boto3; baseline MC runs in-process. A `notebooks/headline_demo.ipynb` notebook drives the full story end-to-end.
+**Architecture:** Python 3.11 package `chronos2_demo` with focused modules per responsibility (data, regime detection, baseline MC, Chronos-2 client, augmentation, pricing, plotting, diagnostics). Chronos-2 is deployed via AutoGluon Cloud (serverless default) and returns per-series quantiles, which the client reconstructs into joint paths client-side (inverse-CDF + lookback Gaussian copula); baseline MC runs in-process. A `notebooks/headline_demo.ipynb` notebook drives the full story end-to-end. (See part-2b for the authoritative Stage 3 detail.)
 
-**Tech Stack:** Python 3.11, numpy, scipy, pandas, scikit-learn, matplotlib, boto3, sagemaker SDK, pytest, Jupyter. Data sources: FRED API (rates), ECB SDW (FX), public covariates (VIX, MOVE, WTI). Storage: local Parquet + S3.
+**Tech Stack:** Python 3.11, numpy, scipy, pandas, scikit-learn, matplotlib, boto3, autogluon-cloud (deploy-only extra), pytest, Jupyter. Data sources: FRED API (rates), ECB SDW (FX), public covariates (VIX, MOVE, WTI). Storage: local Parquet + S3.
 
 **Reference spec:** `docs/superpowers/specs/2026-05-22-numerix-chronos2-poc-design.md`.
 
@@ -38,7 +38,7 @@ chronos-2-demo/
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── baseline_mc.py              # PCA + Hull-White + GBM joint sampler
-│   │   └── chronos2_client.py          # SageMaker endpoint wrapper
+│   │   └── chronos2_client.py          # AutoGluon Cloud endpoint client (quantiles → joint paths)
 │   ├── augmentation/
 │   │   ├── __init__.py
 │   │   ├── regime_detector.py          # rolling features → w_stress
@@ -60,7 +60,7 @@ chronos-2-demo/
 │   │   └── regime_ribbon.py            # regime indicator strip
 │   └── infra/
 │       ├── __init__.py
-│       └── sagemaker_endpoint.py       # deploy/teardown Chronos-2 endpoint
+│       └── sagemaker_endpoint.py       # deploy/teardown Chronos-2 via AutoGluon Cloud
 │                                       # (S3 helpers deferred to Plan B — the
 │                                       #  notebook reads/writes data/curated/
 │                                       #  locally; only Lambda tools need S3)
@@ -89,7 +89,7 @@ chronos-2-demo/
 │   └── headline_demo.ipynb             # plan deliverable: end-to-end story
 ├── scripts/
 │   ├── snapshot_data.py                # one-shot: pull raw → curated parquet → S3
-│   └── deploy_chronos2_endpoint.py     # one-shot: SageMaker endpoint up/down
+│   └── deploy_chronos2_endpoint.py     # one-shot: AutoGluon Cloud endpoint up/down
 └── docs/
     └── superpowers/
         ├── specs/   (existing spec)
@@ -107,7 +107,7 @@ This plan groups tasks into stages. Each stage produces something runnable end-t
 - **Stage 0 — Repo bootstrap & data snapshot** (Tasks 1–4)
 - **Stage 1 — Regime labeler & feature foundation** (Tasks 5–6)
 - **Stage 2 — Baseline parametric MC** (Tasks 7–10)
-- **Stage 3 — Chronos-2 client & SageMaker deployment** (Tasks 11–14)
+- **Stage 3 — Chronos-2 client & AutoGluon Cloud deployment** (Tasks 11–14)
 - **Stage 4 — Augmentation: regime detector + blender** (Tasks 15–17)
 - **Stage 5 — Pricing & exposure (XCCY book, EE/PFE/ES)** (Tasks 18–21)
 - **Stage 6 — Diagnostics (coverage, tail dependence, distribution sanity)** (Tasks 22–24)

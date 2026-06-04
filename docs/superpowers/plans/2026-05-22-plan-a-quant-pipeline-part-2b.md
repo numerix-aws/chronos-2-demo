@@ -1,4 +1,4 @@
-# Plan A — Part 2b: Stage 3 — Chronos-2 Client & SageMaker Deployment
+# Plan A — Part 2b: Stage 3 — Chronos-2 Client & AutoGluon Cloud Deployment
 
 > **Continuation of** `2026-05-22-plan-a-quant-pipeline-part-2a.md`. Tasks 11–14.
 
