@@ -12,7 +12,7 @@ import { ObservabilityStack } from '../lib/observability-stack';
 const app = new cdk.App();
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1' };
 const demoTag = app.node.tryGetContext('demoTag') ?? 'chronos2-demo';
-const chronos2EndpointName = process.env.CHRONOS2_ENDPOINT_NAME ?? 'chronos2-demo-endpoint';
+const chronos2EndpointName = process.env.CHRONOS2_ENDPOINT_NAME ?? 'chronos2-demo-ep';
 
 cdk.Tags.of(app).add('Project', demoTag);
 cdk.Tags.of(app).add('chronos2-demo:teardown', 'on');

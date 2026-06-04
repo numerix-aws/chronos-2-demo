@@ -12,28 +12,31 @@ function build() {
     vpc: network.vpc,
     dataBucket: storage.dataBucket,
     plotsBucket: storage.plotsBucket,
-    chronos2EndpointName: 'chronos2-demo-endpoint',
+    chronos2EndpointName: 'chronos2-demo-ep',
   });
   return Template.fromStack(tools);
 }
 
-test('creates 8 Python Lambdas + 1 Node authorizer', () => {
+test('creates 9 Python Lambdas + 1 Node authorizer', () => {
   const t = build();
-  // 8 Python tool Lambdas (load_data, blend_paths, price_book, plot,
-  // lookup_use_case, run_chronos2, run_baseline_mc launcher, check_baseline_mc)
-  // + 1 Node authorizer = 9. Allow >= 9 to absorb CDK custom-resource Lambdas.
+  // 9 Python tool Lambdas (load_data, blend_paths, price_book, plot,
+  // lookup_use_case, run_chronos2 launcher, check_chronos2, run_baseline_mc
+  // launcher, check_baseline_mc) + 1 Node authorizer = 10. Allow >= 10 to
+  // absorb CDK custom-resource Lambdas.
   const fns = t.findResources('AWS::Lambda::Function');
-  expect(Object.keys(fns).length).toBeGreaterThanOrEqual(9);
+  expect(Object.keys(fns).length).toBeGreaterThanOrEqual(10);
 });
 
-test('creates an ECS cluster + Fargate task definition', () => {
+test('creates one ECS cluster + two Fargate task definitions', () => {
   const t = build();
   t.resourceCountIs('AWS::ECS::Cluster', 1);
-  t.resourceCountIs('AWS::ECS::TaskDefinition', 1);
+  // baseline_mc + chronos2
+  t.resourceCountIs('AWS::ECS::TaskDefinition', 2);
 });
 
-test('creates an ECR repository with image scan on push', () => {
+test('creates two ECR repositories with image scan on push', () => {
   const t = build();
+  t.resourceCountIs('AWS::ECR::Repository', 2);
   t.hasResourceProperties('AWS::ECR::Repository', Match.objectLike({
     ImageScanningConfiguration: { ScanOnPush: true },
   }));
@@ -52,7 +55,7 @@ test('exposes lambda function references', () => {
     vpc: network.vpc,
     dataBucket: storage.dataBucket,
     plotsBucket: storage.plotsBucket,
-    chronos2EndpointName: 'chronos2-demo-endpoint',
+    chronos2EndpointName: 'chronos2-demo-ep',
   });
   expect(tools.fnLoadData).toBeDefined();
   expect(tools.fnBlendPaths).toBeDefined();
@@ -60,6 +63,7 @@ test('exposes lambda function references', () => {
   expect(tools.fnPlot).toBeDefined();
   expect(tools.fnLookupUseCase).toBeDefined();
   expect(tools.fnRunChronos2).toBeDefined();
+  expect(tools.fnCheckChronos2).toBeDefined();
   expect(tools.fnRunBaselineMc).toBeDefined();
   expect(tools.fnCheckBaselineMc).toBeDefined();
   expect(tools.fnAuthorizer).toBeDefined();
@@ -67,4 +71,5 @@ test('exposes lambda function references', () => {
   expect(tools.apiKeySecretArn).toBeDefined();
   expect(tools.baselineMcTaskDef).toBeDefined();
   expect(tools.baselineMcCluster).toBeDefined();
+  expect(tools.chronos2TaskDef).toBeDefined();
 });
