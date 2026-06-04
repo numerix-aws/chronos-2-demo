@@ -13,6 +13,8 @@
 - Create: `frontend/tests/e2e/happy_path.spec.ts`
 - Create: `frontend/tests/e2e/.env.example`
 - Modify: `frontend/package.json` — add `@playwright/test` and `e2e` script
+- Modify: `frontend/vite.config.ts` — scope vitest's `include` to unit tests only (see Step 1b)
+- Modify: `frontend/.gitignore` — ignore Playwright output dirs
 
 The single E2E test runs against a **deployed `dev` stack only** (Plan B Executor's Contract). It loads the SPA, sends a fixed prompt that exercises the full chain (`load_data → run_baseline_mc → run_chronos2 → blend_paths → price_book → plot`), and asserts the assistant produces a streamed response containing an inline image URL pointing at the plots S3 bucket.
 
@@ -31,6 +33,30 @@ Add to `scripts`:
 Then:
 ```bash
 cd frontend && npm install && npx playwright install --with-deps chromium
+```
+
+- [ ] **Step 1b: Stop vitest from collecting the Playwright spec**
+
+Vitest's default test glob (`**/*.{test,spec}.?(c|m)[jt]s?(x)`) also matches the new
+`tests/e2e/happy_path.spec.ts`, and Playwright's top-level `test.skip(condition, msg)`
+is invalid under vitest — so `npm test` (the unit suite) fails to collect once the spec
+exists. All unit tests are named `*.test.{ts,tsx}`; the only `*.spec.ts` is the e2e file.
+Scope vitest's `include` to unit tests in `frontend/vite.config.ts` (leave the rest of the
+`test` block untouched):
+
+```typescript
+  test: {
+    environment: 'happy-dom',
+    globals: true,
+    setupFiles: ['./tests/setup.ts'],
+    include: ['tests/**/*.test.{ts,tsx}'],
+  },
+```
+
+Add Playwright's output dirs to `frontend/.gitignore`:
+```
+test-results/
+playwright-report/
 ```
 
 - [ ] **Step 2: Create `frontend/playwright.config.ts`**
@@ -148,10 +174,17 @@ cd frontend && npm run e2e
 
 Expected: 2 tests skipped (no `RUN_E2E=1`).
 
+Also confirm the unit suite still passes and ignores the e2e dir (the Step 1b fix):
+```bash
+cd frontend && npm test
+```
+Expected: the existing unit suites pass; `tests/e2e/` is not collected.
+
 - [ ] **Step 6: Commit**
 
 ```bash
-git add frontend/playwright.config.ts frontend/tests/e2e/ frontend/package.json
+git add frontend/playwright.config.ts frontend/tests/e2e/ frontend/package.json \
+  frontend/package-lock.json frontend/vite.config.ts frontend/.gitignore
 git commit -m "test(frontend): Playwright E2E happy-path gated on RUN_E2E
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
@@ -320,10 +353,10 @@ Expected: empty list.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `cdk deploy` fails on Lambda layer asset | Docker not running locally | Start Docker Desktop; or set `--no-bundle` if using a pre-built layer asset |
-| `bedrock:InvokeAgent` AccessDenied | Claude 3.5 Sonnet not enabled in the account/region | Bedrock console → Model access → Request access |
+| `bedrock-agentcore:InvokeAgentRuntime` AccessDenied | Claude 3.5 Sonnet not enabled in the account/region | Bedrock console → Model access → Request access |
 | Streaming endpoint returns 401 | Wrong API key in browser localStorage | Clear `localStorage["chronos2-demo-session"]`, reload, paste new key |
 | Fargate baseline-MC task ENOSPC | Low ephemeral storage | Edit `tools-stack.ts` Fargate task `ephemeralStorageGiB` and redeploy |
-| Empty transcript after `/invoke` | Agent action group not invoking Lambda | Check `cloudwatch logs tail /aws/lambda/<tool-fn>` and the agent's `bedrock:InvokeAgent` trace in CloudWatch |
+| Empty transcript after `/invoke` | Gateway target not invoking tool Lambda | Check `cloudwatch logs tail /aws/lambda/<tool-fn>` and the agent's `bedrock-agentcore:InvokeAgentRuntime` trace in CloudWatch |
 | SSE stream cuts off mid-stream | Lambda timeout shorter than agent latency | Bump `sseFn` timeout in `api-stack.ts` (max 15 min for Function URL streaming) |
 | Build fails on `npm run e2e` for first time | Playwright browsers not installed | `npx playwright install --with-deps chromium` |
 
@@ -357,7 +390,7 @@ At this point:
 - 26 tasks across 9 stages, each with a TDD-shaped flow and one commit.
 - Seven CDK stacks: Network, Storage, Tools, Agent, Api, Frontend, Observability.
 - Six Python tool Lambdas + one Node authorizer + one Node SSE relay + one Fargate task.
-- One Bedrock AgentCore agent with seven action groups bound to the tool Lambdas.
+- One Bedrock AgentCore agent: a Gateway with eight MCP tool targets bound to the tool Lambdas, plus a containerized Strands runtime + endpoint.
 - Cloudscape SPA on Amplify Hosting with chat, inline images, and what-if form.
 - One Playwright E2E test gated on `RUN_E2E=1`.
 - Dashboards, alarms, and a runbook that documents the full demo and teardown.

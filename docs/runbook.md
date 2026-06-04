@@ -149,10 +149,10 @@ Expected: empty list.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `cdk deploy` fails on Lambda layer asset | Docker not running locally | Start Docker Desktop; or set `--no-bundle` if using a pre-built layer asset |
-| `bedrock:InvokeAgent` AccessDenied | Claude 3.5 Sonnet not enabled in the account/region | Bedrock console → Model access → Request access |
+| `bedrock-agentcore:InvokeAgentRuntime` AccessDenied | Claude 3.5 Sonnet not enabled in the account/region | Bedrock console → Model access → Request access |
 | Streaming endpoint returns 401 | Wrong API key in browser localStorage | Clear `localStorage["chronos2-demo-session"]`, reload, paste new key |
 | Fargate baseline-MC task ENOSPC | Low ephemeral storage | Edit `tools-stack.ts` Fargate task `ephemeralStorageGiB` and redeploy |
-| Empty transcript after `/invoke` | Agent action group not invoking Lambda | Check `cloudwatch logs tail /aws/lambda/<tool-fn>` and the agent's `bedrock:InvokeAgent` trace in CloudWatch |
+| Empty transcript after `/invoke` | Gateway target not invoking tool Lambda | Check `cloudwatch logs tail /aws/lambda/<tool-fn>` and the agent's `bedrock-agentcore:InvokeAgentRuntime` trace in CloudWatch |
 | SSE stream cuts off mid-stream | Lambda timeout shorter than agent latency | Bump `sseFn` timeout in `api-stack.ts` (max 15 min for Function URL streaming) |
 | Build fails on `npm run e2e` for first time | Playwright browsers not installed | `npx playwright install --with-deps chromium` |
 
