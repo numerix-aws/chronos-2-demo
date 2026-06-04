@@ -4,18 +4,17 @@ Inputs frozen:
   - tests/fixtures/headline_panel.parquet (built once)
   - n_paths = 1000, horizon = 21
   - seed = 0 for parametric MC
-  - mocked Chronos-2 returns deterministic samples drawn from a frozen seed
+  - mocked Chronos-2 returns deterministic quantile curves; client reconstructs paths under a fixed seed
 
 Asserts:
   - augmented PFE@97.5 terminal >= baseline PFE@97.5 terminal
   - the relative gap is within [5%, 200%]  (sanity band; not a tight pin)
 """
-import json
 from pathlib import Path
-from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.stats import norm
 from chronos2_demo.augmentation import blender, regime_detector
 from chronos2_demo.models import baseline_mc, chronos2_client
 from chronos2_demo.pricing import book, exposure
@@ -23,14 +22,29 @@ from chronos2_demo.pricing import book, exposure
 PANEL_PATH = Path(__file__).parent / "fixtures" / "headline_panel.parquet"
 
 
-def _mock_chronos_client(n_paths, horizon, n_series, seed=20260522):
-    rt = MagicMock()
-    rng = np.random.default_rng(seed)
-    samples = rng.normal(1.0, 0.01, size=(n_paths, horizon, n_series))
-    body = MagicMock()
-    body.read.return_value = json.dumps({"samples": samples.tolist()}).encode("utf-8")
-    rt.invoke_endpoint.return_value = {"Body": body}
-    return chronos2_client.Chronos2Client(endpoint_name="ep", runtime=rt)
+class _FakeEndpoint:
+    """AutoGluon endpoint stand-in returning a deterministic quantile frame.
+
+    Quantiles are spread around 1.0 (inverse-normal grid) so the reconstructed
+    paths have tails. simulate_chronos2 reconstructs under a fixed seed, so the
+    headline regression stays reproducible across runs.
+    """
+    def predict(self, data, target, id_column, timestamp_column,
+                prediction_length, known_covariates=None):
+        items = list(dict.fromkeys(data[id_column]))
+        future = pd.bdate_range("2022-07-01", periods=prediction_length)
+        rows = []
+        for item in items:
+            for t in range(prediction_length):
+                row = {id_column: item, timestamp_column: future[t], "mean": 1.0}
+                for ql in chronos2_client.Q_LEVELS:
+                    row[str(ql)] = 1.0 + norm.ppf(ql) * 0.02
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+
+def _mock_chronos_client(n_paths, horizon, n_series):
+    return chronos2_client.Chronos2Client(endpoint=_FakeEndpoint())
 
 
 @pytest.mark.skipif(not PANEL_PATH.exists(),
