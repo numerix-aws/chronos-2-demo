@@ -72,3 +72,28 @@ def test_compute_metrics_full_pipeline():
     assert metrics["pfe_975"].shape == (horizon,)
     assert metrics["es_975"].shape == (horizon,)
     assert len(metrics["dates"]) == horizon
+
+
+def test_compute_metrics_threads_cross_asset_instruments(rng):
+    import numpy as np, pandas as pd
+    from chronos2_demo.types import PathSet
+    from chronos2_demo.pricing import book as bk, exposure
+    series = ["USDEUR", "USDJPY", "USDGBP", "USD_2Y", "USD_5Y", "USD_10Y",
+              "EUR_2Y", "EUR_5Y", "EUR_10Y", "JPY_2Y", "JPY_5Y", "JPY_10Y",
+              "GBP_2Y", "GBP_5Y", "GBP_10Y", "SPX", "NIKKEI225", "US_IG_OAS"]
+    dates = pd.bdate_range("2022-07-01", periods=8)
+    # Realistic base levels: FX, rates (as decimals), equity index levels, and
+    # the OAS in PERCENT (US_IG_OAS ~1.20). The 20% relative vol makes portfolio
+    # MtM straddle zero so PFE@97.5 is meaningfully positive (not floored to 0).
+    base = np.array([1.08, 0.0088, 1.35, 0.020, 0.025, 0.030,
+                     0.000, 0.005, 0.010, 0.000, 0.000, 0.001,
+                     0.010, 0.015, 0.020, 4000.0, 28000.0, 1.20])
+    paths = np.abs(base * (1.0 + rng.normal(0, 0.20, size=(30, 8, len(series)))))
+    ps = PathSet(paths=paths, weights=np.full(30, 1/30), series=series,
+                 dates=dates, source="parametric")
+    swaps, eq, cds = bk.load_cross_asset_book(bk.DEFAULT_BOOK_PATH)
+    m_full = exposure.compute_metrics(swaps, ps, equity_forwards=eq, cds_protection=cds)
+    m_swaps = exposure.compute_metrics(swaps, ps)
+    assert m_full["pfe_975"].shape == (8,)
+    # Threading equity+credit through compute_metrics changes its PFE output.
+    assert not np.allclose(m_full["pfe_975"], m_swaps["pfe_975"])

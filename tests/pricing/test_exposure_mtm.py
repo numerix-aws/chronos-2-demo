@@ -50,3 +50,22 @@ def test_portfolio_mtm_responds_to_fx_shock_on_one_path():
                       dates=ps.dates, source="parametric")
     mtm = ex.portfolio_mtm(book, shocked)
     assert not np.isclose(mtm[0, 0], mtm[1, 0])
+
+
+def test_portfolio_mtm_includes_equity_and_credit(rng):
+    import numpy as np, pandas as pd
+    from chronos2_demo.types import PathSet
+    from chronos2_demo.pricing import book as bk, exposure
+    series = ["USDEUR", "USDJPY", "USDGBP", "USD_2Y", "USD_5Y", "USD_10Y",
+              "EUR_2Y", "EUR_5Y", "EUR_10Y", "JPY_2Y", "JPY_5Y", "JPY_10Y",
+              "GBP_2Y", "GBP_5Y", "GBP_10Y", "SPX", "NIKKEI225", "US_IG_OAS"]
+    dates = pd.bdate_range("2022-07-01", periods=10)
+    paths = np.abs(rng.normal(1.0, 0.05, size=(20, 10, len(series)))) + 0.5
+    ps = PathSet(paths=paths, weights=np.full(20, 1/20), series=series,
+                 dates=dates, source="parametric")
+    swaps, equities, cds = bk.load_cross_asset_book(bk.DEFAULT_BOOK_PATH)
+    mtm = exposure.portfolio_mtm(swaps, ps, equity_forwards=equities, cds_protection=cds)
+    assert mtm.shape == (20, 10)
+    # Dropping equity+credit changes the MtM (they contribute).
+    mtm_swaps_only = exposure.portfolio_mtm(swaps, ps)
+    assert not np.allclose(mtm, mtm_swaps_only)

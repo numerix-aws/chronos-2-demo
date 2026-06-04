@@ -30,5 +30,13 @@
     {"id": "xccy_gbp_usd_10y", "pay_ccy": "GBP", "pay_tenor": "10Y", "pay_notional": 12000000,
      "receive_ccy": "USD", "receive_tenor": "10Y", "receive_notional": 16200000,
      "spot_at_inception_quote_per_base": 1.35, "trade_date": "2022-01-03", "maturity_date": "2032-01-03"}
+  ],
+  "equity_forwards": [
+    {"id": "eqf_spx_long", "index": "SPX", "quote_ccy": "USD", "strike": null,
+     "notional": 2000, "direction": 1}
+  ],
+  "cds_protection": [
+    {"id": "cds_ig_buy", "spread_series": "US_IG_OAS", "notional": 50000000,
+     "rpv01": 4.5, "direction": 1}
   ]
 }

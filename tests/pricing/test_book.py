@@ -48,3 +48,13 @@ def test_default_demo_book_loads():
     ccy_pairs = {(s.pay_ccy, s.receive_ccy) for s in swaps}
     assert ("EUR", "USD") in ccy_pairs
     assert ("JPY", "USD") in ccy_pairs
+
+
+def test_load_book_parses_cross_asset_instruments():
+    from chronos2_demo.pricing import book as bk
+    swaps, equities, cds = bk.load_cross_asset_book(bk.DEFAULT_BOOK_PATH)
+    assert len(swaps) >= 8
+    assert len(equities) >= 1
+    assert len(cds) >= 1
+    assert equities[0].index in {"SPX", "NIKKEI225"}
+    assert cds[0].spread_series in {"US_IG_OAS", "US_HY_OAS"}

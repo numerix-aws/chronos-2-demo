@@ -11,21 +11,31 @@ import pandas as pd
 from chronos2_demo.pricing.book import XCCYSwap
 from chronos2_demo.pricing.xccy import value_swap_path, DEFAULT_FX_MAP
 from chronos2_demo.types import PathSet
+from chronos2_demo.pricing.instruments import (
+    EquityForward, CDSProtection, value_equity_forward_path, value_cds_protection_path,
+)
 
 
-def portfolio_mtm(book: Sequence[XCCYSwap], pathset: PathSet) -> np.ndarray:
-    """Return (n_paths, horizon) USD MtM tensor for the whole book."""
+def portfolio_mtm(
+    book: Sequence[XCCYSwap],
+    pathset: PathSet,
+    equity_forwards: Sequence[EquityForward] = (),
+    cds_protection: Sequence[CDSProtection] = (),
+) -> np.ndarray:
+    """Return (n_paths, horizon) USD MtM tensor for the whole cross-asset book."""
     n_paths = pathset.n_paths
     horizon = pathset.horizon
     out = np.zeros((n_paths, horizon))
     for i in range(n_paths):
         levels_i = pd.DataFrame(
-            pathset.paths[i],
-            index=pathset.dates,
-            columns=pathset.series,
+            pathset.paths[i], index=pathset.dates, columns=pathset.series,
         )
         for swap in book:
             out[i] += value_swap_path(swap, levels_i, DEFAULT_FX_MAP)
+        for fwd in equity_forwards:
+            out[i] += value_equity_forward_path(fwd, levels_i, DEFAULT_FX_MAP)
+        for cds in cds_protection:
+            out[i] += value_cds_protection_path(cds, levels_i)
     return out
 
 
@@ -69,8 +79,11 @@ def compute_es(mtm: np.ndarray, weights: np.ndarray, q: float = 0.975) -> np.nda
 
 
 def compute_metrics(book: Sequence[XCCYSwap], pathset: PathSet,
-                    q: float = 0.975) -> dict:
-    mtm = portfolio_mtm(book, pathset)
+                    q: float = 0.975,
+                    equity_forwards: Sequence[EquityForward] = (),
+                    cds_protection: Sequence[CDSProtection] = ()) -> dict:
+    mtm = portfolio_mtm(book, pathset, equity_forwards=equity_forwards,
+                        cds_protection=cds_protection)
     return {
         "ee":      compute_ee(mtm, pathset.weights),
         "pfe_975": compute_pfe(mtm, pathset.weights, q=q),

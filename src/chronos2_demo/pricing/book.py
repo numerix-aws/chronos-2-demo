@@ -11,6 +11,7 @@ from pathlib import Path
 import json
 
 from chronos2_demo import config
+from chronos2_demo.pricing.instruments import EquityForward, CDSProtection
 
 DEFAULT_BOOK_PATH = config.REPO_ROOT / "data" / "sample_book.json"
 
@@ -36,3 +37,14 @@ class XCCYSwap:
 def load_book(path: Path | str = DEFAULT_BOOK_PATH) -> list[XCCYSwap]:
     payload = json.loads(Path(path).read_text())
     return [XCCYSwap.from_dict(s) for s in payload["swaps"]]
+
+
+def load_cross_asset_book(
+    path: Path | str = DEFAULT_BOOK_PATH,
+) -> tuple[list[XCCYSwap], list[EquityForward], list[CDSProtection]]:
+    """Parse swaps + optional equity_forwards + cds_protection blocks."""
+    payload = json.loads(Path(path).read_text())
+    swaps = [XCCYSwap.from_dict(s) for s in payload.get("swaps", [])]
+    equities = [EquityForward.from_dict(e) for e in payload.get("equity_forwards", [])]
+    cds = [CDSProtection.from_dict(c) for c in payload.get("cds_protection", [])]
+    return swaps, equities, cds
