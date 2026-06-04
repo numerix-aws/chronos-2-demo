@@ -1,25 +1,35 @@
-"""Client for the Chronos-2 SageMaker real-time endpoint.
+"""Client for the Chronos-2 endpoint deployed via AutoGluon Cloud.
 
-Endpoint contract:
-  Request:  {"context": [[...]], "covariates": [[...]] | null,
-             "conditioning": {...} | null, "horizon": int, "n_samples": int}
-  Response: {"samples": [[[...]]]}  shape (n_samples, horizon, n_series)
+AutoGluon endpoint protocol (amazon/chronos-2):
+  Request:  a long-format DataFrame (item_id, timestamp, target, [covariates...])
+            plus an optional `known_covariates` future-frame; called as
+            endpoint.predict(data=frame, target="target", id_column="item_id",
+            timestamp_column="timestamp", prediction_length=H,
+            known_covariates=known).
+  Response: a long-format DataFrame with columns item_id, timestamp, mean, and
+            the quantile columns "0.1".."0.9" -- per-series QUANTILES, not paths.
 
-This file is split across Tasks 11-13. Task 11 adds encode/decode.
+The endpoint returns quantiles, not paths. `Chronos2Client.predict` (Task 12)
+turns the quantile block into joint sample paths via a lookback Gaussian copula.
+
+This file is split across Tasks 11-13. Task 11 adds the frame builder/decoder.
 """
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
-import json
 import numpy as np
 import pandas as pd
+
+# Fixed quantile grid (Chronos-2 default). Single source of truth for both the
+# request quantile_levels and decoding the returned quantile columns.
+Q_LEVELS: list[float] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
 
 @dataclass(frozen=True)
 class Conditioning:
-    """User-supplied stress narrative passed as a prefix anchor.
+    """User-supplied stress narrative passed as an `anchor` known covariate.
 
-    `series_shifts` is a per-series additive shift over the first
+    `series_shifts` is a per-series additive anchor applied over the first
     `n_anchor_days` of the forecast horizon (in absolute level units).
     """
     series_shifts: dict[str, float]
@@ -30,116 +40,63 @@ class Conditioning:
                 "n_anchor_days": int(self.n_anchor_days)}
 
 
-def encode_request(
+def build_request_frame(
     context: pd.DataFrame,
     horizon: int,
-    n_samples: int,
     covariates: pd.DataFrame | None,
     conditioning: Conditioning | None,
-) -> str:
-    if covariates is not None:
-        if not context.index.equals(covariates.index):
-            raise ValueError("covariates index must align with context index")
-    payload = {
-        "context": context.values.tolist(),
-        "covariates": (covariates.values.tolist() if covariates is not None else None),
-        "conditioning": (conditioning.to_jsonable() if conditioning is not None else None),
-        "horizon": int(horizon),
-        "n_samples": int(n_samples),
-    }
-    return json.dumps(payload)
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Wide lookback panel -> AutoGluon long-format (data_frame, known_covariates).
 
-
-def decode_response(body: str) -> np.ndarray:
-    obj = json.loads(body)
-    if "samples" not in obj:
-        raise KeyError("response missing 'samples'")
-    return np.asarray(obj["samples"], dtype=float)
-
-
-import time
-from typing import Optional
-
-
-class Chronos2Client:
-    """Thin wrapper around a SageMaker real-time endpoint."""
-
-    def __init__(
-        self,
-        endpoint_name: str,
-        runtime: Any,
-        max_retries: int = 2,
-        retry_sleep: float = 1.0,
-    ) -> None:
-        self.endpoint_name = endpoint_name
-        self.runtime = runtime
-        self.max_retries = max_retries
-        self.retry_sleep = retry_sleep
-
-    def predict(
-        self,
-        context: pd.DataFrame,
-        horizon: int,
-        n_samples: int,
-        covariates: Optional[pd.DataFrame] = None,
-        conditioning: Optional[Conditioning] = None,
-    ) -> np.ndarray:
-        body = encode_request(context, horizon, n_samples, covariates, conditioning)
-        last_err: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                resp = self.runtime.invoke_endpoint(
-                    EndpointName=self.endpoint_name,
-                    ContentType="application/json",
-                    Accept="application/json",
-                    Body=body,
-                )
-                return decode_response(resp["Body"].read().decode("utf-8"))
-            except Exception as e:  # botocore ClientError, network, etc.
-                last_err = e
-                if attempt < self.max_retries:
-                    time.sleep(self.retry_sleep)
-                    continue
-                raise
-        # unreachable, but keeps type-checkers happy:
-        raise RuntimeError("retry loop exited without return") from last_err
-
-
-from chronos2_demo.types import PathSet
-
-
-def simulate_chronos2(
-    client: Chronos2Client,
-    panel: pd.DataFrame,
-    as_of: str,
-    horizon: int,
-    n_paths: int,
-    lookback_days: int = 504,
-    covariates: Optional[pd.DataFrame] = None,
-    conditioning: Optional[Conditioning] = None,
-) -> PathSet:
-    """Slice the lookback window, call the endpoint, return a PathSet.
-
-    Both unconditional and conditional calls flow through here. When
-    `conditioning` is supplied, the source is "chronos2_conditional" so the
-    augmentation layer can apply w_stress=1 by convention.
+    `data_frame` has columns item_id, timestamp, target (+ covariate columns
+    broadcast across items). `known_covariates`, when conditioning is supplied,
+    carries a per-series `anchor` over the future horizon dates.
     """
-    as_of_ts = pd.Timestamp(as_of)
-    history = panel.loc[:as_of_ts].tail(lookback_days)
-    cov_slice = None
-    if covariates is not None:
-        cov_slice = covariates.loc[history.index]
-    samples = client.predict(history, horizon=horizon, n_samples=n_paths,
-                             covariates=cov_slice, conditioning=conditioning)
-    horizon_dates = pd.bdate_range(
-        start=as_of_ts + pd.tseries.offsets.BDay(1), periods=horizon
-    )
-    weights = np.full(n_paths, 1.0 / n_paths)
-    source: str = "chronos2_conditional" if conditioning is not None else "chronos2"
-    return PathSet(
-        paths=samples,
-        weights=weights,
-        series=list(panel.columns),
-        dates=horizon_dates,
-        source=source,  # type: ignore[arg-type]
-    )
+    if covariates is not None and not context.index.equals(covariates.index):
+        raise ValueError("covariates index must align with context index")
+
+    blocks = []
+    for series in context.columns:
+        block = pd.DataFrame({
+            "item_id": series,
+            "timestamp": context.index,
+            "target": context[series].values,
+        })
+        if covariates is not None:
+            for c in covariates.columns:
+                block[c] = covariates[c].values
+        blocks.append(block)
+    data_frame = pd.concat(blocks, ignore_index=True)
+
+    known = None
+    if conditioning is not None:
+        future_dates = pd.bdate_range(
+            start=context.index[-1] + pd.tseries.offsets.BDay(1), periods=horizon
+        )
+        kblocks = []
+        for series in context.columns:
+            shift = conditioning.series_shifts.get(series, 0.0)
+            anchor = np.zeros(horizon)
+            anchor[: min(conditioning.n_anchor_days, horizon)] = shift
+            kblocks.append(pd.DataFrame({
+                "item_id": series, "timestamp": future_dates, "anchor": anchor,
+            }))
+        known = pd.concat(kblocks, ignore_index=True)
+    return data_frame, known
+
+
+def decode_response(frame: pd.DataFrame, series: list[str]) -> tuple[list[float], np.ndarray]:
+    """Long-format quantile frame -> (q_levels, (n_series, horizon, n_q)).
+
+    `series` fixes the output order (matching the request panel columns).
+    """
+    missing = [str(ql) for ql in Q_LEVELS if str(ql) not in frame.columns]
+    if missing:
+        raise KeyError(f"response missing quantile columns: {missing}")
+    horizon = len(frame[frame["item_id"] == series[0]])
+    Q = np.empty((len(series), horizon, len(Q_LEVELS)), dtype=float)
+    for s, item in enumerate(series):
+        rows = frame[frame["item_id"] == item].sort_values("timestamp")
+        for j, ql in enumerate(Q_LEVELS):
+            Q[s, :, j] = rows[str(ql)].to_numpy(dtype=float)
+    return Q_LEVELS, Q
