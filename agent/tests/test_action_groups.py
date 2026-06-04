@@ -13,6 +13,7 @@ EXPECTED_OPERATIONS = {
     "run_baseline_mc",
     "check_baseline_mc",
     "run_chronos2",
+    "check_chronos2",
     "blend_paths",
     "price_book",
     "plot",
@@ -49,6 +50,7 @@ def test_each_request_schema_is_valid():
             if not isinstance(op, dict) or "requestBody" not in op:
                 continue
             schema = op["requestBody"]["content"]["application/json"]["schema"]
+            # Will raise if schema itself is malformed.
             Draft202012Validator.check_schema(schema)
 
 

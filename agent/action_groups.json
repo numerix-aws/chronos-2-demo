@@ -135,7 +135,7 @@
     "/run_chronos2": {
       "post": {
         "operationId": "run_chronos2",
-        "summary": "Sample augmenting paths from the Chronos-2 SageMaker endpoint.",
+        "summary": "Launch the Chronos-2 augmenting-paths job as an async Fargate task (AutoGluon Cloud endpoint). Returns immediately with a task handle; poll with check_chronos2.",
         "requestBody": {
           "required": true,
           "content": {
@@ -157,23 +157,64 @@
         },
         "responses": {
           "200": {
-            "description": "PathSet staged in S3",
+            "description": "Fargate task launched; PathSet lands at paths_uri when ready",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["paths_uri", "n_paths", "horizon"],
+                  "required": ["task_arn", "paths_uri"],
                   "properties": {
-                    "paths_uri": { "type": "string", "format": "uri" },
-                    "n_paths": { "type": "integer" },
-                    "horizon": { "type": "integer" }
+                    "task_arn": { "type": "string" },
+                    "paths_uri": { "type": "string", "format": "uri" }
                   }
                 }
               }
             }
           },
           "400": { "description": "Validation error" },
-          "502": { "description": "SageMaker endpoint failure" }
+          "500": { "description": "Fargate RunTask failed" }
+        }
+      }
+    },
+    "/check_chronos2": {
+      "post": {
+        "operationId": "check_chronos2",
+        "summary": "Poll the launched Chronos-2 Fargate task. Call repeatedly until ready is true, then use paths_uri.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "task_arn", "paths_uri"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "task_arn": { "type": "string" },
+                  "paths_uri": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Task status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["task_status", "ready", "paths_uri"],
+                  "properties": {
+                    "task_status": { "type": "string" },
+                    "ready": { "type": "boolean" },
+                    "paths_uri": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "500": { "description": "Fargate task failed" }
         }
       }
     },
