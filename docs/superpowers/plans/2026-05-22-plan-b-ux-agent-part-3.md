@@ -757,4 +757,4 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 ---
 
-> _Continue with `2026-05-22-plan-b-ux-agent-part-4.md` (Stages 3-4 — Fargate baseline MC, Chronos-2 proxy, tools-stack wiring, Tasks 10-13)._
+> _Continue with `2026-05-22-plan-b-ux-agent-part-4.md` (Stages 3-4 — Fargate baseline MC + Chronos-2, tools-stack wiring, Tasks 10-13)._

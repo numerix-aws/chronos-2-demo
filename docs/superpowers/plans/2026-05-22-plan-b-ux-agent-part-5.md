@@ -14,7 +14,7 @@
 - Create: `agent/tests/test_action_groups.py`
 - Modify: `pyproject.toml` — add `jsonschema>=4.21` to dev deps (for schema validation in tests)
 
-The agent reasons over Claude Sonnet using a fixed system prompt that names the eight tools, the headline narrative, and the safety rails. `action_groups.json` holds the per-tool input/output JSON schemas; Task 15 turns each entry into an AgentCore Gateway MCP **tool schema** (`toolSchema.inlinePayload`). It must mirror the input/output JSON envelopes already locked in by Tasks 5–11. (The filename is retained for continuity; despite the historical name it is no longer a classic Bedrock action-group OpenAPI doc consumed by `CfnAgent`.)
+The agent reasons over Claude Sonnet using a fixed system prompt that names the nine tools, the headline narrative, and the safety rails. `action_groups.json` holds the per-tool input/output JSON schemas; Task 15 turns each entry into an AgentCore Gateway MCP **tool schema** (`toolSchema.inlinePayload`). It must mirror the input/output JSON envelopes already locked in by Tasks 5–11. (The filename is retained for continuity; despite the historical name it is no longer a classic Bedrock action-group OpenAPI doc consumed by `CfnAgent`.)
 
 - [ ] **Step 1: Write the failing schema test**
 
@@ -35,6 +35,7 @@ EXPECTED_OPERATIONS = {
     "run_baseline_mc",
     "check_baseline_mc",
     "run_chronos2",
+    "check_chronos2",
     "blend_paths",
     "price_book",
     "plot",
@@ -138,19 +139,20 @@ You are a quantitative analyst's copilot built for Numerix. Your role is to demo
 The user follows §3 of the design spec, beat-by-beat:
 
 1. **Baseline parametric MC** — call `load_data`, then `run_baseline_mc` to *launch* the Fargate task. It returns a `task_arn` + the `paths_uri` where the result will land. Then poll `check_baseline_mc(task_arn, paths_uri)` until `ready` is true before using `paths_uri`.
-2. **Chronos-2 augmentation** — call `run_chronos2` to draw augmenting paths from the SageMaker endpoint (returns `paths_uri` immediately).
+2. **Chronos-2 augmentation** — call `run_chronos2` to *launch* the Fargate task that draws augmenting paths from the Chronos-2 endpoint. Like the baseline, it returns a `task_arn` + the `paths_uri` where the result will land. Then poll `check_chronos2(task_arn, paths_uri)` until `ready` is true before using `paths_uri`.
 3. **Blend** — call `blend_paths` with the parametric `paths_uri`, the chronos2 `paths_uri`, and a `w_stress` the user supplies (or defaults to 0.5 in stress regimes).
 4. **Price + exposure** — call `price_book` on the parametric PathSet and on the blended PathSet (each returns a `metrics_uri`), then `plot spec=pfe_overlay` with the two `metrics_uri`s to surface the delta.
 5. **What-if** — accept new `w_stress` or `as_of` and re-run from step 3.
 
 ## Tools
 
-You have eight tools, exposed to you as MCP tools through the AgentCore Gateway. Always call them with the schemas your tools advertise — never invent fields:
+You have nine tools, exposed to you as MCP tools through the AgentCore Gateway. Always call them with the schemas your tools advertise — never invent fields:
 
 - `load_data(session_id, as_of_date, lookback_days)` → `{panel_uri}`
 - `run_baseline_mc(session_id, panel_uri, as_of, horizon, n_paths, [n_components], [seed])` → `{task_arn, paths_uri}` *(async — launches Fargate)*
 - `check_baseline_mc(session_id, task_arn, paths_uri)` → `{task_status, ready, paths_uri}` *(poll until `ready`)*
-- `run_chronos2(session_id, panel_uri, as_of, horizon, n_paths, [covariates_uri])` → `{paths_uri, n_paths, horizon}`
+- `run_chronos2(session_id, panel_uri, as_of, horizon, n_paths, [covariates_uri])` → `{task_arn, paths_uri}` *(async — launches Fargate)*
+- `check_chronos2(session_id, task_arn, paths_uri)` → `{task_status, ready, paths_uri}` *(poll until `ready`)*
 - `blend_paths(session_id, parametric_uri, chronos2_uri, w_stress)` → `{blended_uri, w_stress, n_paths}`
 - `price_book(session_id, paths_uri)` → `{ee, pfe_975, es_975, dates, metrics_uri}`
 - `plot(session_id, spec, ...)` → `{image_uri}` — `spec=pfe_overlay` takes `baseline_uri` + `augmented_uri` (each a `metrics_uri` from `price_book`); `spec=path_fan` takes `paths_uri` + `series`; `spec=regime_ribbon` takes `regimes_uri` + `threshold`.
@@ -159,7 +161,7 @@ You have eight tools, exposed to you as MCP tools through the AgentCore Gateway.
 ## Operating rules
 
 - **Always carry `session_id` through the chain** — every tool needs it. Fabricate one (`uuid4`) only on the very first turn.
-- **Baseline MC is asynchronous.** After `run_baseline_mc`, poll `check_baseline_mc` (every ~15-30s) until `ready` is true. Never price or blend the parametric `paths_uri` before it is ready. If `check_baseline_mc` errors, the task failed — surface it.
+- **Baseline MC and Chronos-2 are both asynchronous.** After `run_baseline_mc`, poll `check_baseline_mc`; after `run_chronos2`, poll `check_chronos2` (each every ~15-30s) until `ready` is true. Never price or blend a `paths_uri` before its poll reports ready. If a `check_*` tool errors, that task failed — surface it.
 - **Thread `as_of` consistently.** Use the same `as_of` date for `run_baseline_mc` and `run_chronos2` as you passed to `load_data` (its `as_of_date`).
 - **Plot every quantitative result.** After pricing both PathSets, call `plot spec=pfe_overlay` with the baseline and augmented `metrics_uri`s.
 - **Never call `run_baseline_mc` or `run_chronos2` with `n_paths > 5000`** in this demo — it overruns Fargate budget. If asked, run two stages and explain the limit.
@@ -318,7 +320,7 @@ You are concise, technically precise, and audience-aware: the user is a senior q
     "/run_chronos2": {
       "post": {
         "operationId": "run_chronos2",
-        "summary": "Sample augmenting paths from the Chronos-2 SageMaker endpoint.",
+        "summary": "Launch the Chronos-2 augmenting-paths job as an async Fargate task (AutoGluon Cloud endpoint). Returns immediately with a task handle; poll with check_chronos2.",
         "requestBody": {
           "required": true,
           "content": {
@@ -340,23 +342,64 @@ You are concise, technically precise, and audience-aware: the user is a senior q
         },
         "responses": {
           "200": {
-            "description": "PathSet staged in S3",
+            "description": "Fargate task launched; PathSet lands at paths_uri when ready",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["paths_uri", "n_paths", "horizon"],
+                  "required": ["task_arn", "paths_uri"],
                   "properties": {
-                    "paths_uri": { "type": "string", "format": "uri" },
-                    "n_paths": { "type": "integer" },
-                    "horizon": { "type": "integer" }
+                    "task_arn": { "type": "string" },
+                    "paths_uri": { "type": "string", "format": "uri" }
                   }
                 }
               }
             }
           },
           "400": { "description": "Validation error" },
-          "502": { "description": "SageMaker endpoint failure" }
+          "500": { "description": "Fargate RunTask failed" }
+        }
+      }
+    },
+    "/check_chronos2": {
+      "post": {
+        "operationId": "check_chronos2",
+        "summary": "Poll the launched Chronos-2 Fargate task. Call repeatedly until ready is true, then use paths_uri.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["session_id", "task_arn", "paths_uri"],
+                "properties": {
+                  "session_id": { "type": "string" },
+                  "task_arn": { "type": "string" },
+                  "paths_uri": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Task status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["task_status", "ready", "paths_uri"],
+                  "properties": {
+                    "task_status": { "type": "string" },
+                    "ready": { "type": "boolean" },
+                    "paths_uri": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error" },
+          "500": { "description": "Fargate task failed" }
         }
       }
     },
@@ -543,13 +586,13 @@ You are concise, technically precise, and audience-aware: the user is a senior q
 pytest agent/tests/test_action_groups.py -v
 ```
 
-Expected: 13 passed (5 named + 8 parametrized — one per operation incl. check_baseline_mc).
+Expected: 14 passed (5 named + 9 parametrized — one per operation incl. check_baseline_mc and check_chronos2).
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add agent/system_prompt.md agent/action_groups.json agent/tests/test_action_groups.py pyproject.toml
-git commit -m "feat(agent): system prompt and tool schemas for 8 tools
+git commit -m "feat(agent): system prompt and tool schemas for 9 tools
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
@@ -569,8 +612,8 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 The agent layer is built on **Amazon Bedrock AgentCore primitives** (not classic
 Bedrock Agents). Two pieces:
 
-1. **Gateway + 8 GatewayTargets** (`AWS::BedrockAgentCore::Gateway` /
-   `GatewayTarget`) — each of the 8 tool Lambdas is exposed as an MCP tool. The
+1. **Gateway + 9 GatewayTargets** (`AWS::BedrockAgentCore::Gateway` /
+   `GatewayTarget`) — each of the 9 tools is exposed as an MCP tool. The
    per-tool `toolSchema.inlinePayload` is derived from `agent/action_groups.json`
    (the request body's `properties`/`required` → `inputSchema`; the 200 response
    body → `outputSchema`).
@@ -627,9 +670,9 @@ test('creates one AgentCore Gateway (MCP)', () => {
   });
 });
 
-test('creates one gateway target per tool (8)', () => {
+test('creates one gateway target per tool (9)', () => {
   const { t } = build();
-  t.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 8);
+  t.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 9);
 });
 
 test('creates a containerized Runtime + endpoint', () => {
@@ -679,7 +722,7 @@ boto3>=1.34
 ```python
 """AgentCore Runtime entrypoint: a Strands agent fronting the Chronos-2 tools.
 
-The agent reasons with Claude Sonnet and calls the demo's 8 tools through the
+The agent reasons with Claude Sonnet and calls the demo's 9 tools through the
 AgentCore Gateway (MCP). The Gateway uses AWS_IAM auth, so MCP calls are
 SigV4-signed with the Runtime's execution-role credentials.
 """
@@ -768,6 +811,7 @@ const TOOL_OPERATIONS: Array<{ name: string; opId: string; getFn: (t: ToolsStack
   { name: 'RunBaselineMc', opId: 'run_baseline_mc', getFn: (t) => t.fnRunBaselineMc },
   { name: 'CheckBaselineMc', opId: 'check_baseline_mc', getFn: (t) => t.fnCheckBaselineMc },
   { name: 'RunChronos2', opId: 'run_chronos2', getFn: (t) => t.fnRunChronos2 },
+  { name: 'CheckChronos2', opId: 'check_chronos2', getFn: (t) => t.fnCheckChronos2 },
   { name: 'BlendPaths', opId: 'blend_paths', getFn: (t) => t.fnBlendPaths },
   { name: 'PriceBook', opId: 'price_book', getFn: (t) => t.fnPriceBook },
   { name: 'Plot', opId: 'plot', getFn: (t) => t.fnPlot },

@@ -160,12 +160,15 @@ dependencies = [
     "matplotlib>=3.8",
     "pyarrow>=15.0",
     "boto3>=1.34",
-    "sagemaker>=2.220",
     "requests>=2.31",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=4.1", "jupyterlab>=4.0", "ipykernel>=6.29"]
+# Heavy; only needed where the Chronos-2 endpoint is deployed/invoked (deploy
+# script, headline notebook, Fargate run_chronos2 task) — NOT the core package
+# or the thin Lambdas. The hermetic test suite never imports it.
+deploy = ["autogluon-cloud>=0.5.0"]
 
 [build-system]
 requires = ["setuptools>=68"]

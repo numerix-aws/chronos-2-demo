@@ -48,7 +48,9 @@ If a task has no failing test (Stage 0 bootstrap), the plan says so — follow w
 
 - **Streaming uses a Lambda Function URL with `InvokeMode=RESPONSE_STREAM`**, not API Gateway — REST API GW buffers responses, breaking SSE.
 - **Frontend SSE uses `fetch` + `ReadableStream`**, not `EventSource` — EventSource cannot send the `x-api-key` header the authorizer requires.
-- **Agent layer is Amazon Bedrock AgentCore** (not classic Bedrock Agents). L1 constructs from `aws-cdk-lib/aws-bedrockagentcore`: `CfnGateway` + `CfnGatewayTarget` (the 8 tool Lambdas as MCP tools), `CfnRuntime` + `CfnRuntimeEndpoint` (a containerized Strands agent). Invoked via `bedrock-agentcore:InvokeAgentRuntime`. The installed CDK (2.257.0) has **no** `CfnAgentActionGroup`; classic `CfnAgent`+action-groups are deliberately not used. Gateway delivers flat tool-arg events to the Lambdas, so `@bedrock_action` is a pass-through.
+- **Agent layer is Amazon Bedrock AgentCore** (not classic Bedrock Agents). L1 constructs from `aws-cdk-lib/aws-bedrockagentcore`: `CfnGateway` + `CfnGatewayTarget` (the 9 tools as MCP tools), `CfnRuntime` + `CfnRuntimeEndpoint` (a containerized Strands agent). Invoked via `bedrock-agentcore:InvokeAgentRuntime`. The installed CDK (2.257.0) has **no** `CfnAgentActionGroup`; classic `CfnAgent`+action-groups are deliberately not used. Gateway delivers flat tool-arg events to the Lambdas, so `@bedrock_action` is a pass-through.
+- **Chronos-2 is deployed via AutoGluon Cloud, served serverless, and returns QUANTILES — not sample paths.** `models/chronos2_client.py` builds a long-format request DataFrame and reconstructs the joint `(n_paths, horizon, n_series)` PathSet client-side from per-series quantiles (inverse-CDF + lookback Gaussian copula). The endpoint object is injected (`infra.sagemaker_endpoint.open_endpoint`), so the core package/tests never import `autogluon-cloud`.
+- **`run_chronos2` is an async Fargate task, not a Lambda** (mirrors `run_baseline_mc`): a thin launcher Lambda (`ecs:RunTask`) + a `check_chronos2` poll Lambda (`ecs:DescribeTasks`), with the AutoGluon SDK bundled in the Fargate image. The chronos2 task role holds `sagemaker:InvokeEndpoint`. Don't "simplify" it back to a Lambda proxy — the AutoGluon dep is too heavy for a Lambda layer.
 - **Amplify Hosting uses manual zip deploys** (`aws amplify create-deployment` + curl PUT to `zipUploadUrl` + `start-deployment`), not GitHub source.
 - **Sessions table:** PK=`session_id`, SK=`turn_id` (ISO-8601 timestamp + `#role`). Roles: `{user, assistant, tool}`.
 
@@ -58,12 +60,12 @@ The plan locks in this structure under `src/chronos2_demo/` — each subdirector
 
 - `data/` — fetchers, alignment, covariates, regime labels
 - `models/baseline_mc.py` — PCA + Hull-White + GBM joint sampler (Stage 2)
-- `models/chronos2_client.py` — SageMaker endpoint wrapper (Stage 3)
+- `models/chronos2_client.py` — Chronos-2 client: AutoGluon endpoint request frame + quantile→joint-path reconstruction (Gaussian copula) (Stage 3)
 - `augmentation/regime_detector.py` + `augmentation/blender.py` — Stage 4 augmentation layer
 - `pricing/` — XCCY book + valuation + EE/PFE/ES (Stage 5)
 - `diagnostics/` — coverage, tail dependence, distribution distance (Stage 6)
 - `plotting/` — thin matplotlib helpers, return `Figure` objects (Stage 7)
-- `infra/sagemaker_endpoint.py` — endpoint deploy/teardown (Stage 3)
+- `infra/sagemaker_endpoint.py` — Chronos-2 deploy/teardown via AutoGluon Cloud (`deploy_demo_endpoint`/`delete_demo_endpoint`/`open_endpoint`; serverless default) (Stage 3)
 
 Tests mirror this tree under `tests/`. The `PathSet` dataclass (Task 7 territory) — `paths: ndarray (n_paths, horizon, n_series)`, `weights`, `series`, `dates`, `source` — is the shared contract between engines, blender, pricing, and diagnostics. **Don't change its shape without updating every consumer.**
 

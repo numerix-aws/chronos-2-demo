@@ -4,7 +4,7 @@
 
 **Goal:** Wrap the Plan A `chronos2_demo` Python core in an analyst-facing demo: AWS-deployed agent (Bedrock AgentCore + Claude Sonnet) with action-group tools, REST+SSE API, and a Cloudscape SPA on Amplify Hosting that walks the §3 narrative end-to-end.
 
-**Architecture:** TypeScript CDK app provisioning seven stacks (network, storage, tools, agent, api, frontend, observability). Heavy quant tools (`run_baseline_mc`) run as ECS Fargate tasks; glue tools (`load_data`, `blend_paths`, `price_book`, `plot`, `lookup_use_case`, `run_chronos2` proxy) run as Lambdas with `chronos2_demo` packaged as a Lambda layer. Agent reasoning is Bedrock AgentCore with Claude Sonnet, surfaced via API Gateway REST endpoints + SSE for token streaming. SPA is React + Cloudscape with chat, inline image rendering, and a what-if parameter form.
+**Architecture:** TypeScript CDK app provisioning seven stacks (network, storage, tools, agent, api, frontend, observability). Heavy quant tools (`run_baseline_mc`, `run_chronos2`) run as ECS Fargate tasks behind thin launcher + poll Lambdas — `run_chronos2` is Fargate because the Chronos-2 endpoint is served via AutoGluon Cloud, whose SDK is too heavy for a Lambda. Glue tools (`load_data`, `blend_paths`, `price_book`, `plot`, `lookup_use_case`) run as Lambdas with `chronos2_demo` packaged as a Lambda layer. Agent reasoning is Bedrock AgentCore with Claude Sonnet, surfaced via API Gateway REST endpoints + SSE for token streaming. SPA is React + Cloudscape with chat, inline image rendering, and a what-if parameter form.
 
 **Tech Stack:** AWS CDK (TypeScript) for IaC. Python 3.11 for tool handlers (reuses Plan A package). Node 20 for Lambda authorizer + SSE relay. React 18 + Cloudscape Design System + AWS Amplify Hosting for the SPA. Playwright for one E2E happy-path. Bedrock AgentCore + Claude Sonnet. SageMaker (already provisioned by Plan A Stage 3).
 
@@ -67,12 +67,18 @@ chronos-2-demo/
 │   │   │   └── handler.py
 │   │   ├── lookup_use_case/
 │   │   │   └── handler.py
-│   │   ├── run_chronos2/             # SageMaker proxy
+│   │   ├── run_chronos2/             # Fargate launcher (async ECS RunTask)
+│   │   │   └── handler.py
+│   │   ├── check_chronos2/           # Fargate poll (ECS DescribeTasks)
 │   │   │   └── handler.py
 │   │   └── authorizer/
 │   │       └── handler.ts            # API key check (Node 20)
 │   ├── fargate/
-│   │   └── baseline_mc/
+│   │   ├── baseline_mc/
+│   │   │   ├── Dockerfile
+│   │   │   ├── entrypoint.py
+│   │   │   └── requirements.txt
+│   │   └── run_chronos2/             # AutoGluon Cloud endpoint call (heavy dep)
 │   │       ├── Dockerfile
 │   │       ├── entrypoint.py
 │   │       └── requirements.txt
@@ -83,7 +89,9 @@ chronos-2-demo/
 │       ├── test_price_book.py
 │       ├── test_plot.py
 │       ├── test_lookup_use_case.py
-│       ├── test_run_chronos2.py
+│       ├── test_run_chronos2.py            # launcher Lambda
+│       ├── test_check_chronos2.py          # poll Lambda
+│       ├── test_run_chronos2_entrypoint.py # Fargate entrypoint
 │       ├── test_authorizer.test.ts
 │       └── test_baseline_mc_entrypoint.py
 ├── agent/                            # Plan B — agent declarative config
@@ -138,7 +146,7 @@ chronos-2-demo/
 - **Stage 0 — Repo bootstrap & CDK app skeleton** (Tasks 1–2)
 - **Stage 1 — Storage + curated knowledge briefs** (Tasks 3–4)
 - **Stage 2 — Lambda glue tools** (Tasks 5–9)
-- **Stage 3 — Fargate baseline MC + Chronos-2 proxy** (Tasks 10–12, incl. async-Fargate launcher/poll Tasks 11a–11b)
+- **Stage 3 — Fargate baseline MC + Chronos-2** (Tasks 10–11, both async-Fargate with launcher/poll pairs: 11a/11b baseline, 11c/11d chronos2)
 - **Stage 4 — Tools stack wiring & IAM** (Task 13)
 - **Stage 5 — AgentCore agent + action groups** (Tasks 14–15)
 - **Stage 6 — API Gateway REST + SSE + authorizer** (Tasks 16–18)

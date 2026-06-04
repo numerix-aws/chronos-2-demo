@@ -26,8 +26,6 @@ The notebook itself is committed but not executed in CI. This test mirrors the
 notebook's logic against synthetic data so refactors break the test before
 they break the demo.
 """
-import json
-from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
@@ -54,15 +52,25 @@ def _synthetic_panel(n=600, seed=0):
                         index=pd.bdate_range("2020-01-02", periods=n))
 
 
+class _FakeEndpoint:
+    """AutoGluon endpoint stand-in: returns a long-format quantile DataFrame."""
+    def predict(self, data, target, id_column, timestamp_column,
+                prediction_length, known_covariates=None):
+        items = list(dict.fromkeys(data[id_column]))
+        future = pd.bdate_range("2022-07-01", periods=prediction_length)
+        rows = []
+        for item in items:
+            for t in range(prediction_length):
+                row = {id_column: item, timestamp_column: future[t], "mean": 1.0}
+                for ql in chronos2_client.Q_LEVELS:
+                    row[str(ql)] = 1.0 + (ql - 0.5) * 0.02
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+
 def _mock_chronos_client(n_paths, horizon, n_series):
-    rt = MagicMock()
-    samples = (np.full((n_paths, horizon, n_series), 1.0)
-               + np.random.default_rng(0).normal(0, 0.001,
-                                                  size=(n_paths, horizon, n_series)))
-    body = MagicMock()
-    body.read.return_value = json.dumps({"samples": samples.tolist()}).encode("utf-8")
-    rt.invoke_endpoint.return_value = {"Body": body}
-    return chronos2_client.Chronos2Client(endpoint_name="ep", runtime=rt)
+    # The endpoint returns per-series quantiles; the client reconstructs paths.
+    return chronos2_client.Chronos2Client(endpoint=_FakeEndpoint())
 
 
 def test_full_pipeline_runs_end_to_end():
@@ -153,7 +161,6 @@ The notebook is a JSON file. Create it with the cell sequence below. Each cell n
         "%load_ext autoreload\n",
         "%autoreload 2\n",
         "\n",
-        "import boto3\n",
         "import numpy as np\n",
         "import pandas as pd\n",
         "import matplotlib.pyplot as plt\n",
@@ -226,15 +233,16 @@ The notebook is a JSON file. Create it with the cell sequence below. Each cell n
     {
       "cell_type": "markdown",
       "metadata": {},
-      "source": ["## Beat 4 — Run Chronos-2 (real-time SageMaker endpoint)"]
+      "source": ["## Beat 4 — Run Chronos-2 (AutoGluon Cloud endpoint)\n", "\n", "> Deployed via AutoGluon Cloud (`amazon/chronos-2`), serverless by default. The endpoint returns per-series quantiles; `Chronos2Client` reconstructs joint sample paths client-side (Gaussian copula over the shared lookback) so the `PathSet` contract is unchanged."]
     },
     {
       "cell_type": "code",
       "execution_count": null,
       "metadata": {},
       "source": [
-        "runtime = boto3.client('sagemaker-runtime', region_name='us-east-1')\n",
-        "client = chronos2_client.Chronos2Client(endpoint_name='chronos2-demo-ep', runtime=runtime)\n",
+        "from chronos2_demo.infra import sagemaker_endpoint\n",
+        "endpoint = sagemaker_endpoint.open_endpoint('chronos2-demo-ep')\n",
+        "client = chronos2_client.Chronos2Client(endpoint=endpoint)\n",
         "\n",
         "chr_paths = chronos2_client.simulate_chronos2(\n",
         "    client, panel, as_of=AS_OF, horizon=HORIZON, n_paths=N_PATHS,\n",
@@ -381,7 +389,7 @@ The notebook is a JSON file. Create it with the cell sequence below. Each cell n
 
 Notes for the engineer:
 - The notebook is committed *unexecuted*. Outputs will be generated when the demo is run. Do **not** commit cleared-output edits as part of this task.
-- The Beat 4 cell calls a real SageMaker endpoint. In a dev environment without the endpoint deployed, swap the `runtime` line for a mocked client per `tests/test_notebook_smoke.py`.
+- The Beat 4 cell calls a real AutoGluon Cloud endpoint via `open_endpoint`. In a dev environment without the endpoint deployed, swap the `endpoint = ...` line for a fake endpoint per `tests/test_notebook_smoke.py` (`Chronos2Client(endpoint=_FakeEndpoint())`).
 
 - [ ] **Step 4: Run smoke test, confirm pass**
 
@@ -412,7 +420,7 @@ The final stage produces two artifacts: a JSON file with the headline numbers (s
 - Create: `tests/fixtures/headline_panel.parquet` (small deterministic panel saved by a one-time fixture builder)
 - Create: `tests/fixtures/build_headline_panel.py` (runs once to produce the parquet)
 
-The headline test asserts that on a frozen synthetic panel, with a frozen seed and a mocked Chronos-2 endpoint that returns deterministic samples, the augmented PFE@97.5 at the terminal date is *higher* than the baseline by a margin within a frozen tolerance band. This pins the **direction and order of magnitude** of the effect even if values shift slightly with library upgrades.
+The headline test asserts that on a frozen synthetic panel, with a frozen seed and a mocked Chronos-2 endpoint that returns deterministic quantile curves (the client reconstructs paths under a fixed seed), the augmented PFE@97.5 at the terminal date is *higher* than the baseline by a margin within a frozen tolerance band. This pins the **direction and order of magnitude** of the effect even if values shift slightly with library upgrades.
 
 - [ ] **Step 1: Build the fixture panel once**
 
@@ -472,18 +480,17 @@ Inputs frozen:
   - tests/fixtures/headline_panel.parquet (built once)
   - n_paths = 1000, horizon = 21
   - seed = 0 for parametric MC
-  - mocked Chronos-2 returns deterministic samples drawn from a frozen seed
+  - mocked Chronos-2 returns deterministic quantile curves; client reconstructs paths under a fixed seed
 
 Asserts:
   - augmented PFE@97.5 terminal >= baseline PFE@97.5 terminal
   - the relative gap is within [5%, 200%]  (sanity band; not a tight pin)
 """
-import json
 from pathlib import Path
-from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.stats import norm
 from chronos2_demo.augmentation import blender, regime_detector
 from chronos2_demo.models import baseline_mc, chronos2_client
 from chronos2_demo.pricing import book, exposure
@@ -491,14 +498,29 @@ from chronos2_demo.pricing import book, exposure
 PANEL_PATH = Path(__file__).parent / "fixtures" / "headline_panel.parquet"
 
 
-def _mock_chronos_client(n_paths, horizon, n_series, seed=20260522):
-    rt = MagicMock()
-    rng = np.random.default_rng(seed)
-    samples = rng.normal(1.0, 0.01, size=(n_paths, horizon, n_series))
-    body = MagicMock()
-    body.read.return_value = json.dumps({"samples": samples.tolist()}).encode("utf-8")
-    rt.invoke_endpoint.return_value = {"Body": body}
-    return chronos2_client.Chronos2Client(endpoint_name="ep", runtime=rt)
+class _FakeEndpoint:
+    """AutoGluon endpoint stand-in returning a deterministic quantile frame.
+
+    Quantiles are spread around 1.0 (inverse-normal grid) so the reconstructed
+    paths have tails. simulate_chronos2 reconstructs under a fixed seed, so the
+    headline regression stays reproducible across runs.
+    """
+    def predict(self, data, target, id_column, timestamp_column,
+                prediction_length, known_covariates=None):
+        items = list(dict.fromkeys(data[id_column]))
+        future = pd.bdate_range("2022-07-01", periods=prediction_length)
+        rows = []
+        for item in items:
+            for t in range(prediction_length):
+                row = {id_column: item, timestamp_column: future[t], "mean": 1.0}
+                for ql in chronos2_client.Q_LEVELS:
+                    row[str(ql)] = 1.0 + norm.ppf(ql) * 0.02
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+
+def _mock_chronos_client(n_paths, horizon, n_series):
+    return chronos2_client.Chronos2Client(endpoint=_FakeEndpoint())
 
 
 @pytest.mark.skipif(not PANEL_PATH.exists(),
@@ -618,14 +640,20 @@ python scripts/snapshot_data.py --fred-api-key $FRED_API_KEY
 
 This produces `data/curated/panel.parquet` and `data/curated/covariates.parquet`.
 
-### Deploy the Chronos-2 SageMaker endpoint
+### Deploy the Chronos-2 endpoint (AutoGluon Cloud)
+
+Deploys the real `amazon/chronos-2` model via AutoGluon Cloud. Requires the
+`deploy` extra (`pip install -e ".[deploy]"`). Serverless is the default —
+it scales to zero between demos — and needs an S3 cache for the model artifact:
 
 ```bash
-python scripts/deploy_chronos2_endpoint.py --action deploy --model-name chronos2-demo
+python scripts/deploy_chronos2_endpoint.py --action deploy \
+  --cache-uri s3://YOUR-BUCKET/fm-cache
 ```
 
-Wait until `aws sagemaker describe-endpoint --endpoint-name chronos2-demo-ep` shows
-`InService`. The default instance type is `ml.g5.xlarge`.
+The endpoint returns per-series quantiles; the client reconstructs joint paths.
+For lowest latency you can deploy a GPU real-time endpoint instead
+(`--mode realtime --instance-type ml.g5.xlarge`).
 
 When done with the demo:
 
