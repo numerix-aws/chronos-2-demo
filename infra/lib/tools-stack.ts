@@ -200,6 +200,8 @@ export class ToolsStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    new cdk.CfnOutput(this, 'ApiKeySecretArnOut', { value: this.apiKeySecretArn });
+
     cdk.Tags.of(this).add('chronos2-demo:teardown', 'on');
   }
 }
