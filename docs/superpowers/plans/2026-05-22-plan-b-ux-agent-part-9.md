@@ -426,4 +426,6 @@ Hand-off note for the executor: the **Executor's Contract** in `2026-05-22-plan-
 
 ---
 
-> _End of Plan B._
+> _The 2026-06-04 scope extension adds Stage 10 (Plan B part-10) — wiring the what-if conditioning path end-to-end through the Fargate entrypoint, agent schema, system prompt, and frontend form, plus pricing the full cross-asset book in the `price_book` Lambda. It depends on Stages 0–9 being in place; its final task (cross-asset `price_book`) also depends on Plan A part-4 Task 34 (`load_cross_asset_book` + `compute_metrics` instrument kwargs)._
+>
+> _Continue with `2026-05-22-plan-b-ux-agent-part-10.md` (Stage 10 — what-if conditioning)._

@@ -153,6 +153,7 @@ chronos-2-demo/
 - **Stage 7 — Cloudscape SPA** (Tasks 19–22)
 - **Stage 8 — Frontend + observability stacks, deploy** (Tasks 23–24)
 - **Stage 9 — Playwright E2E + runbook** (Tasks 25–26)
+- **Stage 10 — Wire what-if conditioning end-to-end + cross-asset price_book** (Tasks 27–31) — *part-10 (2026-06-04 scope extension; see `2026-05-22-plan-b-ux-agent-part-10.md`)*
 
 ---
 

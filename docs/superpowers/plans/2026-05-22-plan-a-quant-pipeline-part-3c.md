@@ -750,4 +750,6 @@ After Task 30 the repo contains:
 
 Plan B will add the AgentCore copilot, API Gateway, and the Cloudscape SPA on top of these modules.
 
-> _Continue with `2026-05-22-plan-b-ux-and-agent.md` (Plan B — agent + API + frontend)._
+> _The 2026-06-04 scope extension (Plan A part-4) adds Stages 10–12 — cross-asset equity/credit factors, the nested-MC benchmark, and live headline calibration — on top of the Task-30 baseline. Execute it after Plan B is in place, or interleave; it depends only on the Plan A core._
+>
+> _Continue with `2026-05-22-plan-b-ux-agent.md` (Plan B — agent + API + frontend), then `2026-05-22-plan-a-quant-pipeline-part-4.md` (Plan A Stages 10–12)._

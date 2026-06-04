@@ -89,12 +89,17 @@ chronos-2-demo/
 │   └── headline_demo.ipynb             # plan deliverable: end-to-end story
 ├── scripts/
 │   ├── snapshot_data.py                # one-shot: pull raw → curated parquet → S3
-│   └── deploy_chronos2_endpoint.py     # one-shot: AutoGluon Cloud endpoint up/down
+│   ├── deploy_chronos2_endpoint.py     # one-shot: AutoGluon Cloud endpoint up/down
+│   ├── calibrate_headline.py           # part-4: live-endpoint genuine PFE delta → artifact
+│   └── benchmark_latency.py            # part-4: nested-MC vs FM timing → artifact
 └── docs/
+    ├── results/                        # part-4: committed measured artifacts (JSON)
     └── superpowers/
         ├── specs/   (existing spec)
         └── plans/   (this plan)
 ```
+
+> **Part-4 (Stages 10–12) extends this tree** with `models/nested_mc.py`, `pricing/instruments.py`, the two scripts + `docs/results/` artifacts above, and equity/credit columns across `config.py`, `data/fetch.py`, the book, and the headline fixture. See `2026-05-22-plan-a-quant-pipeline-part-4.md`.
 
 **Each module has one responsibility. Tests live alongside under `tests/` mirroring the source tree.**
 
@@ -114,6 +119,11 @@ This plan groups tasks into stages. Each stage produces something runnable end-t
 - **Stage 7 — Plotting helpers** (Tasks 25–27)
 - **Stage 8 — Headline demo notebook** (Task 28)
 - **Stage 9 — Pin headline numbers + README** (Tasks 29–30)
+- **Stage 10 — Equity + credit priced factors** (Tasks 31–35) — *part-4*
+- **Stage 11 — Nested-MC benchmark strawman** (Tasks 36–37) — *part-4*
+- **Stage 12 — Live headline calibration** (Tasks 38–39) — *part-4*
+
+> Stages 10–12 were added in the 2026-06-04 scope extension; their tasks live in `2026-05-22-plan-a-quant-pipeline-part-4.md`.
 
 ---
 

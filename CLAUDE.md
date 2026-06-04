@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Plan A + Plan B are code-complete on `main` as of 2026-06-04** (96 core tests + 69 tools/agent tests passing). The shipped code is the primary source of truth; the design docs under `docs/superpowers/` remain the authoritative *reference* for intent, task history, and copy-pasteable module code:
+**Plan A + Plan B are code-complete on `main` as of 2026-06-04** (96 core tests + 69 tools/agent tests passing). A **2026-06-04 scope extension** (cross-asset equity/credit priced factors, live headline calibration, end-to-end what-if conditioning, nested-MC latency benchmark) is **planned but not yet coded** — its tasks live in Plan A part-4 (Tasks 31–39) and Plan B part-10 (Tasks 27–31). The shipped code is the primary source of truth; the design docs under `docs/superpowers/` remain the authoritative *reference* for intent, task history, and copy-pasteable module code:
 
-- `specs/2026-05-22-numerix-chronos2-poc-design.md` — original design spec (2026-05-22). **Intentionally not updated** after the 2026-06-04 AutoGluon/quantile/Fargate/9-tool re-architecture — see the "spec vs plan" rule below. Treat architectural details here as historical unless they match the code.
-- `plans/2026-05-22-plan-a-quant-pipeline*.md` — Plan A (Python core + notebook), 8 files, 30 tasks across 9 stages
-- `plans/2026-05-22-plan-b-ux-agent*.md` — Plan B (CDK infra, AgentCore copilot, Cloudscape SPA), 9 files, 26 tasks across 10 stages.
+- `specs/2026-05-22-numerix-chronos2-poc-design.md` — design spec (2026-05-22; re-arch banner + scope-extension banner both 2026-06-04). The body was **not re-synced** to the AutoGluon/quantile/Fargate/9-tool re-architecture, but the two dated banners at the top *are* current (the scope-extension additions are reflected there) — see the "spec vs plan" rule below. Treat un-bannered architectural details as historical unless they match the code.
+- `plans/2026-05-22-plan-a-quant-pipeline*.md` — Plan A (Python core + notebook), 9 files, 39 tasks across 12 stages (Tasks 1–30 coded; **Stages 10–12 / Tasks 31–39 in part-4 are planned, not yet coded**)
+- `plans/2026-05-22-plan-b-ux-agent*.md` — Plan B (CDK infra, AgentCore copilot, Cloudscape SPA), 10 files, 31 tasks across 11 stages (Tasks 1–26 coded; **Stage 10 / Tasks 27–31 in part-10 are planned, not yet coded**).
 
 When the user asks about implementation details, **read the shipped code first, then the plan files** — the plans contain the complete, copy-pasteable code for every module (including failing tests, expected pytest output, and commit messages) and explain *why* each piece exists. Don't reinvent. Don't paraphrase. Plan A part-1 and Plan B part-1 each have a locked-in file-structure tree.
 
@@ -100,7 +100,7 @@ jupyter lab notebooks/headline_demo.ipynb
 - **When asked to implement a task**: read the relevant plan file in full, follow the 5-step pattern, copy the code blocks verbatim. Don't optimize, refactor, or "improve" the code in the plan unless the user asks.
 - **When asked to write new code outside the plan**: pause and ask — the plan defines scope. New scope means new task entries, ideally appended to a future plan.
 - **When the spec and the plan disagree**: the plan is more recent and detailed; flag the conflict to the user before continuing.
-- **Frequent commits**. Plan A has 30 commits planned; don't merge them.
+- **Frequent commits**. One commit per task (Plan A: 39 tasks across parts 1–4; Plan B: 31 across parts 1–10); don't merge them.
 - **Subagent-driven execution** (`superpowers:subagent-driven-development`) is the recommended path for grinding through Plan A — fresh subagent per task, two-stage review between tasks. Inline execution via `superpowers:executing-plans` is the alternative.
 - **Cross-cutting rules go here, not in plans.** If a guideline applies to all changes, add it to "Engineering Discipline." Plans reinforce — they don't redefine.
 - **ARCC trigger:** Plan B touches IAM, S3, VPC, Lambda, Secrets Manager, API Gateway. Per `~/.claude/rules/arcc-governance.md`, query `search_arcc` BEFORE examining code on each new infra domain (one query per stack is usually enough).
