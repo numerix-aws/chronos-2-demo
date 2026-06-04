@@ -37,12 +37,12 @@ test('creates a 5xx alarm for the REST API', () => {
 
 test('creates one error alarm per tool Lambda', () => {
   const { t } = build();
-  // 8 Python tool Lambdas (load_data, blend_paths, price_book, plot,
-  // lookup_use_case, run_chronos2, run_baseline_mc, check_baseline_mc)
-  // each get an Errors alarm = at least 8 tool alarms.
+  // 9 Python tool Lambdas (load_data, blend_paths, price_book, plot,
+  // lookup_use_case, run_chronos2, check_chronos2, run_baseline_mc,
+  // check_baseline_mc) each get an Errors alarm = at least 9 tool alarms.
   const alarms = t.findResources('AWS::CloudWatch::Alarm');
   const lambdaErrorAlarms = Object.values(alarms).filter(
     (r: any) => r.Properties?.Namespace === 'AWS/Lambda' && r.Properties?.MetricName === 'Errors',
   );
-  expect(lambdaErrorAlarms.length).toBeGreaterThanOrEqual(8);
+  expect(lambdaErrorAlarms.length).toBeGreaterThanOrEqual(9);
 });

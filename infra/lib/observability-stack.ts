@@ -39,6 +39,7 @@ export class ObservabilityStack extends cdk.Stack {
       plot: props.tools.fnPlot,
       lookup_use_case: props.tools.fnLookupUseCase,
       run_chronos2: props.tools.fnRunChronos2,
+      check_chronos2: props.tools.fnCheckChronos2,
       run_baseline_mc: props.tools.fnRunBaselineMc,
       check_baseline_mc: props.tools.fnCheckBaselineMc,
     };
