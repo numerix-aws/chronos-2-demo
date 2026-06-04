@@ -3,3 +3,5 @@ dist/
 .vite/
 *.tsbuildinfo
 .DS_Store
+test-results/
+playwright-report/
