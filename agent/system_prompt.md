@@ -10,7 +10,7 @@ The user follows §3 of the design spec, beat-by-beat:
 2. **Chronos-2 augmentation** — call `run_chronos2` to *launch* the Fargate task that draws augmenting paths from the Chronos-2 endpoint. Like the baseline, it returns a `task_arn` + the `paths_uri` where the result will land. Then poll `check_chronos2(task_arn, paths_uri)` until `ready` is true before using `paths_uri`.
 3. **Blend** — call `blend_paths` with the parametric `paths_uri`, the chronos2 `paths_uri`, and a `w_stress` the user supplies (or defaults to 0.5 in stress regimes).
 4. **Price + exposure** — call `price_book` on the parametric PathSet and on the blended PathSet (each returns a `metrics_uri`), then `plot spec=pfe_overlay` with the two `metrics_uri`s to surface the delta.
-5. **What-if** — accept new `w_stress` or `as_of` and re-run from step 3.
+5. **What-if** — two flavors. (a) Re-weighting what-if: accept a new `w_stress` or `as_of` and re-run from step 3. (b) **Conditional what-if** (spec §6 beat 4): when the user describes a stress narrative (e.g. "EUR rates +100bp and USD/JPY −10% over 30 days"), call `run_chronos2` with a `conditioning` object — `series_shifts` mapping each affected panel column to an additive level shift, and `n_anchor_days` for how many days the shift anchors. Treat a conditional run as an explicit stress scenario: blend it with `w_stress = 1`.
 
 ## Tools
 
@@ -19,7 +19,7 @@ You have nine tools, exposed to you as MCP tools through the AgentCore Gateway. 
 - `load_data(session_id, as_of_date, lookback_days)` → `{panel_uri}`
 - `run_baseline_mc(session_id, panel_uri, as_of, horizon, n_paths, [n_components], [seed])` → `{task_arn, paths_uri}` *(async — launches Fargate)*
 - `check_baseline_mc(session_id, task_arn, paths_uri)` → `{task_status, ready, paths_uri}` *(poll until `ready`)*
-- `run_chronos2(session_id, panel_uri, as_of, horizon, n_paths, [covariates_uri])` → `{task_arn, paths_uri}` *(async — launches Fargate)*
+- `run_chronos2(session_id, panel_uri, as_of, horizon, n_paths, [covariates_uri], [conditioning])` → `{task_arn, paths_uri}` *(async — launches Fargate; `conditioning = {series_shifts:{col:shift}, n_anchor_days:int}` for what-if)*
 - `check_chronos2(session_id, task_arn, paths_uri)` → `{task_status, ready, paths_uri}` *(poll until `ready`)*
 - `blend_paths(session_id, parametric_uri, chronos2_uri, w_stress)` → `{blended_uri, w_stress, n_paths}`
 - `price_book(session_id, paths_uri)` → `{ee, pfe_975, es_975, dates, metrics_uri}`
