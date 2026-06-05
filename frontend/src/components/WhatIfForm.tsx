@@ -14,6 +14,7 @@ export interface WhatIfParams {
   horizon: number;
   n_paths: number;
   w_stress: number;
+  conditioning?: { series_shifts: Record<string, number>; n_anchor_days: number };
 }
 
 interface WhatIfFormProps {
@@ -37,6 +38,7 @@ export function WhatIfForm({ onApply, disabled }: WhatIfFormProps) {
     n_paths: String(DEFAULTS.n_paths),
     w_stress: String(DEFAULTS.w_stress),
   });
+  const [cond, setCond] = useState({ shift_series: '', shift_amount: '0', n_anchor_days: '30' });
   const [err, setErr] = useState<string | null>(null);
 
   const submit = (e?: FormEvent) => {
@@ -58,13 +60,27 @@ export function WhatIfForm({ onApply, disabled }: WhatIfFormProps) {
       return;
     }
     setErr(null);
-    onApply({
+    const base = {
       as_of_date: v.as_of_date,
       lookback_days: lb,
       horizon: hz,
       n_paths: np,
       w_stress: w,
-    });
+    };
+    if (cond.shift_series.trim() !== '') {
+      const amt = parseFloat(cond.shift_amount);
+      const nad = parseInt(cond.n_anchor_days, 10);
+      if (Number.isNaN(amt) || !(nad > 0)) {
+        setErr('shift_amount must be numeric and n_anchor_days a positive integer');
+        return;
+      }
+      onApply({
+        ...base,
+        conditioning: { series_shifts: { [cond.shift_series.trim()]: amt }, n_anchor_days: nad },
+      });
+      return;
+    }
+    onApply(base);
   };
 
   const fld = (key: keyof WhatIfParams, label: string, type = 'text') => (
@@ -103,6 +119,18 @@ export function WhatIfForm({ onApply, disabled }: WhatIfFormProps) {
             {fld('horizon', 'horizon', 'number')}
             {fld('n_paths', 'n_paths', 'number')}
             {fld('w_stress', 'w_stress', 'number')}
+            <FormField label="shift_series">
+              <Input value={cond.shift_series} ariaLabel="shift_series"
+                onChange={({ detail }) => setCond({ ...cond, shift_series: detail.value })} />
+            </FormField>
+            <FormField label="shift_amount">
+              <Input value={cond.shift_amount} type="number" ariaLabel="shift_amount"
+                onChange={({ detail }) => setCond({ ...cond, shift_amount: detail.value })} />
+            </FormField>
+            <FormField label="n_anchor_days">
+              <Input value={cond.n_anchor_days} type="number" ariaLabel="n_anchor_days"
+                onChange={({ detail }) => setCond({ ...cond, n_anchor_days: detail.value })} />
+            </FormField>
           </ColumnLayout>
         </SpaceBetween>
       </Form>

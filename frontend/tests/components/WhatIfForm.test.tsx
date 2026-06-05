@@ -37,4 +37,29 @@ describe('WhatIfForm', () => {
     render(<WhatIfForm onApply={vi.fn()} disabled={true} />);
     expect(screen.getByRole('button', { name: /apply/i })).toBeDisabled();
   });
+
+  it('emits conditioning when a shift series is provided', async () => {
+    const onApply = vi.fn();
+    render(<WhatIfForm onApply={onApply} disabled={false} />);
+    await userEvent.type(screen.getByLabelText(/shift_series/i), 'USDEUR');
+    await userEvent.clear(screen.getByLabelText(/shift_amount/i));
+    await userEvent.type(screen.getByLabelText(/shift_amount/i), '-0.1');
+    await userEvent.clear(screen.getByLabelText(/n_anchor_days/i));
+    await userEvent.type(screen.getByLabelText(/n_anchor_days/i), '30');
+    await userEvent.click(screen.getByRole('button', { name: /apply/i }));
+    expect(onApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conditioning: { series_shifts: { USDEUR: -0.1 }, n_anchor_days: 30 },
+      }),
+    );
+  });
+
+  it('omits conditioning when no shift series is provided', async () => {
+    const onApply = vi.fn();
+    render(<WhatIfForm onApply={onApply} disabled={false} />);
+    await userEvent.click(screen.getByRole('button', { name: /apply/i }));
+    expect(onApply).toHaveBeenCalledWith(
+      expect.not.objectContaining({ conditioning: expect.anything() }),
+    );
+  });
 });

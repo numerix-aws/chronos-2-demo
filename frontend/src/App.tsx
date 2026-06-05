@@ -54,10 +54,18 @@ export function App() {
   };
 
   const handleApply = (p: WhatIfParams) => {
-    const prompt =
+    let prompt =
       `Re-run the demo with as_of_date=${p.as_of_date}, lookback_days=${p.lookback_days}, ` +
-      `horizon=${p.horizon}, n_paths=${p.n_paths}, w_stress=${p.w_stress}. ` +
-      `Compare PFE against the previous run and explain the delta.`;
+      `horizon=${p.horizon}, n_paths=${p.n_paths}, w_stress=${p.w_stress}. `;
+    if (p.conditioning) {
+      const shifts = Object.entries(p.conditioning.series_shifts)
+        .map(([k, val]) => `${k} ${val >= 0 ? '+' : ''}${val}`)
+        .join(', ');
+      prompt +=
+        `Apply a conditional what-if stress: ${shifts} anchored over the first ` +
+        `${p.conditioning.n_anchor_days} days (use w_stress=1 for this conditional run). `;
+    }
+    prompt += `Compare PFE against the previous run and explain the delta.`;
     void handleSend(prompt);
   };
 
