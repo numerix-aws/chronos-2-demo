@@ -47,3 +47,24 @@ _CREDIT_FRED_IDS = {"US_IG_OAS": "BAMLC0A0CM", "US_HY_OAS": "BAMLH0A0HYM2"}
 def fetch_credit_oas(name: str, api_key: str) -> pd.Series:
     """Fetch an ICE BofA OAS series from FRED, renamed to the panel column."""
     return fetch_fred_series(_CREDIT_FRED_IDS[name], api_key=api_key).rename(name)
+
+
+import time
+
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+_OBS_START_EPOCH = int(time.mktime(time.strptime(OBS_START, "%Y-%m-%d")))
+
+
+def fetch_yahoo_series(symbol: str) -> pd.Series:
+    """Fetch a Yahoo Finance daily close series as a tz-naive dated Series."""
+    params = {"period1": _OBS_START_EPOCH, "period2": int(time.time()),
+              "interval": "1d"}
+    resp = requests.get(f"{YAHOO_CHART_URL}/{symbol}", params=params,
+                        headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    resp.raise_for_status()
+    r = resp.json()["chart"]["result"][0]
+    ts = r["timestamp"]
+    close = r["indicators"]["quote"][0]["close"]
+    idx = pd.to_datetime(ts, unit="s").normalize()
+    s = pd.Series(close, index=idx, name=symbol).dropna()
+    return s

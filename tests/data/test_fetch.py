@@ -78,3 +78,23 @@ def test_fetch_credit_oas_maps_names_to_fred_ids(monkeypatch):
     s = fetch.fetch_credit_oas("US_IG_OAS", api_key="k")
     assert captured["id"] == "BAMLC0A0CM"
     assert s.name == "US_IG_OAS"
+
+
+@patch("chronos2_demo.data.fetch.requests.get")
+def test_fetch_yahoo_series_returns_dated_floats(mock_get):
+    mock_get.return_value = _fake_json_response({
+        "chart": {"result": [{
+            "timestamp": [1420243200, 1420329600, 1420416000],
+            "indicators": {"quote": [{"close": [2058.2, 2020.6, None]}]},
+        }]}
+    })
+    s = fetch.fetch_yahoo_series("^GSPC")
+    assert s.name == "^GSPC"
+    assert s.iloc[0] == pytest.approx(2058.2)
+    assert len(s) == 2  # None close dropped
+    assert s.index.tz is None
+    assert s.index[0] == s.index[0].normalize()  # midnight
+    args, kwargs = mock_get.call_args
+    assert args[0] == "https://query1.finance.yahoo.com/v8/finance/chart/^GSPC"
+    assert kwargs["params"]["interval"] == "1d"
+    assert kwargs["headers"]["User-Agent"].startswith("Mozilla")
