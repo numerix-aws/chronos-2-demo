@@ -8,23 +8,23 @@ FRED_CSV_URL = "https://api.stlouisfed.org/fred/series/observations"
 ECB_CSV_URL = "https://sdw-wsrest.ecb.europa.eu/service/data/EXR"
 
 
+OBS_START = "2015-01-01"
+
+
 def fetch_fred_series(series_id: str, api_key: str) -> pd.Series:
-    """Fetch a FRED series as a daily Series indexed by DATE."""
+    """Fetch a FRED series as a daily Series via the keyed JSON API."""
     params = {
         "series_id": series_id,
         "api_key": api_key,
         "file_type": "json",
+        "observation_start": OBS_START,
     }
-    # FRED supports CSV via a different endpoint; we use a stable CSV path:
-    csv_url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    resp = requests.get(csv_url, timeout=30)
+    resp = requests.get(FRED_CSV_URL, params=params, timeout=30)
     resp.raise_for_status()
-    df = pd.read_csv(io.StringIO(resp.text))
-    df.columns = [c.upper() for c in df.columns]
-    df = df[df.iloc[:, 1] != "."]
-    df["DATE"] = pd.to_datetime(df["DATE"])
-    s = df.set_index("DATE").iloc[:, 0].astype(float)
-    s.name = series_id
+    obs = resp.json()["observations"]
+    rows = [(o["date"], o["value"]) for o in obs if o["value"] != "."]
+    idx = pd.to_datetime([d for d, _ in rows])
+    s = pd.Series([float(v) for _, v in rows], index=idx, name=series_id)
     return s
 
 

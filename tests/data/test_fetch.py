@@ -13,15 +13,33 @@ def _fake_csv_response(text: str) -> MagicMock:
     return resp
 
 
+def _fake_json_response(payload: dict) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = payload
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
 @patch("chronos2_demo.data.fetch.requests.get")
 def test_fetch_fred_series_returns_dated_floats(mock_get):
-    mock_get.return_value = _fake_csv_response(
-        "DATE,DGS10\n2022-01-03,1.63\n2022-01-04,1.66\n2022-01-05,.\n"
-    )
+    mock_get.return_value = _fake_json_response({
+        "observations": [
+            {"date": "2022-01-03", "value": "1.63"},
+            {"date": "2022-01-04", "value": "1.66"},
+            {"date": "2022-01-05", "value": "."},
+        ]
+    })
     s = fetch.fetch_fred_series("DGS10", api_key="fake")
     assert s.index[0] == pd.Timestamp("2022-01-03")
     assert s.iloc[0] == pytest.approx(1.63)
-    assert len(s) == 2  # missing "." rows dropped
+    assert len(s) == 2  # "." row dropped
+    # uses the keyed JSON endpoint, passes api_key + observation_start
+    args, kwargs = mock_get.call_args
+    assert args[0] == fetch.FRED_CSV_URL
+    assert kwargs["params"]["api_key"] == "fake"
+    assert kwargs["params"]["file_type"] == "json"
+    assert kwargs["params"]["observation_start"] == "2015-01-01"
 
 
 @patch("chronos2_demo.data.fetch.requests.get")
