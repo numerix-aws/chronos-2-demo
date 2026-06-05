@@ -1,7 +1,7 @@
 # Numerix x Chronos-2 PoC — Design
 
-**Status:** Approved — implemented (Plan A + Plan B code-complete on `main`, 2026-06-04)
-**Date:** 2026-05-22 (Chronos-2 deployment/serving sections refreshed 2026-06-04)
+**Status:** Approved — implemented (Plan A + Plan B code-complete on `main`, 2026-06-04; live-data sources rewired for deploy 2026-06-05)
+**Date:** 2026-05-22 (Chronos-2 deployment/serving sections refreshed 2026-06-04; live-data + agent-model banner 2026-06-05)
 **Author:** Brainstorming session output
 
 > **2026-06-04 re-architecture note.** The original design assumed Chronos-2 ran on a hand-rolled **SageMaker real-time endpoint returning sample paths**. The implemented system instead deploys Chronos-2 via **AutoGluon Cloud (serverless default)**, which returns **per-series quantiles**; the client reconstructs joint `(n_paths, horizon, n_series)` paths client-side via inverse-CDF marginals coupled by a lookback Gaussian copula. The two `run_*` tools became **async ECS Fargate tasks** with paired `check_*` poll tools (so the live tool surface is **9 tools**, not 7). §5–§9 below have been updated to reflect this; the augmentation story, narrative, and evaluation are unchanged.
@@ -12,6 +12,10 @@
 > 3. **Nested-MC-vs-FM latency benchmark.** A small but real **nested Monte Carlo** exposure engine (outer scenarios × inner revaluation) is added as a *benchmark reference* — never the demo's pricing path — and timed head-to-head against the FM-path + closed-form pipeline, with the speedup recorded to a committed artifact. (§8.)
 >
 > The augmentation thesis, the "augment-not-replace" framing, and the §3 narrative are unchanged. Vol-surface forecasting remains a closing-tour beat only (§10), not a live capability.
+
+> **2026-06-05 live-data + deploy note.** Standing the PoC up for a live demo surfaced that the shipped §3 data fetchers targeted endpoints that have since changed, and the agent pinned an end-of-life model. Captured here and planned in **Plan A part-5** (Stage 13) + the deploy runbook; the augmentation thesis, narrative, and pricing path are unchanged.
+> 1. **All-live market data sources.** FRED now uses the **keyed JSON API** (the unkeyed CSV endpoint is rate-limited); ECB FX moved to **`data-api.ecb.europa.eu`** and is EUR-base-only, so USD crosses are **triangulated** (`USD{CCY}=D.USD.EUR/D.{CCY}.EUR`); **SPX/NIKKEI225 + MOVE** come from the **Yahoo Finance chart API** (FRED lacks MOVE entirely and caps equities); and credit OAS uses a deep free **`BAA10Y` proxy** (Moody's Baa−10Y Treasury, to 1986) because **ICE BofA OAS is licence-locked to a rolling ~3-year window on FRED** (no deep history, no ALFRED archive). `US_IG_OAS=BAA10Y`, `US_HY_OAS=1.7×BAA10Y`; columns keep their names + percent units but are a **proxy**, not the original ICE series. `snapshot_data.py` now also emits `regimes.parquet`, and a new `seed_demo_data.py` uploads the curated panel to the S3 data bucket the Lambda tools read.
+> 2. **Agent reasoning model.** The AgentCore runtime model moves from the end-of-life `anthropic.claude-3-5-sonnet-20241022-v2:0` to **`us.anthropic.claude-sonnet-4-6`** (a cross-region inference profile; the runtime IAM policy grants the profile ARN + underlying foundation-model ARNs). Model choice remains configurable via `MODEL_ID`.
 
 ## 1. Purpose & Audience
 

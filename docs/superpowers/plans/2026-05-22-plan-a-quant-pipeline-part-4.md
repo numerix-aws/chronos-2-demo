@@ -1157,4 +1157,4 @@ After Task 39:
 - A nested-MC strawman exists as a benchmark reference, correctness-pinned, never on the demo pricing path.
 - Two committed artifacts record the genuine real-endpoint headline delta and the nested-MC-vs-FM speedup once their scripts are run.
 
-> _Continue with `2026-05-22-plan-b-ux-agent-part-10.md` (Stage 10 — wire what-if conditioning end-to-end through the agent + frontend)._
+> _Continue with `2026-05-22-plan-a-quant-pipeline-part-5.md` (Stage 13 — all-live market data sources + S3 seeding; added 2026-06-05)._
