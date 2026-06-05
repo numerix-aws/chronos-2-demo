@@ -1,7 +1,7 @@
 {
   "app": "npx ts-node --prefer-ts-exts bin/app.ts",
   "context": {
-    "@aws-cdk/core:bootstrapQualifier": "chronos2demo",
+    "@aws-cdk/core:bootstrapQualifier": "chronos2",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:newStyleStackSynthesis": true,
     "demoTag": "chronos2-demo"
