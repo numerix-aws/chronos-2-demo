@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Plan A + Plan B are code-complete on `main` as of 2026-06-04** (96 core tests + 69 tools/agent tests passing). A **2026-06-04 scope extension** (cross-asset equity/credit priced factors, live headline calibration, end-to-end what-if conditioning, nested-MC latency benchmark) is **planned but not yet coded** — its tasks live in Plan A part-4 (Tasks 31–39) and Plan B part-10 (Tasks 27–31). The shipped code is the primary source of truth; the design docs under `docs/superpowers/` remain the authoritative *reference* for intent, task history, and copy-pasteable module code:
+**Plan A (incl. part-4) + Plan B (incl. part-10) are code-complete on `main`** (110 core tests + 74 tools/agent tests passing; part-4 + part-10 both landed 2026-06-05). The **2026-06-04 scope extension** is now **fully coded**: Plan A part-4 (Tasks 31–39 — cross-asset equity/credit priced factors, nested-MC latency benchmark, live headline calibration script) and Plan B part-10 (Tasks 27–31 — end-to-end what-if conditioning through the agent + frontend, plus the cross-asset `price_book` Lambda) both landed 2026-06-05. The shipped code is the primary source of truth; the design docs under `docs/superpowers/` remain the authoritative *reference* for intent, task history, and copy-pasteable module code:
 
 - `specs/2026-05-22-numerix-chronos2-poc-design.md` — design spec (2026-05-22; re-arch banner + scope-extension banner both 2026-06-04). The body was **not re-synced** to the AutoGluon/quantile/Fargate/9-tool re-architecture, but the two dated banners at the top *are* current (the scope-extension additions are reflected there) — see the "spec vs plan" rule below. Treat un-bannered architectural details as historical unless they match the code.
-- `plans/2026-05-22-plan-a-quant-pipeline*.md` — Plan A (Python core + notebook), 9 files, 39 tasks across 12 stages (Tasks 1–30 coded; **Stages 10–12 / Tasks 31–39 in part-4 are planned, not yet coded**)
-- `plans/2026-05-22-plan-b-ux-agent*.md` — Plan B (CDK infra, AgentCore copilot, Cloudscape SPA), 10 files, 31 tasks across 11 stages (Tasks 1–26 coded; **Stage 10 / Tasks 27–31 in part-10 are planned, not yet coded**).
+- `plans/2026-05-22-plan-a-quant-pipeline*.md` — Plan A (Python core + notebook), 9 files, 39 tasks across 12 stages (**all 39 coded** — Tasks 1–30 + Stages 10–12 / Tasks 31–39 in part-4, the latter landed 2026-06-05)
+- `plans/2026-05-22-plan-b-ux-agent*.md` — Plan B (CDK infra, AgentCore copilot, Cloudscape SPA), 10 files, 31 tasks across 11 stages (**all 31 coded** — Tasks 1–26 + Stage 10 / Tasks 27–31 in part-10, the latter landed 2026-06-05).
 
 When the user asks about implementation details, **read the shipped code first, then the plan files** — the plans contain the complete, copy-pasteable code for every module (including failing tests, expected pytest output, and commit messages) and explain *why* each piece exists. Don't reinvent. Don't paraphrase. Plan A part-1 and Plan B part-1 each have a locked-in file-structure tree.
 
@@ -61,8 +61,9 @@ The Plan A package lives under `src/chronos2_demo/` — each subdirectory is one
 - `data/` — fetchers, alignment, covariates, regime labels
 - `models/baseline_mc.py` — PCA + Hull-White + GBM joint sampler (Stage 2)
 - `models/chronos2_client.py` — Chronos-2 client: AutoGluon endpoint request frame + quantile→joint-path reconstruction (Gaussian copula) (Stage 3)
+- `models/nested_mc.py` — nested-MC exposure engine, **benchmark reference only** — never wired into `compute_metrics` (Stage 11, part-4)
 - `augmentation/regime_detector.py` + `augmentation/blender.py` — Stage 4 augmentation layer
-- `pricing/` — XCCY book + valuation + EE/PFE/ES (Stage 5)
+- `pricing/` — XCCY book + valuation + EE/PFE/ES (Stage 5); `pricing/instruments.py` adds closed-form equity-forward + CDS-protection valuation for the cross-asset factors (Stage 10, part-4)
 - `diagnostics/` — coverage, tail dependence, distribution distance (Stage 6)
 - `plotting/` — thin matplotlib helpers, return `Figure` objects (Stage 7)
 - `infra/sagemaker_endpoint.py` — Chronos-2 deploy/teardown via AutoGluon Cloud (`deploy_demo_endpoint`/`delete_demo_endpoint`/`open_endpoint`; serverless default) (Stage 3)
@@ -75,7 +76,7 @@ Plan B wraps that package in these top-level directories (each its own deploy/te
 - `tools/` — tool implementations: `lambda/` (9 tool handlers + sessions/invoke/sse_relay/authorizer + `shared/`) and `fargate/` (`baseline_mc`, `run_chronos2` async workers); `tests/`
 - `infra/` — CDK app (TypeScript): 7 stacks under `lib/` (network, storage, tools, agent, api, frontend, observability) + `test/` jest snapshots
 - `frontend/` — Cloudscape React SPA (Vite + vitest + Playwright): chat panel, what-if form, SSE streaming
-- `scripts/` — `snapshot_data.py`, `deploy_chronos2_endpoint.py`; `docs/runbook.md` — deploy/demo/teardown runbook
+- `scripts/` — `snapshot_data.py`, `deploy_chronos2_endpoint.py`; part-4 adds `benchmark_latency.py` (nested-MC-vs-FM timing) + `calibrate_headline.py` (live-endpoint genuine PFE delta), which write committed placeholder artifacts under `docs/results/`; `docs/runbook.md` — deploy/demo/teardown runbook
 
 ## Commands
 
