@@ -2,6 +2,7 @@ import boto3
 import json
 import pytest
 from moto import mock_aws
+from unittest.mock import patch, MagicMock
 
 from tools.lambda_.run_chronos2 import handler
 
@@ -59,3 +60,33 @@ def test_launcher_rejects_invalid_n_paths(ecs_env):
     )
     assert out["status"] == "error"
     assert "n_paths" in out["message"]
+
+
+def _container_env_for(event):
+    """Invoke the launcher with a mocked ECS client and return the env dict it
+    would set on the Fargate container (captured from the run_task overrides)."""
+    ecs = MagicMock()
+    ecs.run_task.return_value = {"tasks": [{"taskArn": "arn:aws:ecs:::task/x"}]}
+    with patch.object(handler.boto3, "client", return_value=ecs):
+        out = handler.handler(event, None)
+    assert out["status"] == "ok", out
+    env = ecs.run_task.call_args.kwargs["overrides"]["containerOverrides"][0]["environment"]
+    return {e["name"]: e["value"] for e in env}
+
+
+def test_launcher_forwards_conditioning_as_env(ecs_env):
+    env = _container_env_for(
+        {"panel_uri": "s3://test-data/lb.parquet", "as_of": "2022-06-23",
+         "horizon": 21, "n_paths": 200,
+         "conditioning": {"series_shifts": {"USDEUR": -0.1}, "n_anchor_days": 30}},
+    )
+    assert json.loads(env["CONDITIONING_JSON"]) == {
+        "series_shifts": {"USDEUR": -0.1}, "n_anchor_days": 30}
+
+
+def test_launcher_omits_conditioning_when_absent(ecs_env):
+    env = _container_env_for(
+        {"panel_uri": "s3://test-data/lb.parquet", "as_of": "2022-06-23",
+         "horizon": 21, "n_paths": 200},
+    )
+    assert "CONDITIONING_JSON" not in env

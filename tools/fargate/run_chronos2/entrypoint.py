@@ -2,7 +2,7 @@
 
 Env vars:
   DATA_BUCKET, PANEL_URI, AS_OF, HORIZON, N_PATHS, OUTPUT_KEY,
-  CHRONOS2_ENDPOINT, COVARIATES_URI?, SEED?
+  CHRONOS2_ENDPOINT, COVARIATES_URI?, CONDITIONING_JSON?, SEED?
 Output: S3 URI (pickle) of a PathSet.
 
 Opens the AutoGluon Cloud endpoint (the single autogluon-cloud import lives in
