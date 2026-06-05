@@ -76,3 +76,35 @@ def test_entrypoint_rejects_bad_horizon(s3, monkeypatch):
     ep = _load_entrypoint()
     with pytest.raises(ValueError, match="HORIZON"):
         ep.main()
+
+
+def test_entrypoint_parses_conditioning_and_passes_it(s3, monkeypatch):
+    import json
+    monkeypatch.setenv("DATA_BUCKET", "test-data")
+    monkeypatch.setenv("PANEL_URI", "s3://test-data/lb.parquet")
+    monkeypatch.setenv("AS_OF", "2022-06-23")
+    monkeypatch.setenv("HORIZON", "21")
+    monkeypatch.setenv("N_PATHS", "50")
+    monkeypatch.setenv("OUTPUT_KEY", "sessions/abc/chronos2.pkl")
+    monkeypatch.setenv("CHRONOS2_ENDPOINT", "chronos2-demo-ep")
+    monkeypatch.setenv("CONDITIONING_JSON",
+                       json.dumps({"series_shifts": {"USDEUR": -0.1}, "n_anchor_days": 30}))
+    _seed_panel(s3)
+
+    fake_ps = PathSet(
+        paths=np.zeros((50, 21, 3), dtype=float),
+        weights=np.full(50, 1.0 / 50),
+        series=["USDEUR", "USDJPY", "USD_5Y"],
+        dates=pd.bdate_range("2022-06-24", periods=21),
+        source="chronos2_conditional",
+    )
+    ep = _load_entrypoint()
+    with patch.object(ep.sagemaker_endpoint, "open_endpoint", return_value=object()), \
+         patch.object(ep.chronos2_client, "simulate_chronos2", return_value=fake_ps) as m:
+        ep.main()
+
+    _, kwargs = m.call_args
+    cond = kwargs["conditioning"]
+    assert cond is not None
+    assert cond.series_shifts == {"USDEUR": -0.1}
+    assert cond.n_anchor_days == 30

@@ -11,6 +11,7 @@ which reconstructs joint paths from the endpoint's per-series quantiles.
 """
 from __future__ import annotations
 import io
+import json
 import os
 import pickle
 import sys
@@ -42,6 +43,14 @@ def main() -> str:
     if os.environ.get("COVARIATES_URI"):
         covariates = s3_io.download_parquet(os.environ["COVARIATES_URI"])
 
+    conditioning = None
+    if os.environ.get("CONDITIONING_JSON"):
+        payload = json.loads(os.environ["CONDITIONING_JSON"])
+        conditioning = chronos2_client.Conditioning(
+            series_shifts={k: float(v) for k, v in payload.get("series_shifts", {}).items()},
+            n_anchor_days=int(payload.get("n_anchor_days", 0)),
+        )
+
     endpoint = sagemaker_endpoint.open_endpoint(endpoint_name)
     client = chronos2_client.Chronos2Client(endpoint=endpoint)
     ps = chronos2_client.simulate_chronos2(
@@ -51,6 +60,7 @@ def main() -> str:
         horizon=horizon,
         n_paths=n_paths,
         covariates=covariates,
+        conditioning=conditioning,
         seed=seed,
     )
 
