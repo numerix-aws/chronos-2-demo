@@ -1,0 +1,13 @@
+{
+  "status": "placeholder — run scripts/calibrate_headline.py against a live endpoint",
+  "baseline_pfe_975": null,
+  "augmented_pfe_975": null,
+  "delta_pct": null,
+  "delta_usd": null,
+  "as_of": null,
+  "stress_window": null,
+  "n_paths": null,
+  "endpoint_name": null,
+  "git_sha": null,
+  "timestamp": null
+}
