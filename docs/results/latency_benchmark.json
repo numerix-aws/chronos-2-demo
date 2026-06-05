@@ -1,0 +1,12 @@
+{
+  "status": "placeholder — run scripts/benchmark_latency.py to populate",
+  "closed_form_seconds": null,
+  "nested_mc_seconds": null,
+  "speedup_x": null,
+  "nested_n_revaluations": null,
+  "n_paths": null,
+  "horizon": null,
+  "n_inner": null,
+  "git_sha": null,
+  "timestamp": null
+}
