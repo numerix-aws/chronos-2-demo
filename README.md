@@ -38,7 +38,9 @@ One-shot pull of the FX, rates, and covariate panels into `data/curated/`:
 python scripts/snapshot_data.py --fred-api-key $FRED_API_KEY
 ```
 
-This produces `data/curated/panel.parquet` and `data/curated/covariates.parquet`.
+This produces `data/curated/panel.parquet` (FX + G10 rates + equity SPX/NIKKEI225
++ credit US_IG/US_HY OAS — the full cross-asset factor universe) and
+`data/curated/covariates.parquet` (VIX/MOVE/WTI, Chronos-2-only).
 
 ### Deploy the Chronos-2 endpoint (AutoGluon Cloud)
 
@@ -68,6 +70,11 @@ jupyter lab notebooks/headline_demo.ipynb
 ```
 
 Run the cells top-to-bottom. The money-shot chart is the PFE overlay in Beat 7.
+
+The genuine headline delta is recorded by `python scripts/calibrate_headline.py`
+(live endpoint) into `docs/results/headline_calibration.json`; the nested-MC-vs-FM
+speedup by `python scripts/benchmark_latency.py` into
+`docs/results/latency_benchmark.json`.
 
 ---
 

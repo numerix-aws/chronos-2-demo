@@ -44,6 +44,13 @@ def main() -> int:
             s = fetch.fetch_fred_series(fred_id, args.fred_api_key).rename(f"{ccy}_{tenor}")
             series.append(s)
 
+    for idx in config.EQUITY_INDICES:
+        fred_id = {"SPX": "SP500", "NIKKEI225": "NIKKEI225"}[idx]
+        series.append(fetch.fetch_fred_series(fred_id, args.fred_api_key).rename(idx))
+
+    for name in config.CREDIT_SPREADS:
+        series.append(fetch.fetch_credit_oas(name, args.fred_api_key))
+
     panel = align_panel(series)
     panel.to_parquet(config.DATA_CURATED / "panel.parquet")
     print(f"wrote panel: {panel.shape} → {config.DATA_CURATED / 'panel.parquet'}")
