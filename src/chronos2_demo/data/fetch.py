@@ -28,8 +28,32 @@ def fetch_fred_series(series_id: str, api_key: str) -> pd.Series:
     return s
 
 
+def _fetch_ecb_eur_base(quote_ccy: str) -> pd.Series:
+    """Fetch one EUR-base ECB daily rate: units of quote_ccy per 1 EUR."""
+    url = f"{ECB_CSV_URL}/D.{quote_ccy}.EUR.SP00.A?format=csvdata"
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    df = pd.read_csv(io.StringIO(resp.text))
+    df["TIME_PERIOD"] = pd.to_datetime(df["TIME_PERIOD"])
+    return df.set_index("TIME_PERIOD")["OBS_VALUE"].astype(float)
+
+
 def fetch_ecb_fx(base_ccy: str, quote_ccy: str) -> pd.Series:
-    """Fetch an ECB-published FX rate as quote-per-base."""
+    """USD-per-foreign FX. ECB is EUR-base only, so USD crosses are triangulated.
+
+    base="USD": USD{quote} = (USD per EUR) / (quote per EUR).  quote="EUR"
+    is the direct USD/EUR leg.
+    """
+    if base_ccy == "USD":
+        usd_per_eur = _fetch_ecb_eur_base("USD")
+        if quote_ccy == "EUR":
+            s = usd_per_eur
+        else:
+            quote_per_eur = _fetch_ecb_eur_base(quote_ccy)
+            s = (usd_per_eur / quote_per_eur).dropna()
+        s.name = f"{base_ccy}{quote_ccy}"
+        return s
+    # Legacy direct path (e.g. EUR/USD) — single key.
     flow_key = f"D.{base_ccy}.{quote_ccy}.SP00.A"
     url = f"{ECB_CSV_URL}/{flow_key}?format=csvdata"
     resp = requests.get(url, timeout=30)

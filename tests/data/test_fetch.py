@@ -98,3 +98,21 @@ def test_fetch_yahoo_series_returns_dated_floats(mock_get):
     assert args[0] == "https://query1.finance.yahoo.com/v8/finance/chart/^GSPC"
     assert kwargs["params"]["interval"] == "1d"
     assert kwargs["headers"]["User-Agent"].startswith("Mozilla")
+
+
+@patch("chronos2_demo.data.fetch.requests.get")
+def test_fetch_ecb_fx_triangulates_usd_crosses(mock_get):
+    # Two EUR-base legs: USD per EUR, then JPY per EUR.
+    mock_get.side_effect = [
+        _fake_csv_response("TIME_PERIOD,OBS_VALUE\n2015-01-02,1.2043\n"),
+        _fake_csv_response("TIME_PERIOD,OBS_VALUE\n2015-01-02,145.21\n"),
+    ]
+    s = fetch.fetch_ecb_fx("USD", "JPY")
+    assert s.name == "USDJPY"
+    # USD per JPY = (USD/EUR) / (JPY/EUR)
+    assert s.iloc[0] == pytest.approx(1.2043 / 145.21, rel=1e-6)
+    # first leg is the USD/EUR key, second is the JPY/EUR key
+    first_url = mock_get.call_args_list[0].args[0]
+    second_url = mock_get.call_args_list[1].args[0]
+    assert "D.USD.EUR.SP00.A" in first_url
+    assert "D.JPY.EUR.SP00.A" in second_url
