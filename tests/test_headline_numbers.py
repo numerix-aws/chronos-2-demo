@@ -65,13 +65,15 @@ def test_augmented_pfe_exceeds_baseline_by_meaningful_margin():
         client, panel, as_of=as_of, horizon=horizon, n_paths=n_paths,
     )
 
-    swaps = book.load_book(book.DEFAULT_BOOK_PATH)
-    par_term = exposure.portfolio_mtm(swaps, par)[:, -1]
-    chr_term = exposure.portfolio_mtm(swaps, chr_)[:, -1]
+    swaps, equities, cds = book.load_cross_asset_book(book.DEFAULT_BOOK_PATH)
+    par_term = exposure.portfolio_mtm(swaps, par, equities, cds)[:, -1]
+    chr_term = exposure.portfolio_mtm(swaps, chr_, equities, cds)[:, -1]
     blended = blender.blend_paths(par, chr_, par_term, chr_term, w_stress=snap.w_stress)
 
-    base_pfe = exposure.compute_metrics(swaps, par)["pfe_975"][-1]
-    aug_pfe = exposure.compute_metrics(swaps, blended)["pfe_975"][-1]
+    base_pfe = exposure.compute_metrics(
+        swaps, par, equity_forwards=equities, cds_protection=cds)["pfe_975"][-1]
+    aug_pfe = exposure.compute_metrics(
+        swaps, blended, equity_forwards=equities, cds_protection=cds)["pfe_975"][-1]
     rel_gap = (aug_pfe - base_pfe) / max(abs(base_pfe), 1.0)
 
     assert aug_pfe >= base_pfe, (
