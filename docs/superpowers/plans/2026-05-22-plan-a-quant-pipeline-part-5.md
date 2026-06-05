@@ -688,10 +688,67 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 ---
 
+### Task 48: Forward-fill mixed-frequency series + fix the dead JPY rate
+
+**Files:**
+- Modify: `scripts/snapshot_data.py`
+
+Discovered on the first live run (2026-06-05): the inner-join `align_panel` collapsed the live panel to **17 rows**. Two causes: (1) FRED's only free non-USD sovereign yields are **monthly** (`IRLTLT01*M156N`), which land on month-starts and almost never coincide with the daily FX/USD-rate/equity dates → inner-join near-empty; (2) the JPY 2Y/5Y series `INTGSBJPM193N` **ended 2017-05** (dead). Fix: (a) reuse the alive monthly JPY 10Y (`IRLTLT01JPM156N`) across all three JPY tenors — mirroring how EUR already reuses `IRLTLT01EZM156N`; (b) before aligning, reindex every series onto a common **business-day grid** and **forward-fill** (the conventional way to carry monthly macro on a daily panel — foreign rates become flat within each month; USD rates/FX/equities stay daily). Verified result: **2807 rows, 21 columns, 0 NaN, 1293 rows ≤ 2020-03-15** (the demo's 1260 lookback fits).
+
+This touches only `snapshot_data.py` (the network entrypoint, no hermetic test). `align_panel` itself is **not** changed (its inner-join + dropna stays correct for already-aligned daily series and for the frozen synthetic fixture). The ffill happens in the script, before `align_panel`.
+
+- [ ] **Step 1: Implement** (no unit test — network entrypoint; verified by the live run)
+
+In `scripts/snapshot_data.py`, fix the dead JPY ids in `FRED_RATE_IDS`:
+```python
+    ("JPY", "2Y"): "IRLTLT01JPM156N", ("JPY", "5Y"): "IRLTLT01JPM156N",
+    ("JPY", "10Y"): "IRLTLT01JPM156N",
+```
+(EUR/GBP/USD entries unchanged; this only swaps the two dead `INTGSBJPM193N` rows to the alive monthly JPY 10Y, so all three JPY tenors reuse one series exactly like EUR.)
+
+Then replace the `panel = align_panel(series)` line with a forward-fill onto a common business-day grid:
+```python
+    # Series arrive at mixed frequencies (daily FX/USD-rates/equities; monthly
+    # OECD foreign rates). Inner-joining raw collapses the panel, so reindex each
+    # onto a common business-day grid and forward-fill (monthly macro carried
+    # daily) before aligning.
+    lo = max(s.dropna().index.min() for s in series)
+    hi = min(s.dropna().index.max() for s in series)
+    grid = pd.bdate_range(lo, hi)
+    series = [s.reindex(grid).ffill() for s in series]
+    panel = align_panel(series)
+```
+
+- [ ] **Step 2: Confirm hermetic suite still green**
+
+```bash
+pytest -q
+```
+Expected: PASS (unchanged — this script isn't imported by tests).
+
+- [ ] **Step 3: Live run + sanity check**
+
+```bash
+python scripts/snapshot_data.py --fred-api-key "$FRED_API_KEY"
+```
+Expected: `wrote panel: (2807, 21)` (±a few rows as data updates), `wrote regimes: (2807,)`, panel spanning ~2015-04 → present with ≥1260 rows before 2020-03-15.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add scripts/snapshot_data.py
+git commit -m "fix(scripts): forward-fill mixed-frequency series; reuse alive JPY rate
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
+```
+
+---
+
 ## Plan A part-5 complete
 
-After Task 47:
+After Task 48:
 - The data layer pulls **live** data that works against today's endpoints: keyed FRED JSON, ECB triangulated USD crosses, Yahoo equities + MOVE, and a deep free `BAA10Y` credit proxy.
+- Mixed-frequency series (daily + monthly OECD foreign rates) are forward-filled onto a business-day grid so the joined panel spans 2015→present (~2807 rows) instead of collapsing.
 - `snapshot_data.py` emits all three curated parquets including `regimes.parquet`; `seed_demo_data.py` uploads them to the deployed data bucket.
 - The hermetic suite is unchanged in spirit (only `test_fetch.py`/`test_covariates.py` mocks updated); the frozen headline regression fixture is untouched.
 

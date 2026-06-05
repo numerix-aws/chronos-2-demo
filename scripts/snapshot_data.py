@@ -18,7 +18,7 @@ FRED_RATE_IDS = {
     ("USD", "2Y"): "DGS2", ("USD", "5Y"): "DGS5", ("USD", "10Y"): "DGS10",
     ("EUR", "2Y"): "IRLTLT01EZM156N", ("EUR", "5Y"): "IRLTLT01EZM156N",
     ("EUR", "10Y"): "IRLTLT01EZM156N",
-    ("JPY", "2Y"): "INTGSBJPM193N", ("JPY", "5Y"): "INTGSBJPM193N",
+    ("JPY", "2Y"): "IRLTLT01JPM156N", ("JPY", "5Y"): "IRLTLT01JPM156N",
     ("JPY", "10Y"): "IRLTLT01JPM156N",
     ("GBP", "2Y"): "INTGSBGBM193N", ("GBP", "5Y"): "INTGSBGBM193N",
     ("GBP", "10Y"): "IRLTLT01GBM156N",
@@ -51,6 +51,14 @@ def main() -> int:
     for name in config.CREDIT_SPREADS:
         series.append(fetch.fetch_credit_oas(name, args.fred_api_key))
 
+    # Series arrive at mixed frequencies (daily FX/USD-rates/equities; monthly
+    # OECD foreign rates). Inner-joining raw collapses the panel, so reindex each
+    # onto a common business-day grid and forward-fill (monthly macro carried
+    # daily) before aligning.
+    lo = max(s.dropna().index.min() for s in series)
+    hi = min(s.dropna().index.max() for s in series)
+    grid = pd.bdate_range(lo, hi)
+    series = [s.reindex(grid).ffill() for s in series]
     panel = align_panel(series)
     panel.to_parquet(config.DATA_CURATED / "panel.parquet")
     print(f"wrote panel: {panel.shape} → {config.DATA_CURATED / 'panel.parquet'}")
