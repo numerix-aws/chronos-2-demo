@@ -64,20 +64,24 @@ def test_fetch_propagates_http_errors(mock_get):
         fetch.fetch_fred_series("DGS10", api_key="fake")
 
 
-def test_fetch_credit_oas_maps_names_to_fred_ids(monkeypatch):
+def test_fetch_credit_oas_uses_baa10y_proxy(monkeypatch):
     from chronos2_demo.data import fetch
-    captured = {}
+    captured = []
 
     def fake_fred(series_id, api_key):
-        captured["id"] = series_id
-        import pandas as pd
-        return pd.Series([1.2, 1.3], index=pd.to_datetime(["2022-06-01", "2022-06-02"]),
+        captured.append(series_id)
+        return pd.Series([2.4, 2.5],
+                         index=pd.to_datetime(["2022-06-01", "2022-06-02"]),
                          name=series_id)
 
     monkeypatch.setattr(fetch, "fetch_fred_series", fake_fred)
-    s = fetch.fetch_credit_oas("US_IG_OAS", api_key="k")
-    assert captured["id"] == "BAMLC0A0CM"
-    assert s.name == "US_IG_OAS"
+    ig = fetch.fetch_credit_oas("US_IG_OAS", api_key="k")
+    hy = fetch.fetch_credit_oas("US_HY_OAS", api_key="k")
+    assert captured == ["BAA10Y", "BAA10Y"]      # both legs proxy off BAA10Y
+    assert ig.name == "US_IG_OAS" and hy.name == "US_HY_OAS"
+    assert ig.iloc[0] == pytest.approx(2.4)       # IG = BAA10Y
+    assert hy.iloc[0] == pytest.approx(2.4 * fetch._HY_MULTIPLE)
+    assert (hy > ig).all()                        # HY strictly wider
 
 
 @patch("chronos2_demo.data.fetch.requests.get")

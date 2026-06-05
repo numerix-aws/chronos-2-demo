@@ -65,12 +65,23 @@ def fetch_ecb_fx(base_ccy: str, quote_ccy: str) -> pd.Series:
     return s
 
 
-_CREDIT_FRED_IDS = {"US_IG_OAS": "BAMLC0A0CM", "US_HY_OAS": "BAMLH0A0HYM2"}
+# Credit OAS proxy: ICE BofA OAS is licence-locked to 2023+ on FRED (no deep
+# history, no ALFRED archive). BAA10Y (Moody's Baa minus 10Y Treasury, daily to
+# 1986, in percent) is the deep free stand-in. US_IG_OAS = BAA10Y; US_HY_OAS is
+# a fixed multiple (HY runs wider than IG). Sanctioned proxy (2026-06-05) — the
+# columns keep their names + percent units but are NOT the original ICE series.
+_CREDIT_PROXY_ID = "BAA10Y"
+_HY_MULTIPLE = 1.7
 
 
 def fetch_credit_oas(name: str, api_key: str) -> pd.Series:
-    """Fetch an ICE BofA OAS series from FRED, renamed to the panel column."""
-    return fetch_fred_series(_CREDIT_FRED_IDS[name], api_key=api_key).rename(name)
+    """Fetch the credit-OAS proxy (BAA10Y-based), renamed to the panel column."""
+    base = fetch_fred_series(_CREDIT_PROXY_ID, api_key=api_key)
+    if name == "US_IG_OAS":
+        return base.rename(name)
+    if name == "US_HY_OAS":
+        return (base * _HY_MULTIPLE).rename(name)
+    raise KeyError(name)
 
 
 import time
