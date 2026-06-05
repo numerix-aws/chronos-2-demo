@@ -45,8 +45,8 @@ def main() -> int:
             series.append(s)
 
     for idx in config.EQUITY_INDICES:
-        fred_id = {"SPX": "SP500", "NIKKEI225": "NIKKEI225"}[idx]
-        series.append(fetch.fetch_fred_series(fred_id, args.fred_api_key).rename(idx))
+        sym = {"SPX": "^GSPC", "NIKKEI225": "^N225"}[idx]
+        series.append(fetch.fetch_yahoo_series(sym).rename(idx))
 
     for name in config.CREDIT_SPREADS:
         series.append(fetch.fetch_credit_oas(name, args.fred_api_key))
@@ -55,9 +55,14 @@ def main() -> int:
     panel.to_parquet(config.DATA_CURATED / "panel.parquet")
     print(f"wrote panel: {panel.shape} → {config.DATA_CURATED / 'panel.parquet'}")
 
-    cov = load_covariates()
+    cov = load_covariates(args.fred_api_key)
     cov.to_parquet(config.DATA_CURATED / "covariates.parquet")
     print(f"wrote covariates: {cov.shape}")
+
+    from chronos2_demo.data.regimes import w_stress_series
+    w = w_stress_series(panel, window=20)
+    w.to_frame().to_parquet(config.DATA_CURATED / "regimes.parquet")
+    print(f"wrote regimes: {w.shape} → {config.DATA_CURATED / 'regimes.parquet'}")
     return 0
 
 
