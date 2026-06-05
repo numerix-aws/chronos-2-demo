@@ -38,8 +38,10 @@ def handler(event: dict, _ctx) -> dict:
         return responses.error("missing paths_uri")
 
     # The demo book ships in the Lambda layer; BOOK_PATH is set by Task 13.
-    book = book_mod.load_book(os.environ["BOOK_PATH"])
-    metrics = exposure.compute_metrics(book, ps)
+    swaps, equity_forwards, cds_protection = book_mod.load_cross_asset_book(
+        os.environ["BOOK_PATH"])
+    metrics = exposure.compute_metrics(
+        swaps, ps, equity_forwards=equity_forwards, cds_protection=cds_protection)
     result = {
         "ee": [float(x) for x in metrics["ee"]],
         "pfe_975": [float(x) for x in metrics["pfe_975"]],
