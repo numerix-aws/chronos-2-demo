@@ -50,6 +50,9 @@ def test_fetch_ecb_fx_returns_dated_floats(mock_get):
     s = fetch.fetch_ecb_fx("EUR", "USD")
     assert len(s) == 2
     assert s.iloc[0] == pytest.approx(1.1308)
+    assert mock_get.call_args.args[0].startswith(
+        "https://data-api.ecb.europa.eu/service/data/EXR"
+    )
 
 
 @patch("chronos2_demo.data.fetch.requests.get")

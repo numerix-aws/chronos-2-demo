@@ -5,7 +5,7 @@ import pandas as pd
 import requests
 
 FRED_CSV_URL = "https://api.stlouisfed.org/fred/series/observations"
-ECB_CSV_URL = "https://sdw-wsrest.ecb.europa.eu/service/data/EXR"
+ECB_CSV_URL = "https://data-api.ecb.europa.eu/service/data/EXR"
 
 
 OBS_START = "2015-01-01"
