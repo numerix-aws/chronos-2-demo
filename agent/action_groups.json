@@ -149,7 +149,19 @@
                   "as_of": { "type": "string", "format": "date" },
                   "horizon": { "type": "integer", "minimum": 1, "maximum": 1000 },
                   "n_paths": { "type": "integer", "minimum": 1, "maximum": 20000 },
-                  "covariates_uri": { "type": "string", "format": "uri" }
+                  "covariates_uri": { "type": "string", "format": "uri" },
+                  "conditioning": {
+                    "type": "object",
+                    "description": "Optional what-if stress narrative. series_shifts maps a panel column to an additive level shift applied over the first n_anchor_days of the horizon.",
+                    "properties": {
+                      "series_shifts": {
+                        "type": "object",
+                        "additionalProperties": { "type": "number" }
+                      },
+                      "n_anchor_days": { "type": "integer", "minimum": 1, "maximum": 1000 }
+                    },
+                    "required": ["series_shifts", "n_anchor_days"]
+                  }
                 }
               }
             }

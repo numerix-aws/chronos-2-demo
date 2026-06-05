@@ -83,3 +83,15 @@ def test_every_operation_documents_responses(op_id):
                 assert "200" in op["responses"], f"{op_id} missing 200 response"
                 found = True
     assert found, f"{op_id} not found in spec"
+
+
+def test_run_chronos2_advertises_optional_conditioning():
+    spec = _load()
+    schema = spec["paths"]["/run_chronos2"]["post"]["requestBody"][
+        "content"]["application/json"]["schema"]
+    cond = schema["properties"]["conditioning"]
+    assert cond["type"] == "object"
+    assert "series_shifts" in cond["properties"]
+    assert cond["properties"]["n_anchor_days"]["type"] == "integer"
+    # Optional: not in the required list.
+    assert "conditioning" not in schema.get("required", [])
