@@ -12,7 +12,7 @@ export interface AgentStackProps extends cdk.StackProps {
   readonly tools: ToolsStack;
 }
 
-const MODEL_ID = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
+const MODEL_ID = 'us.anthropic.claude-sonnet-4-6';
 
 const TOOL_OPERATIONS: Array<{ name: string; opId: string; getFn: (t: ToolsStack) => lambda.IFunction }> = [
   { name: 'LoadData', opId: 'load_data', getFn: (t) => t.fnLoadData },
@@ -91,9 +91,17 @@ export class AgentStack extends cdk.Stack {
     const runtimeRole = new iam.Role(this, 'RuntimeRole', {
       assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
     });
+    // MODEL_ID is a cross-region inference profile (us.anthropic.claude-sonnet-4-6).
+    // Invoking it requires both the profile ARN (account-scoped) and the underlying
+    // foundation-model ARNs in every region the profile can route to.
+    const FM_ID = MODEL_ID.replace(/^us\./, ''); // anthropic.claude-sonnet-4-6
+    const PROFILE_REGIONS = ['us-east-1', 'us-east-2', 'us-west-2'];
     runtimeRole.addToPolicy(new iam.PolicyStatement({
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-      resources: [`arn:aws:bedrock:${this.region}::foundation-model/${MODEL_ID}`],
+      resources: [
+        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${MODEL_ID}`,
+        ...PROFILE_REGIONS.map((r) => `arn:aws:bedrock:${r}::foundation-model/${FM_ID}`),
+      ],
     }));
     runtimeRole.addToPolicy(new iam.PolicyStatement({
       actions: ['bedrock-agentcore:InvokeGateway', 'bedrock-agentcore:GetGateway'],

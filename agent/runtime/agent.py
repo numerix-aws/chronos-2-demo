@@ -17,7 +17,7 @@ app = BedrockAgentCoreApp()
 _HERE = os.path.dirname(__file__)
 SYSTEM_PROMPT = open(os.path.join(_HERE, "system_prompt.md"), encoding="utf-8").read()
 GATEWAY_URL = os.environ["GATEWAY_URL"]
-MODEL_ID = os.environ.get("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 
 
 def _gateway() -> MCPClient:
