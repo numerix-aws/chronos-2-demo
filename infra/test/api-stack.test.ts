@@ -60,3 +60,26 @@ test('exposes apiUrl and streamUrl outputs', () => {
   expect(api.apiUrl).toBeDefined();
   expect(api.streamUrl).toBeDefined();
 });
+
+test('creates a CLOUDFRONT-scoped WAF WebACL with managed + rate rules', () => {
+  const { t } = build();
+  t.resourceCountIs('AWS::WAFv2::WebACL', 1);
+  t.hasResourceProperties('AWS::WAFv2::WebACL', {
+    Scope: 'CLOUDFRONT',
+    DefaultAction: { Allow: {} },
+    Rules: Match.arrayWith([
+      Match.objectLike({
+        Name: 'CommonRuleSet',
+        Statement: { ManagedRuleGroupStatement: { Name: 'AWSManagedRulesCommonRuleSet', VendorName: 'AWS' } },
+      }),
+      Match.objectLike({
+        Name: 'KnownBadInputs',
+        Statement: { ManagedRuleGroupStatement: { Name: 'AWSManagedRulesKnownBadInputsRuleSet', VendorName: 'AWS' } },
+      }),
+      Match.objectLike({
+        Name: 'RateLimit',
+        Statement: { RateBasedStatement: { Limit: 100, AggregateKeyType: 'IP' } },
+      }),
+    ]),
+  });
+});

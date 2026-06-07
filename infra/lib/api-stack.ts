@@ -4,6 +4,9 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { Construct } from 'constructs';
 import { ToolsStack } from './tools-stack';
@@ -123,6 +126,61 @@ export class ApiStack extends cdk.Stack {
         allowedHeaders: ['*'],
         allowedMethods: [lambda.HttpMethod.GET],
       },
+    });
+
+    // WAF in front of the streaming edge: AWS Managed common + known-bad-inputs
+    // rule groups, plus a per-IP rate limit. CLOUDFRONT scope requires us-east-1
+    // (this stack already deploys there). The relay's x-api-key check remains the
+    // real authn; WAF gates who can reach the edge at all.
+    const streamWebAcl = new wafv2.CfnWebACL(this, 'StreamWebAcl', {
+      scope: 'CLOUDFRONT',
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        sampledRequestsEnabled: true,
+        metricName: 'chronos2StreamWebAcl',
+      },
+      rules: [
+        {
+          name: 'CommonRuleSet',
+          priority: 0,
+          overrideAction: { none: {} },
+          statement: {
+            managedRuleGroupStatement: { vendorName: 'AWS', name: 'AWSManagedRulesCommonRuleSet' },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            sampledRequestsEnabled: true,
+            metricName: 'commonRuleSet',
+          },
+        },
+        {
+          name: 'KnownBadInputs',
+          priority: 1,
+          overrideAction: { none: {} },
+          statement: {
+            managedRuleGroupStatement: { vendorName: 'AWS', name: 'AWSManagedRulesKnownBadInputsRuleSet' },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            sampledRequestsEnabled: true,
+            metricName: 'knownBadInputs',
+          },
+        },
+        {
+          name: 'RateLimit',
+          priority: 2,
+          action: { block: {} },
+          statement: {
+            rateBasedStatement: { limit: 100, aggregateKeyType: 'IP' },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            sampledRequestsEnabled: true,
+            metricName: 'rateLimit',
+          },
+        },
+      ],
     });
     this.streamUrl = sseUrl.url;
 
