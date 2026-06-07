@@ -47,35 +47,68 @@ export class ToolsStack extends cdk.Stack {
     // Lambda layer with chronos2_demo source + shared helpers + the demo book.
     // The book is bundled into the layer (it resolves under /opt at runtime, so
     // handlers read BOOK_PATH rather than book.DEFAULT_BOOK_PATH).
-    const coreLayer = new lambda.LayerVersion(this, 'CoreLayer', {
-      code: lambda.Code.fromAsset(repoRoot, {
+    // Lambda layers are capped at 250 MB unzipped (code + all layers, summed).
+    // The full scientific stack (numpy+scipy+pandas+sklearn+matplotlib+pyarrow)
+    // is ~608 MB, so we split into three trimmed layers and attach only what
+    // each function imports:
+    //   - light: chronos2_demo source + shared + book only (ECS launcher/poll
+    //     Lambdas + lookup_use_case; boto3 comes from the Lambda runtime).
+    //   - base:  light + numpy/pandas/pyarrow (load_data, blend_paths,
+    //     price_book). scipy/sklearn are NOT imported by any Lambda — they live
+    //     in the Fargate workers — so they are excluded.
+    //   - plot:  base + matplotlib (plot only).
+    // Each build strips tests/__pycache__/dist-info and the unused heavy pyarrow
+    // Arrow libs (flight/substrait/gandiva/acero/dataset), keeping core+parquet,
+    // to land under the 250 MB cap.
+    const SRC_COPY = [
+      'mkdir -p /asset-output/python',
+      'cp -r src/chronos2_demo /asset-output/python/',
+      'mkdir -p /asset-output/python/tools/lambda_',
+      'cp tools/__init__.py /asset-output/python/tools/__init__.py || touch /asset-output/python/tools/__init__.py',
+      'touch /asset-output/python/tools/lambda_/__init__.py',
+      'cp -r tools/lambda/shared /asset-output/python/tools/lambda_/shared',
+      'mkdir -p /asset-output/python/data',
+      'cp data/sample_book.json /asset-output/python/data/sample_book.json',
+    ];
+    // --only-binary=:all: forces manylinux wheels (the build image's GCC can't
+    // compile the numpy sdist for cp311).
+    const PIP = (pkgs: string) =>
+      `pip install --only-binary=:all: --target /asset-output/python ${pkgs}`;
+    const TRIM = [
+      'cd /asset-output/python',
+      "find . -type d \\( -name tests -o -name test -o -name __pycache__ -o -name '*.dist-info' -o -name include \\) -prune -exec rm -rf {} + || true",
+      "if [ -d pyarrow ]; then cd pyarrow && rm -f libarrow_flight* libarrow_substrait* libgandiva* libarrow_acero* libarrow_dataset* lib*flight* _flight* _substrait* _gandiva* _acero* _dataset* 2>/dev/null || true; cd /asset-output/python; fi",
+      "rm -rf matplotlib/mpl-data/sample_data matplotlib/tests 2>/dev/null || true",
+    ];
+    const layerCode = (pipPkgs: string | null) =>
+      lambda.Code.fromAsset(repoRoot, {
         bundling: {
           image: lambda.Runtime.PYTHON_3_11.bundlingImage,
-          // Force the x86_64 Lambda target regardless of the build host's arch
-          // (e.g. Apple Silicon), so the wheels match the Lambda architecture.
           platform: 'linux/amd64',
           command: [
-            'bash', '-c', [
-              'mkdir -p /asset-output/python',
-              'cp -r src/chronos2_demo /asset-output/python/',
-              'mkdir -p /asset-output/python/tools/lambda_',
-              'cp tools/__init__.py /asset-output/python/tools/__init__.py || touch /asset-output/python/tools/__init__.py',
-              'touch /asset-output/python/tools/lambda_/__init__.py',
-              'cp -r tools/lambda/shared /asset-output/python/tools/lambda_/shared',
-              'mkdir -p /asset-output/python/data',
-              'cp data/sample_book.json /asset-output/python/data/sample_book.json',
-              // --only-binary=:all: forces manylinux wheels; without it pip pulls
-              // the latest numpy sdist, which has no cp311 wheel and fails to
-              // compile under the build image's GCC.
-              'pip install --only-binary=:all: --target /asset-output/python numpy scipy pandas scikit-learn matplotlib pyarrow boto3',
-            ].join(' && '),
+            'bash', '-c',
+            [...SRC_COPY, ...(pipPkgs ? [PIP(pipPkgs)] : []), ...TRIM].join(' && '),
           ],
         },
-      }),
+      });
+
+    const lightLayer = new lambda.LayerVersion(this, 'LightLayer', {
+      code: layerCode(null),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
-      description: 'chronos2_demo + tools.lambda_.shared + demo book + scientific deps',
+      description: 'chronos2_demo + tools.lambda_.shared + demo book (no sci deps)',
     });
-    this.coreLayer = coreLayer;
+    const baseLayer = new lambda.LayerVersion(this, 'BaseLayer', {
+      code: layerCode('numpy pandas pyarrow'),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
+      description: 'light + numpy/pandas/pyarrow (load_data, blend_paths, price_book)',
+    });
+    const plotLayer = new lambda.LayerVersion(this, 'PlotLayer', {
+      code: layerCode('numpy pandas pyarrow matplotlib'),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
+      description: 'base + matplotlib (plot)',
+    });
+    // Public handle kept for downstream stacks/tests; base is the canonical core.
+    this.coreLayer = baseLayer;
 
     // The book lands at /opt/python/data/sample_book.json inside any function
     // that attaches the layer.
@@ -86,24 +119,30 @@ export class ToolsStack extends cdk.Stack {
       PLOTS_BUCKET: props.plotsBucket.bucketName,
     };
 
-    const py = (id: string, dir: string, env: Record<string, string> = {}) =>
+    // Attach the smallest layer each function needs (250 MB cap is code + layers).
+    const py = (
+      id: string,
+      dir: string,
+      layer: lambda.ILayerVersion,
+      env: Record<string, string> = {},
+    ) =>
       new lambda.Function(this, id, {
         runtime: lambda.Runtime.PYTHON_3_11,
         architecture: lambda.Architecture.X86_64,
         handler: 'handler.handler',
         code: lambda.Code.fromAsset(path.join(repoRoot, 'tools', 'lambda', dir)),
-        layers: [coreLayer],
+        layers: [layer],
         memorySize: 1024,
         timeout: cdk.Duration.seconds(30),
         environment: { ...commonEnv, ...env },
         logRetention: logs.RetentionDays.ONE_WEEK,
       });
 
-    this.fnLoadData = py('LoadData', 'load_data');
-    this.fnBlendPaths = py('BlendPaths', 'blend_paths', { BOOK_PATH });
-    this.fnPriceBook = py('PriceBook', 'price_book', { BOOK_PATH });
-    this.fnPlot = py('Plot', 'plot');
-    this.fnLookupUseCase = py('LookupUseCase', 'lookup_use_case', {
+    this.fnLoadData = py('LoadData', 'load_data', baseLayer);
+    this.fnBlendPaths = py('BlendPaths', 'blend_paths', baseLayer, { BOOK_PATH });
+    this.fnPriceBook = py('PriceBook', 'price_book', baseLayer, { BOOK_PATH });
+    this.fnPlot = py('Plot', 'plot', plotLayer);
+    this.fnLookupUseCase = py('LookupUseCase', 'lookup_use_case', lightLayer, {
       KNOWLEDGE_DIR: '/var/task/knowledge',
     });
 
@@ -167,7 +206,7 @@ export class ToolsStack extends cdk.Stack {
     const privateSubnetIds = props.vpc.selectSubnets({
       subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
     }).subnetIds;
-    this.fnRunBaselineMc = py('RunBaselineMc', 'run_baseline_mc', {
+    this.fnRunBaselineMc = py('RunBaselineMc', 'run_baseline_mc', lightLayer, {
       CLUSTER_ARN: cluster.clusterArn,
       TASK_DEFINITION_ARN: this.baselineMcTaskDef.taskDefinitionArn,
       CONTAINER_NAME: 'App',
@@ -188,7 +227,7 @@ export class ToolsStack extends cdk.Stack {
     }));
 
     // check_baseline_mc poll Lambda (DescribeTasks on the cluster).
-    this.fnCheckBaselineMc = py('CheckBaselineMc', 'check_baseline_mc', {
+    this.fnCheckBaselineMc = py('CheckBaselineMc', 'check_baseline_mc', lightLayer, {
       CLUSTER_ARN: cluster.clusterArn,
     });
     this.fnCheckBaselineMc.addToRolePolicy(new iam.PolicyStatement({
@@ -233,7 +272,7 @@ export class ToolsStack extends cdk.Stack {
     }));
 
     // run_chronos2 launcher Lambda (starts the chronos2 Fargate task).
-    this.fnRunChronos2 = py('RunChronos2', 'run_chronos2', {
+    this.fnRunChronos2 = py('RunChronos2', 'run_chronos2', lightLayer, {
       CLUSTER_ARN: cluster.clusterArn,
       TASK_DEFINITION_ARN: this.chronos2TaskDef.taskDefinitionArn,
       CONTAINER_NAME: 'App',
@@ -255,7 +294,7 @@ export class ToolsStack extends cdk.Stack {
     }));
 
     // check_chronos2 poll Lambda (DescribeTasks on the cluster).
-    this.fnCheckChronos2 = py('CheckChronos2', 'check_chronos2', {
+    this.fnCheckChronos2 = py('CheckChronos2', 'check_chronos2', lightLayer, {
       CLUSTER_ARN: cluster.clusterArn,
     });
     this.fnCheckChronos2.addToRolePolicy(new iam.PolicyStatement({

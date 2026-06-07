@@ -42,9 +42,11 @@ test('creates two ECR repositories with image scan on push', () => {
   }));
 });
 
-test('creates the Lambda layer for chronos2_demo', () => {
+test('creates the three tiered Lambda layers for chronos2_demo', () => {
   const t = build();
-  t.resourceCountIs('AWS::Lambda::LayerVersion', 1);
+  // light (source-only), base (+numpy/pandas/pyarrow), plot (+matplotlib).
+  // Split to stay under Lambda's 250 MB code+layers unzipped cap.
+  t.resourceCountIs('AWS::Lambda::LayerVersion', 3);
 });
 
 test('exposes lambda function references', () => {
