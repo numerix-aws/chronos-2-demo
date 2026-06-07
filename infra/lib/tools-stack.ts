@@ -102,17 +102,13 @@ export class ToolsStack extends cdk.Stack {
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
       description: 'chronos2_demo + tools.lambda_.shared + demo book (no sci deps)',
     });
-    // Pin versions so the bundled asset hash is deterministic across deploys.
-    // Unpinned installs drift on patch releases, churning the layer's CFN export
-    // and deadlocking cross-stack consumers (ApiStack imports BaseLayer) with
-    // "Cannot update export ... as it is in use".
     const baseLayer = new lambda.LayerVersion(this, 'BaseLayer', {
-      code: layerCode('numpy==2.2.6 pandas==3.0.3 pyarrow==20.0.0'),
+      code: layerCode('numpy pandas pyarrow'),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
       description: 'light + numpy/pandas/pyarrow (load_data, blend_paths, price_book)',
     });
     const plotLayer = new lambda.LayerVersion(this, 'PlotLayer', {
-      code: layerCode('numpy==2.2.6 pandas==3.0.3 pyarrow==20.0.0 matplotlib==3.10.9'),
+      code: layerCode('numpy pandas pyarrow matplotlib'),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
       description: 'base + matplotlib (plot)',
     });
