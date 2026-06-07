@@ -31,7 +31,10 @@ const DEFAULTS: WhatIfParams = {
 };
 
 export function WhatIfForm({ onApply, disabled }: WhatIfFormProps) {
-  const [v, setV] = useState<Record<keyof WhatIfParams, string>>({
+  // Form state is the five scalar fields as strings; `conditioning` is a nested
+  // object handled separately via `cond` below, so it is excluded here.
+  type FormFields = 'as_of_date' | 'lookback_days' | 'horizon' | 'n_paths' | 'w_stress';
+  const [v, setV] = useState<Record<FormFields, string>>({
     as_of_date: DEFAULTS.as_of_date,
     lookback_days: String(DEFAULTS.lookback_days),
     horizon: String(DEFAULTS.horizon),
@@ -83,7 +86,7 @@ export function WhatIfForm({ onApply, disabled }: WhatIfFormProps) {
     onApply(base);
   };
 
-  const fld = (key: keyof WhatIfParams, label: string, type = 'text') => (
+  const fld = (key: FormFields, label: string, type = 'text') => (
     <FormField label={label}>
       <Input
         value={v[key]}
