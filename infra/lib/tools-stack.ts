@@ -128,12 +128,6 @@ export class ToolsStack extends cdk.Stack {
     // Public handle kept for downstream stacks/tests; base is the canonical core.
     this.coreLayer = baseLayer;
     this.lightLayer = lightLayer;
-    // ApiStack used to import the BaseLayer ARN export. We've moved Api to
-    // lightLayer, so CFN would otherwise DELETE the BaseLayer export — but it
-    // can't while Api (deployed before this change lands) still imports it,
-    // deadlocking the stack. exportValue pins the export so it survives the
-    // transition; once Api is redeployed off it, a later deploy can drop this.
-    this.exportValue(baseLayer.layerVersionArn);
 
     // The book lands at /opt/python/data/sample_book.json inside any function
     // that attaches the layer.

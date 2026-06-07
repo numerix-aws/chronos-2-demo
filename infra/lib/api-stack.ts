@@ -33,11 +33,33 @@ export class ApiStack extends cdk.Stack {
     });
     this.sessionsTable = sessionsTable;
 
+    // Self-contained shared layer: just tools.lambda_.shared (pure stdlib+boto3).
+    // Built here rather than imported from ToolsStack so ApiStack carries NO
+    // cross-stack import of a Tools layer export — that coupling deadlocked CFN
+    // whenever a Tools layer's version changed (Cannot update/delete in-use
+    // export). SessionsFn/InvokeFn need only boto3 (runtime) + this shared code.
+    const repoRoot = path.join(__dirname, '..', '..');
+    const sharedLayer = new lambda.LayerVersion(this, 'ApiSharedLayer', {
+      code: lambda.Code.fromAsset(repoRoot, {
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_11.bundlingImage,
+          command: ['bash', '-c', [
+            'mkdir -p /asset-output/python/tools/lambda_',
+            'cp tools/__init__.py /asset-output/python/tools/__init__.py || touch /asset-output/python/tools/__init__.py',
+            'touch /asset-output/python/tools/lambda_/__init__.py',
+            'cp -r tools/lambda/shared /asset-output/python/tools/lambda_/shared',
+          ].join(' && ')],
+        },
+      }),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
+      description: 'tools.lambda_.shared only (Api session/invoke Lambdas)',
+    });
+
     const sessionsFn = new lambda.Function(this, 'SessionsFn', {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'sessions.handler.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', '..', 'tools', 'lambda')),
-      layers: [props.tools.lightLayer],
+      layers: [sharedLayer],
       environment: { SESSIONS_TABLE: sessionsTable.tableName },
       timeout: cdk.Duration.seconds(15),
     });
@@ -47,7 +69,7 @@ export class ApiStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'invoke_agent.handler.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', '..', 'tools', 'lambda')),
-      layers: [props.tools.lightLayer],
+      layers: [sharedLayer],
       environment: {
         SESSIONS_TABLE: sessionsTable.tableName,
         // The runtime ARN + the endpoint name as a separate qualifier (not the
