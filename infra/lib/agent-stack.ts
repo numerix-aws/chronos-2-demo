@@ -64,8 +64,11 @@ export class AgentStack extends cdk.Stack {
 
     for (const { name, opId, getFn } of TOOL_OPERATIONS) {
       const fn = getFn(props.tools);
+      // GatewayTarget Name must match ^([0-9a-zA-Z][-]?){1,100}$ (no underscores),
+      // so hyphenate the opId for the resource name. The MCP tool the agent calls
+      // is the inline-schema `name` (still the underscored opId) — unaffected.
       const target = new agentcore.CfnGatewayTarget(this, `Target${name}`, {
-        name: opId,
+        name: opId.replace(/_/g, '-'),
         gatewayIdentifier: gateway.attrGatewayIdentifier,
         targetConfiguration: {
           mcp: {
