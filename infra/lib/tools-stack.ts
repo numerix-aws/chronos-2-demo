@@ -62,9 +62,9 @@ export class ToolsStack extends cdk.Stack {
     //     price_book). scipy/sklearn are NOT imported by any Lambda — they live
     //     in the Fargate workers — so they are excluded.
     //   - plot:  base + matplotlib (plot only).
-    // Each build strips tests/__pycache__/dist-info and the unused heavy pyarrow
-    // Arrow libs (flight/substrait/gandiva/acero/dataset), keeping core+parquet,
-    // to land under the 250 MB cap.
+    // Each build strips tests/__pycache__/dist-info and the unused pyarrow Flight
+    // RPC libs (see TRIM below for why substrait/dataset/acero are KEPT) to land
+    // under the 250 MB cap.
     const SRC_COPY = [
       'mkdir -p /asset-output/python',
       'cp -r src/chronos2_demo /asset-output/python/',
@@ -79,11 +79,16 @@ export class ToolsStack extends cdk.Stack {
     // compile the numpy sdist for cp311).
     const PIP = (pkgs: string) =>
       `pip install --only-binary=:all: --target /asset-output/python ${pkgs}`;
+    // Trim only runtime-irrelevant bulk. IMPORTANT: pyarrow's _parquet.so links
+    // libarrow_substrait/_dataset/_acero, so those MUST be kept — only the Flight
+    // RPC libs (and cpp test artifacts) are safe to drop. (An earlier over-broad
+    // strip removed substrait and broke `import pyarrow.parquet` in load_data.)
     const TRIM = [
       'cd /asset-output/python',
       "find . -type d \\( -name tests -o -name test -o -name __pycache__ -o -name '*.dist-info' -o -name include \\) -prune -exec rm -rf {} + || true",
-      "if [ -d pyarrow ]; then cd pyarrow && rm -f libarrow_flight* libarrow_substrait* libgandiva* libarrow_acero* libarrow_dataset* lib*flight* _flight* _substrait* _gandiva* _acero* _dataset* 2>/dev/null || true; cd /asset-output/python; fi",
+      "if [ -d pyarrow ]; then cd pyarrow && rm -f libarrow_flight*.so* _flight*.so* libarrow_python_flight*.so* _pyarrow_cpp_tests*.so* 2>/dev/null || true; cd /asset-output/python; fi",
       "rm -rf matplotlib/mpl-data/sample_data matplotlib/tests 2>/dev/null || true",
+      "rm -rf numpy/f2py numpy/distutils numpy/_pyinstaller fontTools/varLib 2>/dev/null || true",
     ];
     const layerCode = (pipPkgs: string | null) =>
       lambda.Code.fromAsset(repoRoot, {
@@ -97,7 +102,7 @@ export class ToolsStack extends cdk.Stack {
         },
       });
 
-    const lightLayer = new lambda.LayerVersion(this, 'LightLayer', {
+    const lightLayer = new lambda.LayerVersion(this, 'LightLayerV2', {
       code: layerCode(null),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
       description: 'chronos2_demo + tools.lambda_.shared + demo book (no sci deps)',
@@ -106,12 +111,12 @@ export class ToolsStack extends cdk.Stack {
     // Unpinned installs drift on patch releases, churning the layer's CFN export
     // and deadlocking cross-stack consumers (ApiStack imports BaseLayer) with
     // "Cannot update export ... as it is in use".
-    const baseLayer = new lambda.LayerVersion(this, 'BaseLayer', {
+    const baseLayer = new lambda.LayerVersion(this, 'BaseLayerV2', {
       code: layerCode('numpy==2.2.6 pandas==3.0.3 pyarrow==20.0.0'),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
       description: 'light + numpy/pandas/pyarrow (load_data, blend_paths, price_book)',
     });
-    const plotLayer = new lambda.LayerVersion(this, 'PlotLayer', {
+    const plotLayer = new lambda.LayerVersion(this, 'PlotLayerV2', {
       code: layerCode('numpy==2.2.6 pandas==3.0.3 pyarrow==20.0.0 matplotlib==3.10.9'),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
       description: 'base + matplotlib (plot)',
