@@ -124,6 +124,11 @@ export class AgentStack extends cdk.Stack {
       environmentVariables: { GATEWAY_URL: gateway.attrGatewayUrl, MODEL_ID },
     });
     runtime.addDependency(gateway);
+    // The Runtime validates its ECR image at create time by assuming the
+    // RuntimeRole, so the role's inline pull policy (RuntimeRole/DefaultPolicy)
+    // must exist first. Without this, CFN races them and the Runtime fails with
+    // an ECR AccessDenied. node.addDependency waits for the role + its policies.
+    runtime.node.addDependency(runtimeRole);
 
     const endpoint = new agentcore.CfnRuntimeEndpoint(this, 'RuntimeEndpoint', {
       agentRuntimeId: runtime.attrAgentRuntimeId,
