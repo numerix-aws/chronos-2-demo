@@ -50,7 +50,11 @@ export class ApiStack extends cdk.Stack {
       layers: [props.tools.coreLayer],
       environment: {
         SESSIONS_TABLE: sessionsTable.tableName,
-        AGENT_RUNTIME_ARN: props.agent.runtimeEndpointArn,
+        // The runtime ARN + the endpoint name as a separate qualifier (not the
+        // full endpoint ARN — invoke_agent_runtime would default qualifier to
+        // 'DEFAULT' and 404).
+        AGENT_RUNTIME_ARN: props.agent.runtimeArn,
+        AGENT_QUALIFIER: 'live',
       },
       timeout: cdk.Duration.minutes(2),
     });
@@ -70,7 +74,8 @@ export class ApiStack extends cdk.Stack {
       handler: 'handler',
       timeout: cdk.Duration.minutes(2),
       environment: {
-        AGENT_RUNTIME_ARN: props.agent.runtimeEndpointArn,
+        AGENT_RUNTIME_ARN: props.agent.runtimeArn,
+        AGENT_QUALIFIER: 'live',
         API_KEY_SECRET_ARN: props.tools.apiKeySecretArn,
       },
       bundling: { format: nodejs.OutputFormat.ESM, target: 'node20', externalModules: ['@aws-sdk/*'] },

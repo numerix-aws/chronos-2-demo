@@ -22,8 +22,12 @@ def _agent_runtime():
 
 def _invoke_agent(session_id: str, prompt: str) -> dict:
     """Thin wrapper so tests can patch a single seam."""
+    # AGENT_RUNTIME_ARN is the runtime ARN; the named endpoint ("live") is passed
+    # separately as the qualifier. Passing the endpoint ARN as agentRuntimeArn
+    # makes boto3 default qualifier to 'DEFAULT' -> ResourceNotFoundException.
     return _agent_runtime().invoke_agent_runtime(
         agentRuntimeArn=os.environ["AGENT_RUNTIME_ARN"],
+        qualifier=os.environ.get("AGENT_QUALIFIER", "live"),
         runtimeSessionId=session_id,
         payload=json.dumps({"prompt": prompt}).encode("utf-8"),
     )
