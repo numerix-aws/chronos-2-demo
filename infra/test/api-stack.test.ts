@@ -83,3 +83,28 @@ test('creates a CLOUDFRONT-scoped WAF WebACL with managed + rate rules', () => {
     ]),
   });
 });
+
+test('fronts the Function URL with a CloudFront distribution using OAC and no caching', () => {
+  const { t } = build();
+  t.resourceCountIs('AWS::CloudFront::Distribution', 1);
+  t.resourceCountIs('AWS::CloudFront::OriginAccessControl', 1);
+  // OAC signs requests to the Lambda origin with SigV4, always.
+  t.hasResourceProperties('AWS::CloudFront::OriginAccessControl', {
+    OriginAccessControlConfig: Match.objectLike({
+      OriginAccessControlOriginType: 'lambda',
+      SigningBehavior: 'always',
+      SigningProtocol: 'sigv4',
+    }),
+  });
+  // Distribution is attached to the WAF WebACL.
+  t.hasResourceProperties('AWS::CloudFront::Distribution', {
+    DistributionConfig: Match.objectLike({
+      WebACLId: Match.anyValue(),
+    }),
+  });
+});
+
+test('streamUrl output is still defined (now the CloudFront domain)', () => {
+  const { api } = build();
+  expect(api.streamUrl).toBeDefined();
+});

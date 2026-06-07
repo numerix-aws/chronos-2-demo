@@ -182,7 +182,27 @@ export class ApiStack extends cdk.Stack {
         },
       ],
     });
-    this.streamUrl = sseUrl.url;
+
+    // CloudFront fronts ONLY the streaming Function URL. OAC (SIGV4_ALWAYS) lets
+    // CloudFront sign the AWS_IAM Function URL; CDK adds the scoped
+    // lambda:InvokeFunctionUrl resource policy automatically. Caching is disabled
+    // so the SSE body streams through unbuffered, and x-api-key + Origin are
+    // forwarded to the relay via ALL_VIEWER_EXCEPT_HOST_HEADER.
+    const streamDistribution = new cloudfront.Distribution(this, 'StreamDistribution', {
+      defaultBehavior: {
+        origin: origins.FunctionUrlOrigin.withOriginAccessControl(sseUrl),
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      },
+      webAclId: streamWebAcl.attrArn,
+      comment: 'chronos2-demo SSE stream edge',
+    });
+
+    // The browser only ever talks to the CloudFront domain, never the raw
+    // Function URL (which is now AWS_IAM and not publicly invocable).
+    this.streamUrl = `https://${streamDistribution.distributionDomainName}/`;
 
     const api = new apigw.RestApi(this, 'Api', {
       restApiName: 'chronos2-demo',
