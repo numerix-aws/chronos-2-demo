@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
@@ -170,15 +171,33 @@ export class ToolsStack extends cdk.Stack {
       // handler.ts must be compiled to handler.js before packaging — esbuild
       // bundles it to CommonJS, leaving @aws-sdk/* external (provided by the
       // Node 20 runtime). Without this, the asset would ship only the .ts and
-      // Lambda fails with "Cannot find module 'handler'".
+      // Lambda fails with "Cannot find module 'handler'". Bundle on the host via
+      // a local hook (finch bind-mounts aren't writable under CDK's -u uid:gid,
+      // which breaks in-container esbuild); fall back to the container image.
       code: lambda.Code.fromAsset(path.join(repoRoot, 'tools', 'lambda', 'authorizer'), {
         bundling: {
           image: lambda.Runtime.NODEJS_20_X.bundlingImage,
           command: [
             'bash', '-c',
-            'npx --yes esbuild handler.ts --bundle --platform=node --target=node20 ' +
-            '--external:@aws-sdk/* --outfile=/asset-output/handler.js',
+            'export HOME=/tmp && npx --yes esbuild handler.ts --bundle --platform=node ' +
+            '--target=node20 "--external:@aws-sdk/*" --outfile=/asset-output/handler.js',
           ],
+          local: {
+            tryBundle(outputDir: string): boolean {
+              const src = path.join(repoRoot, 'tools', 'lambda', 'authorizer');
+              try {
+                execFileSync('npx', [
+                  '--yes', 'esbuild', path.join(src, 'handler.ts'),
+                  '--bundle', '--platform=node', '--target=node20',
+                  '--external:@aws-sdk/*',
+                  `--outfile=${path.join(outputDir, 'handler.js')}`,
+                ], { stdio: 'inherit' });
+                return true;
+              } catch {
+                return false; // fall back to container bundling
+              }
+            },
+          },
         },
       }),
       timeout: cdk.Duration.seconds(5),
