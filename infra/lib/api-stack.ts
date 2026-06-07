@@ -116,7 +116,7 @@ export class ApiStack extends cdk.Stack {
     );
 
     const sseUrl = sseFn.addFunctionUrl({
-      authType: lambda.FunctionUrlAuthType.NONE,
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
       cors: {
         allowedOrigins: [allowedOrigin],

@@ -40,10 +40,10 @@ test('every public route is gated by the Lambda authorizer', () => {
   }
 });
 
-test('exposes a Lambda Function URL for SSE streaming', () => {
+test('exposes a Lambda Function URL for SSE streaming (AWS_IAM, fronted by CloudFront)', () => {
   const { t } = build();
   t.hasResourceProperties('AWS::Lambda::Url', {
-    AuthType: 'NONE',
+    AuthType: 'AWS_IAM',
     InvokeMode: 'RESPONSE_STREAM',
   });
 });
