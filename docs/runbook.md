@@ -26,7 +26,7 @@ profile named `chronos2-demo` with admin in the demo account.
 >   Manager, and returns an **API-wide wildcard** Allow (cached authorizer reused across routes).
 > - **finch** is the container engine here: export `CDK_DOCKER=finch`; build images
 >   `--platform` explicitly. The full headline chain exceeds API GW's 29s sync cap —
->   it was designed to stream over SSE (see the SSE security note in §2/teardown).
+>   it streams over SSE, now **re-enabled behind CloudFront + WAF** (the SSE Function URL is `AWS_IAM` + Origin Access Control, no longer public — see §6b streaming verification).
 > - **Demo data must be seeded to S3** (`scripts/seed_demo_data.py`) — see §1b.
 
 ## Prerequisites
@@ -59,7 +59,7 @@ npx cdk deploy --all \
 
 Capture these outputs (printed at the end of `cdk deploy`):
 - `Chronos2DemoApi.ApiUrlOut` → `API_URL`
-- `Chronos2DemoApi.StreamUrlOut` → `STREAM_URL`
+- `Chronos2DemoApi.StreamUrlOut` → `STREAM_URL` (CloudFront domain fronting the SSE relay)
 - `Chronos2DemoTools.ApiKeySecretArnOut` → `API_KEY_SECRET_ARN`
 - `Chronos2DemoFrontend.AmplifyAppIdOut` → `AMPLIFY_APP_ID`
 - `Chronos2DemoFrontend.AmplifyDomainOut` → `APP_URL`
@@ -188,6 +188,26 @@ dashboard live-updates while the demo runs; per-Lambda invocation /
 duration / error widgets and the SageMaker endpoint widget should all
 populate within a minute of activity.
 
+## 6b. Streaming edge (CloudFront + WAF) verification
+
+The SSE relay Function URL is `AWS_IAM` and fronted by a CloudFront distribution
+(Origin Access Control, SigV4) with a WAF WebACL (AWS Managed Common +
+Known-Bad-Inputs rule groups + a 100-req/5-min per-IP rate rule). The browser
+talks only to the CloudFront domain (`STREAM_URL`); the raw Function URL is not
+publicly invocable.
+
+```bash
+# Raw Function URL must NOT be publicly invocable (expect 403):
+curl -s -o /dev/null -w '%{http_code}\n' "<RAW_FUNCTION_URL>?session_id=x&prompt=hi"   # 403
+
+# CloudFront URL with a valid key streams SSE (expect text/event-stream frames):
+curl -N -H "x-api-key: $DEMO_API_KEY" \
+  "$STREAM_URL?session_id=demo&prompt=hello"
+```
+
+The CloudFront distribution and WAF WebACL are tagged `chronos2-demo:teardown=on`
+and are removed by `cdk destroy --all`.
+
 ## 7. Teardown
 
 **Cost-bearing resources are tagged `chronos2-demo:teardown=on`.** Two-stage teardown is the canonical sequence:
@@ -225,7 +245,9 @@ Expected: empty list.
 | Agent runtime `Architecture incompatible … Supported: [arm64]` | Agent image built amd64 | Rebuild `--platform linux/arm64`, push, `update-agent-runtime` |
 | `load_data` 500 `libarrow_substrait.so … not found` | Layer over-trimmed pyarrow | Keep substrait/dataset/acero; only strip `*flight*` |
 | `cdk deploy` "Cannot update/delete export … in use" | Cross-stack layer export churn | Api uses its own `ApiSharedLayer`; deploy Api before Tools |
-| Headline `/invoke` 504 at ~29s | API GW sync cap vs multi-minute Fargate | Expected without SSE; use streaming path or a poll UI |
+| Headline `/invoke` 504 at ~29s | API GW sync cap vs multi-minute Fargate | Use the streaming path (SSE via CloudFront) — `/invoke` is the non-streaming fallback only |
+| Stream returns 403 via CloudFront | OAC policy not applied, or WAF blocked the request | Confirm the Function URL is `AWS_IAM` + the OAC `lambda:InvokeFunctionUrl` policy is present; check the `chronos2StreamWebAcl` WAF metrics for blocks |
+| Stream CORS preflight fails | Custom `x-api-key` header not reaching origin | Verify the distribution uses `ALL_VIEWER_EXCEPT_HOST_HEADER`; fallback is a CloudFront `ResponseHeadersPolicy` with explicit CORS |
 | Streaming endpoint returns 401 | Wrong API key in browser localStorage | Clear `localStorage["chronos2-demo-session"]`, reload, paste new key |
 | Fargate task ENOSPC (baseline-MC or chronos2) | Low ephemeral storage; the chronos2 image is large (AutoGluon) | Edit the relevant `tools-stack.ts` Fargate task `ephemeralStorageGiB` and redeploy |
 | chronos2 task fails immediately / `CannotPullContainerError` | ECR image not pushed after first `cdk deploy` | Run the §1a build-and-push step for the `chronos2` repo |
