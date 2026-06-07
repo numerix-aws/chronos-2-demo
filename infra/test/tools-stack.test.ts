@@ -34,9 +34,11 @@ test('creates one ECS cluster + two Fargate task definitions', () => {
   t.resourceCountIs('AWS::ECS::TaskDefinition', 2);
 });
 
-test('creates two ECR repositories with image scan on push', () => {
+test('creates three ECR repositories with image scan on push', () => {
   const t = build();
-  t.resourceCountIs('AWS::ECR::Repository', 2);
+  // baseline_mc, chronos2, and the AgentCore runtime repo (moved here from
+  // AgentStack so the image can be pushed before the Runtime validates it).
+  t.resourceCountIs('AWS::ECR::Repository', 3);
   t.hasResourceProperties('AWS::ECR::Repository', Match.objectLike({
     ImageScanningConfiguration: { ScanOnPush: true },
   }));

@@ -33,6 +33,10 @@ export class ToolsStack extends cdk.Stack {
   public readonly baselineMcTaskDef: ecs.FargateTaskDefinition;
   public readonly baselineMcCluster: ecs.ICluster;
   public readonly chronos2TaskDef: ecs.FargateTaskDefinition;
+  // AgentCore runtime image repo. Lives here (not AgentStack) so the image can
+  // be pushed after Tools deploys but before AgentStack creates the Runtime,
+  // which validates the image exists at create time.
+  public readonly agentRuntimeRepo: ecr.IRepository;
   public readonly apiKeySecret: secrets.ISecret;
   // Consumer stacks (Api, Agent) need the layer + secret ARN directly.
   public readonly coreLayer: lambda.ILayerVersion;
@@ -239,6 +243,13 @@ export class ToolsStack extends cdk.Stack {
     // The AutoGluon Cloud endpoint call (autogluon-cloud, heavy) runs here, not
     // in a Lambda. The task role invokes the SageMaker endpoint under the hood.
     const chronos2Repo = new ecr.Repository(this, 'Chronos2Repo', {
+      imageScanOnPush: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      emptyOnDelete: true,
+    });
+    // AgentCore runtime image repo (consumed by AgentStack). Created here so the
+    // image can be pushed before AgentStack's Runtime validates it at create time.
+    this.agentRuntimeRepo = new ecr.Repository(this, 'AgentRuntimeRepo', {
       imageScanOnPush: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,

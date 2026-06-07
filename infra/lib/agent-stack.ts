@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as agentcore from 'aws-cdk-lib/aws-bedrockagentcore';
-import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { Construct } from 'constructs';
@@ -85,15 +84,19 @@ export class AgentStack extends cdk.Stack {
       target.addDependency(gateway);
     }
 
-    const agentRepo = new ecr.Repository(this, 'AgentRuntimeRepo', {
-      imageScanOnPush: true,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      emptyOnDelete: true,
-    });
+    // The runtime image repo lives in ToolsStack so the image can be pushed
+    // before this stack's Runtime validates it at create time.
+    const agentRepo = props.tools.agentRuntimeRepo;
 
     const runtimeRole = new iam.Role(this, 'RuntimeRole', {
       assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
     });
+    // AgentCore pulls the runtime container image under this role.
+    agentRepo.grantPull(runtimeRole);
+    runtimeRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ecr:GetAuthorizationToken'],
+      resources: ['*'], // GetAuthorizationToken does not support resource scoping
+    }));
     // MODEL_ID is a cross-region inference profile (us.anthropic.claude-sonnet-4-6).
     // Invoking it requires both the profile ARN (account-scoped) and the underlying
     // foundation-model ARNs in every region the profile can route to.
