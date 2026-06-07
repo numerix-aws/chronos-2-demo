@@ -102,7 +102,7 @@ export class ToolsStack extends cdk.Stack {
         },
       });
 
-    const lightLayer = new lambda.LayerVersion(this, 'LightLayerV2', {
+    const lightLayer = new lambda.LayerVersion(this, 'LightLayer', {
       code: layerCode(null),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
       description: 'chronos2_demo + tools.lambda_.shared + demo book (no sci deps)',
@@ -111,12 +111,12 @@ export class ToolsStack extends cdk.Stack {
     // Unpinned installs drift on patch releases, churning the layer's CFN export
     // and deadlocking cross-stack consumers (ApiStack imports BaseLayer) with
     // "Cannot update export ... as it is in use".
-    const baseLayer = new lambda.LayerVersion(this, 'BaseLayerV2', {
+    const baseLayer = new lambda.LayerVersion(this, 'BaseLayer', {
       code: layerCode('numpy==2.2.6 pandas==3.0.3 pyarrow==20.0.0'),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
       description: 'light + numpy/pandas/pyarrow (load_data, blend_paths, price_book)',
     });
-    const plotLayer = new lambda.LayerVersion(this, 'PlotLayerV2', {
+    const plotLayer = new lambda.LayerVersion(this, 'PlotLayer', {
       code: layerCode('numpy==2.2.6 pandas==3.0.3 pyarrow==20.0.0 matplotlib==3.10.9'),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
       description: 'base + matplotlib (plot)',
