@@ -41,6 +41,10 @@ export class ToolsStack extends cdk.Stack {
   public readonly apiKeySecret: secrets.ISecret;
   // Consumer stacks (Api, Agent) need the layer + secret ARN directly.
   public readonly coreLayer: lambda.ILayerVersion;
+  // Source+shared only (no sci deps). ApiStack's session/invoke Lambdas use this
+  // — they need only boto3 (runtime-provided) + tools.lambda_.shared, not the
+  // heavy BaseLayer, which also keeps Api off the churn-prone BaseLayer export.
+  public readonly lightLayer: lambda.ILayerVersion;
   public readonly apiKeySecretArn: string;
 
   constructor(scope: Construct, id: string, props: ToolsStackProps) {
@@ -123,6 +127,7 @@ export class ToolsStack extends cdk.Stack {
     });
     // Public handle kept for downstream stacks/tests; base is the canonical core.
     this.coreLayer = baseLayer;
+    this.lightLayer = lightLayer;
 
     // The book lands at /opt/python/data/sample_book.json inside any function
     // that attaches the layer.

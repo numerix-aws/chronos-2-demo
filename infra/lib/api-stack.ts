@@ -37,7 +37,7 @@ export class ApiStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'sessions.handler.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', '..', 'tools', 'lambda')),
-      layers: [props.tools.coreLayer],
+      layers: [props.tools.lightLayer],
       environment: { SESSIONS_TABLE: sessionsTable.tableName },
       timeout: cdk.Duration.seconds(15),
     });
@@ -47,7 +47,7 @@ export class ApiStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'invoke_agent.handler.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', '..', 'tools', 'lambda')),
-      layers: [props.tools.coreLayer],
+      layers: [props.tools.lightLayer],
       environment: {
         SESSIONS_TABLE: sessionsTable.tableName,
         // The runtime ARN + the endpoint name as a separate qualifier (not the
