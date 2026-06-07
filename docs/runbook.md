@@ -4,13 +4,39 @@ Operational guide for deploying, demoing, and tearing down the PoC. Read once
 end-to-end before running anything. Steps assume `us-east-1` and an AWS
 profile named `chronos2-demo` with admin in the demo account.
 
+> **First-deploy notes (2026-06-07).** The CDK app + agent were snapshot-tested
+> but never actually deployed before, so the first real deploy surfaced (and
+> fixed) a chain of latent issues. If deploying fresh, expect/verify these — all
+> now fixed in code:
+> - **Bootstrap qualifier** `chronos2` (was `chronos2demo`, >10 chars → bootstrap fails).
+> - **CoreLayer was 608 MB** (>250 MB Lambda cap). Split into 3 tiered layers
+>   (light/base/plot); ApiStack builds its **own** `ApiSharedLayer` (don't share a
+>   layer's CFN export across stacks — version changes deadlock with "Cannot
+>   update/delete in-use export"; deploy Api before Tools if it ever recurs).
+>   pyarrow trim must keep substrait/dataset/acero libs (only `*flight*` is safe to drop).
+> - **AgentCore Gateway target names** can't contain `_` (hyphenate opIds).
+> - **Agent runtime image must be `linux/arm64`** (the 2 Fargate images stay `amd64`);
+>   it lives in a 3rd ECR repo (in ToolsStack) and must be pushed before AgentStack.
+> - **RuntimeRole** needs `bedrock-agentcore:GetWorkloadAccessToken*` + logs + xray +
+>   cloudwatch, and a DependsOn so the Runtime waits for its pull policy.
+> - **Agent MCP transport must SigV4-sign** (`mcp-proxy-for-aws` `aws_iam_streamablehttp_client`).
+> - **InvokeFn** passes the runtime ARN + `qualifier='live'` (not the endpoint ARN).
+> - **Authorizer** is TS → bundle to `handler.js` (host esbuild via `bundling.local`;
+>   finch bind-mounts aren't writable under CDK's uid), reads the key from Secrets
+>   Manager, and returns an **API-wide wildcard** Allow (cached authorizer reused across routes).
+> - **finch** is the container engine here: export `CDK_DOCKER=finch`; build images
+>   `--platform` explicitly. The full headline chain exceeds API GW's 29s sync cap —
+>   it was designed to stream over SSE (see the SSE security note in §2/teardown).
+> - **Demo data must be seeded to S3** (`scripts/seed_demo_data.py`) — see §1b.
+
 ## Prerequisites
 
 - Plan A merged: `pip install -e ".[dev]" && pytest` is green.
 - Plan A Chronos-2 endpoint deployed via AutoGluon Cloud: `pip install -e ".[deploy]"` then `python scripts/deploy_chronos2_endpoint.py --action deploy --cache-uri s3://YOUR-BUCKET/fm-cache` (serverless default). Record the endpoint name (`chronos2-demo-ep`). It serves per-series quantiles; the client reconstructs joint paths. The Chronos-2 endpoint call runs in the `chronos2` Fargate task (AutoGluon SDK is too heavy for Lambda), so the task role holds `sagemaker:InvokeEndpoint`.
-- Local toolchain: Node 20+, Python 3.11, Docker (for CDK Lambda layer bundling **and the two Fargate images**), AWS CLI v2.
-- Bedrock model access: Claude 3.5 Sonnet enabled in the target account/region.
-- CDK bootstrap: `cd infra && npx cdk bootstrap aws://ACCOUNT/us-east-1` (one-time).
+- Local toolchain: Node 20+, Python 3.11, a container engine for CDK bundling **and the three images** (here it's **finch** — `export CDK_DOCKER=finch`), AWS CLI v2.
+- Bedrock model access: **Claude Sonnet 4.6** (`us.anthropic.claude-sonnet-4-6` inference profile) enabled in the target account/region. (The original `claude-3-5-sonnet-20241022-v2:0` is end-of-life.)
+- Live demo data: a FRED API key in a gitignored `.env` (`FRED_API_KEY=...`) for `scripts/snapshot_data.py` (Plan A part-5 pulls live FRED keyed-JSON + ECB + Yahoo; credit uses the BAA10Y proxy). Then seed S3 — see §1b.
+- CDK bootstrap: `cd infra && CDK_DOCKER=finch npx cdk bootstrap aws://ACCOUNT/us-east-1` (one-time).
 
 ## 1. Deploy infrastructure
 
@@ -56,17 +82,37 @@ BASELINE_REPO=$(aws ecr describe-repositories \
 CHRONOS2_REPO=$(aws ecr describe-repositories \
   --query "repositories[?contains(repositoryName,'chronos2repo')].repositoryName | [0]" --output text)
 
-docker build -f tools/fargate/baseline_mc/Dockerfile -t $ECR/$BASELINE_REPO:latest .
-docker push $ECR/$BASELINE_REPO:latest
+# Fargate images are linux/amd64. (Use `finch` here; quote ${REPO}:latest — zsh
+# treats $VAR:l as a lowercase modifier and mangles the tag.)
+finch build --platform linux/amd64 -f tools/fargate/baseline_mc/Dockerfile -t "$ECR/${BASELINE_REPO}:latest" .
+finch push "$ECR/${BASELINE_REPO}:latest"
 
-docker build -f tools/fargate/run_chronos2/Dockerfile -t $ECR/$CHRONOS2_REPO:latest .
-docker push $ECR/$CHRONOS2_REPO:latest
+finch build --platform linux/amd64 -f tools/fargate/run_chronos2/Dockerfile -t "$ECR/${CHRONOS2_REPO}:latest" .
+finch push "$ECR/${CHRONOS2_REPO}:latest"
+
+# THIRD image: the AgentCore runtime — MUST be linux/arm64 (AgentCore rejects
+# amd64), and its repo is in ToolsStack (agentruntimerepo). Push before AgentStack.
+AGENT_REPO=$(aws ecr describe-repositories \
+  --query "repositories[?contains(repositoryName,'agentruntimerepo')].repositoryName | [0]" --output text)
+finch build --platform linux/arm64 -f agent/runtime/Dockerfile -t "$ECR/${AGENT_REPO}:latest" .
+finch push "$ECR/${AGENT_REPO}:latest"
 ```
 
 Fetch the API key from Secrets Manager:
 ```bash
 export API_KEY=$(aws secretsmanager get-secret-value \
   --secret-id $API_KEY_SECRET_ARN --query SecretString --output text)
+```
+
+### 1b. Seed the demo data to S3
+
+The Lambda tools read `panel.parquet` / `regimes.parquet` from the data bucket;
+nothing seeds it automatically. After `snapshot_data.py` has written
+`data/curated/*` (live FRED/ECB/Yahoo pull), upload all three:
+```bash
+DATA_BUCKET=$(aws cloudformation describe-stack-resources --stack-name Chronos2DemoStorage \
+  --query "StackResources[?ResourceType=='AWS::S3::Bucket' && contains(LogicalResourceId,'DataBucket')].PhysicalResourceId | [0]" --output text)
+python scripts/seed_demo_data.py --data-bucket "$DATA_BUCKET"
 ```
 
 ## 2. Build and deploy the SPA
@@ -174,7 +220,12 @@ Expected: empty list.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `cdk deploy` fails on Lambda layer asset | Docker not running locally | Start Docker Desktop; or set `--no-bundle` if using a pre-built layer asset |
-| `bedrock-agentcore:InvokeAgentRuntime` AccessDenied | Claude 3.5 Sonnet not enabled in the account/region | Bedrock console → Model access → Request access |
+| `bedrock-agentcore:InvokeAgentRuntime` AccessDenied | Claude Sonnet 4.6 not enabled in the account/region | Bedrock console → Model access → Request access |
+| Agent `/invoke` returns 500, no runtime logs | RuntimeRole missing `GetWorkloadAccessToken*` / logs perms, or MCP calls unsigned | Confirm RuntimeRole has the AgentCore exec-role perms; agent uses `aws_iam_streamablehttp_client` (SigV4) |
+| Agent runtime `Architecture incompatible … Supported: [arm64]` | Agent image built amd64 | Rebuild `--platform linux/arm64`, push, `update-agent-runtime` |
+| `load_data` 500 `libarrow_substrait.so … not found` | Layer over-trimmed pyarrow | Keep substrait/dataset/acero; only strip `*flight*` |
+| `cdk deploy` "Cannot update/delete export … in use" | Cross-stack layer export churn | Api uses its own `ApiSharedLayer`; deploy Api before Tools |
+| Headline `/invoke` 504 at ~29s | API GW sync cap vs multi-minute Fargate | Expected without SSE; use streaming path or a poll UI |
 | Streaming endpoint returns 401 | Wrong API key in browser localStorage | Clear `localStorage["chronos2-demo-session"]`, reload, paste new key |
 | Fargate task ENOSPC (baseline-MC or chronos2) | Low ephemeral storage; the chronos2 image is large (AutoGluon) | Edit the relevant `tools-stack.ts` Fargate task `ephemeralStorageGiB` and redeploy |
 | chronos2 task fails immediately / `CannotPullContainerError` | ECR image not pushed after first `cdk deploy` | Run the §1a build-and-push step for the `chronos2` repo |
