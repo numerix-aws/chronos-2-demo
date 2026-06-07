@@ -113,6 +113,42 @@ export class AgentStack extends cdk.Stack {
       actions: ['bedrock-agentcore:InvokeGateway', 'bedrock-agentcore:GetGateway'],
       resources: [gateway.attrGatewayArn],
     }));
+    // Standard AgentCore Runtime execution-role permissions (per the AgentCore
+    // runtime-permissions guide). Without the workload-access-token grant the
+    // runtime 500s on every invoke; without the logs grant it emits no logs.
+    runtimeRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'bedrock-agentcore:GetWorkloadAccessToken',
+        'bedrock-agentcore:GetWorkloadAccessTokenForJWT',
+        'bedrock-agentcore:GetWorkloadAccessTokenForUserId',
+      ],
+      resources: [
+        `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default`,
+        `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/*`,
+      ],
+    }));
+    runtimeRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents',
+        'logs:DescribeLogStreams', 'logs:DescribeLogGroups',
+      ],
+      resources: [
+        `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`,
+        `arn:aws:logs:${this.region}:${this.account}:log-group:*`,
+      ],
+    }));
+    runtimeRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'xray:PutTraceSegments', 'xray:PutTelemetryRecords',
+        'xray:GetSamplingRules', 'xray:GetSamplingTargets',
+      ],
+      resources: ['*'],
+    }));
+    runtimeRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+      conditions: { StringEquals: { 'cloudwatch:namespace': 'bedrock-agentcore' } },
+    }));
 
     const runtime = new agentcore.CfnRuntime(this, 'Runtime', {
       agentRuntimeName: 'chronos2_demo_copilot',
