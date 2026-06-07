@@ -53,7 +53,18 @@ export async function handler(event: AuthEvent): Promise<Policy> {
   if (!provided) {
     return buildPolicy('Deny', event.methodArn);
   }
+  // Allow must cover ALL routes, not just the requested one: API Gateway caches
+  // the authorizer result by x-api-key (resultsCacheTtl) and reuses it across
+  // routes, so a policy scoped to a single methodArn would 403 every other route
+  // on a cache hit. Scope the Allow to the whole API stage instead.
   return headers[provided] === expected
-    ? buildPolicy('Allow', event.methodArn)
+    ? buildPolicy('Allow', apiWildcard(event.methodArn))
     : buildPolicy('Deny', event.methodArn);
+}
+
+// arn:aws:execute-api:region:acct:apiId/stage/METHOD/path -> .../apiId/*
+function apiWildcard(methodArn: string): string {
+  const parts = methodArn.split(':');
+  const apiId = (parts[5] ?? '').split('/')[0];
+  return `${parts.slice(0, 5).join(':')}:${apiId}/*`;
 }
