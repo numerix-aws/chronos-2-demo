@@ -1,3 +1,5 @@
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+
 type AuthEvent = {
   type: 'REQUEST';
   methodArn: string;
@@ -22,8 +24,24 @@ function buildPolicy(effect: 'Allow' | 'Deny', resource: string): Policy {
   };
 }
 
+// Resolve the expected key once per container from Secrets Manager (the ARN is
+// injected as API_KEY_SECRET_ARN) and cache it across warm invocations. Tests
+// inject API_KEY directly to bypass the fetch.
+const sm = new SecretsManagerClient({});
+let cachedKey: string | undefined;
+
+async function expectedKey(): Promise<string | undefined> {
+  if (process.env.API_KEY) return process.env.API_KEY;
+  if (cachedKey) return cachedKey;
+  const arn = process.env.API_KEY_SECRET_ARN;
+  if (!arn) return undefined;
+  const out = await sm.send(new GetSecretValueCommand({ SecretId: arn }));
+  cachedKey = out.SecretString;
+  return cachedKey;
+}
+
 export async function handler(event: AuthEvent): Promise<Policy> {
-  const expected = process.env.API_KEY;
+  const expected = await expectedKey();
   if (!expected) {
     return buildPolicy('Deny', event.methodArn);
   }

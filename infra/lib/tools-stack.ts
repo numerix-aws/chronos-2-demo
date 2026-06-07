@@ -167,11 +167,24 @@ export class ToolsStack extends cdk.Stack {
     this.fnAuthorizer = new lambda.Function(this, 'Authorizer', {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'handler.handler',
-      code: lambda.Code.fromAsset(path.join(repoRoot, 'tools', 'lambda', 'authorizer')),
+      // handler.ts must be compiled to handler.js before packaging — esbuild
+      // bundles it to CommonJS, leaving @aws-sdk/* external (provided by the
+      // Node 20 runtime). Without this, the asset would ship only the .ts and
+      // Lambda fails with "Cannot find module 'handler'".
+      code: lambda.Code.fromAsset(path.join(repoRoot, 'tools', 'lambda', 'authorizer'), {
+        bundling: {
+          image: lambda.Runtime.NODEJS_20_X.bundlingImage,
+          command: [
+            'bash', '-c',
+            'npx --yes esbuild handler.ts --bundle --platform=node --target=node20 ' +
+            '--external:@aws-sdk/* --outfile=/asset-output/handler.js',
+          ],
+        },
+      }),
       timeout: cdk.Duration.seconds(5),
       memorySize: 256,
       environment: {
-        // Resolve at runtime via SecretsManager extension or directly read.
+        // Authorizer fetches the key value from this secret at runtime.
         API_KEY_SECRET_ARN: this.apiKeySecret.secretArn,
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
