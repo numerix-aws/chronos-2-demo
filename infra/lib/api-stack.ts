@@ -200,6 +200,25 @@ export class ApiStack extends cdk.Stack {
       comment: 'chronos2-demo SSE stream edge',
     });
 
+    // OAC for a Lambda Function URL needs the CloudFront principal granted BOTH
+    // lambda:InvokeFunctionUrl (which withOriginAccessControl adds) AND
+    // lambda:InvokeFunction — without the latter the Function URL's SigV4/IAM
+    // layer rejects the signed request with 403 before the handler runs (per the
+    // AWS OAC-for-Lambda docs). withOriginAccessControl only adds InvokeFunctionUrl,
+    // so we add the InvokeFunction grant ourselves, scoped to this distribution.
+    const cfInvokeFunction = new lambda.CfnPermission(this, 'StreamCfInvokeFunction', {
+      action: 'lambda:InvokeFunction',
+      functionName: sseFn.functionName,
+      principal: 'cloudfront.amazonaws.com',
+      sourceArn: cdk.Stack.of(this).formatArn({
+        service: 'cloudfront',
+        region: '',
+        resource: 'distribution',
+        resourceName: streamDistribution.distributionId,
+      }),
+    });
+    cfInvokeFunction.node.addDependency(streamDistribution);
+
     // The browser only ever talks to the CloudFront domain, never the raw
     // Function URL (which is now AWS_IAM and not publicly invocable).
     this.streamUrl = `https://${streamDistribution.distributionDomainName}/`;

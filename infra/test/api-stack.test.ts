@@ -104,6 +104,22 @@ test('fronts the Function URL with a CloudFront distribution using OAC and no ca
   });
 });
 
+test('grants CloudFront BOTH InvokeFunctionUrl and InvokeFunction on the relay', () => {
+  const { t } = build();
+  // withOriginAccessControl adds the InvokeFunctionUrl grant...
+  t.hasResourceProperties('AWS::Lambda::Permission', {
+    Action: 'lambda:InvokeFunctionUrl',
+    Principal: 'cloudfront.amazonaws.com',
+  });
+  // ...and we add InvokeFunction ourselves (OAC-for-Lambda requires both, else
+  // the Function URL IAM layer 403s CloudFront's signed request before the handler).
+  t.hasResourceProperties('AWS::Lambda::Permission', {
+    Action: 'lambda:InvokeFunction',
+    Principal: 'cloudfront.amazonaws.com',
+    SourceArn: Match.anyValue(),
+  });
+});
+
 test('streamUrl output is still defined (now the CloudFront domain)', () => {
   const { api } = build();
   expect(api.streamUrl).toBeDefined();
