@@ -17,9 +17,17 @@ export class FrontendStack extends cdk.Stack {
     const app = new amplify.CfnApp(this, 'App', {
       name: 'chronos2-demo',
       // No SourceCodeUrl — manual zip deploys via `aws amplify start-deployment`.
+      // These env-vars are informational only: the SPA is built LOCALLY with a
+      // `.env.production` (VITE_* baked in by Vite) and zip-deployed, so Amplify
+      // never runs this build. We deliberately do NOT wire them to
+      // props.api.apiUrl / props.api.streamUrl — that created a CloudFormation
+      // cross-stack export Frontend imports, which deadlocks any change to the
+      // Api streamUrl ("Cannot delete export … in use by Frontend"). Same lesson
+      // as ApiSharedLayer: don't share churn-prone exports across stacks. The
+      // real URLs come from the runbook's local .env.production at build time.
       environmentVariables: [
-        { name: 'VITE_API_URL', value: props.api.apiUrl },
-        { name: 'VITE_STREAM_URL', value: props.api.streamUrl },
+        { name: 'VITE_API_URL', value: 'set-at-build-time-via-.env.production' },
+        { name: 'VITE_STREAM_URL', value: 'set-at-build-time-via-.env.production' },
       ],
       buildSpec: [
         'version: 1',
