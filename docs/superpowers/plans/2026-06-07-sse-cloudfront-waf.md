@@ -8,7 +8,7 @@
 
 **Tech Stack:** AWS CDK 2.257.0 (TypeScript), `aws-cloudfront`, `aws-cloudfront-origins` (`FunctionUrlOrigin.withOriginAccessControl`), `aws-wafv2` (`CfnWebACL`), jest snapshot tests. Container engine is **finch** (`export CDK_DOCKER=finch` for `npm test`).
 
-**Reference:** Design spec `docs/superpowers/specs/2026-06-07-sse-cloudfront-waf-design.md`.
+**Reference:** Design spec `docs/superpowers/specs/2026-05-22-numerix-chronos2-poc-design.md` — §3/§5/§9 cover the streaming edge (consolidated 2026-06-08; originally drafted as the now-removed standalone `2026-06-07-sse-cloudfront-waf-design.md`).
 
 ---
 

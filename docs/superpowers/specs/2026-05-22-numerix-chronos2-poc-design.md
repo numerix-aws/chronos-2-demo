@@ -1,8 +1,10 @@
 # Numerix x Chronos-2 PoC — Design
 
-**Status:** Approved — implemented (Plan A + Plan B code-complete on `main`, 2026-06-04; live-data sources rewired for deploy 2026-06-05)
-**Date:** 2026-05-22 (Chronos-2 deployment/serving sections refreshed 2026-06-04; live-data + agent-model banner 2026-06-05)
+**Status:** Approved — implemented (Plan A + Plan B code-complete on `main`, 2026-06-04; live-data sources rewired for deploy 2026-06-05; streaming edge consolidated into this spec 2026-06-08)
+**Date:** 2026-05-22 (Chronos-2 deployment/serving sections refreshed 2026-06-04; live-data + agent-model banner 2026-06-05; streaming-edge consolidation 2026-06-08)
 **Author:** Brainstorming session output
+
+> **2026-06-08 streaming-edge consolidation note.** The SPA streams each agent turn over **Server-Sent Events** so the room watches the copilot reason and call tools live — a Plan B architecture invariant from the start (the streaming Function URL with `InvokeMode=RESPONSE_STREAM`). The original §5 body predated the post-implementation re-sync and never drew it, so this revision folds the streaming edge into §3, §5, and §9 as native architecture: an **SSE relay Lambda** (Function URL, `RESPONSE_STREAM`, `AWS_IAM`) fronted by **CloudFront + WAF** with an Origin Access Control (SigV4) as the sole invoker, alongside the API-Gateway control plane that serves sessions and the synchronous `/invoke` fallback. This supersedes the standalone `2026-06-07-sse-cloudfront-waf-design.md` spec, whose content now lives here. The augmentation thesis, narrative arc, and pricing path are unchanged.
 
 > **2026-06-04 re-architecture note.** The original design assumed Chronos-2 ran on a hand-rolled **SageMaker real-time endpoint returning sample paths**. The implemented system instead deploys Chronos-2 via **AutoGluon Cloud (serverless default)**, which returns **per-series quantiles**; the client reconstructs joint `(n_paths, horizon, n_series)` paths client-side via inverse-CDF marginals coupled by a lookback Gaussian copula. The two `run_*` tools became **async ECS Fargate tasks** with paired `check_*` poll tools (so the live tool surface is **9 tools**, not 7). §5–§9 below have been updated to reflect this; the augmentation story, narrative, and evaluation are unchanged.
 
@@ -35,7 +37,7 @@ The demo's **headline** is **correct + reweight** (regime-aware tail correction)
 
 A ~10-minute live story arc in six beats:
 
-1. **Setup (1 min)** — Analyst opens the copilot and asks: *"Compute baseline PFE on the demo XCCY book over the next year, using the parametric MC."* Result: standard PFE curve.
+1. **Setup (1 min)** — Analyst opens the copilot and asks: *"Compute baseline PFE on the demo XCCY book over the next year, using the parametric MC."* The reply streams back token-by-token (SSE) so the room watches the copilot reason and call each tool in turn. Result: standard PFE curve.
 2. **Reveal (2 min)** — *"Now run the same calculation against the 2022 rate-hike window, comparing baseline vs. Chronos-2 augmented scenarios."* Two PFE curves overlaid; a regime indicator highlights where the augmented one diverges. Headline metric: *97.5% PFE understated by X% / $Y million on this book.* (X and Y are measured during build and pinned for the demo — see §8.)
 3. **Explain (3 min)** — *"Why are they different? Show me sample paths."* Sample joint paths from both engines (parametric thin-tailed vs. Chronos-2 capturing FX-rates correlation breakdown). Toggle covariates off; show how the divergence narrows. Confirm the same pricing/exposure code ran for both — only the path set changed.
 4. **Interact (2 min)** — *"What if EUR rates +100bp and USD/JPY −10% over 30 days?"* Conditional Chronos-2 generation; PFE recomputed live.
@@ -73,19 +75,26 @@ The equity and credit series are **priced factors**, not covariates: the paramet
                           ┌─────────────────────┐
                           │  Amplify Hosting    │
                           │  Cloudscape SPA     │
-                          └──────────┬──────────┘
-                                     │
-                                     ▼
-                          ┌─────────────────────┐
-                          │  API Gateway        │
-                          │  + Lambda authorizer│
-                          └──────────┬──────────┘
-                                     ▼
-                          ┌─────────────────────┐
-                          │  Bedrock AgentCore  │
-                          │  Quant Copilot      │
-                          │  (Claude reasoning) │
-                          └──────┬─────┬────────┘
+                          └─────┬─────────┬─────┘
+            sessions / sync     │         │   streamed turn (SSE)
+                                ▼         ▼
+                ┌─────────────────┐    ┌─────────────────────┐
+                │  API Gateway    │    │  CloudFront + WAF    │
+                │ + Lambda authz  │    │  (OAC, SigV4)        │
+                └────────┬────────┘    └──────────┬──────────┘
+                         │                        ▼
+                         │             ┌─────────────────────┐
+                         │             │ SSE Relay Lambda     │
+                         │             │ (Function URL,       │
+                         │             │ RESPONSE_STREAM,     │
+                         │             │ AWS_IAM)             │
+                         │             └──────────┬──────────┘
+                         ▼                        ▼
+                          ┌─────────────────────────────┐
+                          │  Bedrock AgentCore          │
+                          │  Quant Copilot              │
+                          │  (Claude reasoning)         │
+                          └──────┬─────┬────────────────┘
                                  │     │   tool calls
               ┌──────────────────┘     └─────────────────┐
               ▼                                          ▼
@@ -137,9 +146,14 @@ The equity and credit series are **priced factors**, not covariates: the paramet
 - **Plotting Tool** — emits chart artifacts (PNG to S3) the front-end renders.
 - **Curated Knowledge** — pre-authored adjacent-use-case briefs the agent draws from for the closing tour beat.
 
-**Two design notes worth flagging:**
+**Two front-door paths — sync control plane + streamed agent turn.** The SPA talks to two surfaces:
+- **API Gateway (+ Lambda authorizer)** — the request/response control plane: session create/list/append (`/sessions`) and a synchronous, non-streaming `/invoke` fallback. Demo-grade `x-api-key`; Cognito-swappable.
+- **SSE Relay (Lambda Function URL, `InvokeMode=RESPONSE_STREAM`)** fronted by **CloudFront + WAF** — the streamed agent turn. The relay invokes AgentCore and relays the response token-by-token as Server-Sent Events so the analyst watches the copilot reason and call tools live. Streaming requires a Function URL (API Gateway REST buffers responses and breaks SSE) and a browser `fetch` + `ReadableStream` reader (not `EventSource`, which cannot send the `x-api-key` header). The Function URL is `AWS_IAM`; a CloudFront **Origin Access Control** (SigV4, signing always) is the only principal that can invoke it, so it is never publicly reachable. The fronting CloudFront distribution carries a **WAF WebACL** (AWS Managed Common + Known-Bad-Inputs rule groups + a per-IP rate rule), disables caching so the stream is not buffered, and forwards `x-api-key` to the relay, which re-checks it at the application layer as defense in depth.
+
+**Three design notes worth flagging:**
 - The pricing/exposure tool is **a faithful stand-in, not real Numerix code.** This is an explicit boundary so the partner conversation is honest.
 - The **Reweighting/Regime Tool is its own component**, not buried inside the Chronos-2 tool. The augmentation logic is the most-scrutinized piece; isolating it makes it inspectable.
+- **Streaming is the primary demo path; `/invoke` is the fallback.** The full headline chain (`load_data → run_baseline_mc → run_chronos2 → blend_paths → price_book → plot`) runs multiple minutes — well past API Gateway's 29 s integration cap — so the live walkthrough uses the SSE path; the synchronous `/invoke` exists for scripted/non-streaming use and short turns.
 
 ## 6. Augmentation Mechanics
 
@@ -225,7 +239,8 @@ All three are computed once and **pinned** for the demo so headlines do not drif
 | Component | Service | Notes |
 |---|---|---|
 | Front-end | Amplify Hosting | Cloudscape React SPA |
-| API | API Gateway + Lambda authorizer | Demo-grade API key; Cognito-swappable |
+| API (control plane) | API Gateway + Lambda authorizer | Sessions + synchronous `/invoke` fallback; demo-grade API key; Cognito-swappable |
+| Streaming edge | CloudFront + WAF → SSE Relay Lambda (Function URL, `RESPONSE_STREAM`) | Token-by-token SSE for the live agent turn. Function URL is `AWS_IAM`; CloudFront OAC (SigV4) is the only invoker; WAF WebACL (AWS Managed Common + Known-Bad-Inputs + per-IP rate rule); caching disabled so the stream is unbuffered; `x-api-key` forwarded and re-checked in the relay |
 | Agent | Bedrock AgentCore | Claude (Sonnet-class default); CloudWatch traces |
 | Data tool | Lambda | Reads S3 panel + covariates |
 | Baseline MC | ECS Fargate task (launcher + poll Lambdas) | Python (numpy/scipy); on-demand; own ECR image |
