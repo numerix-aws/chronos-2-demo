@@ -244,7 +244,10 @@ def simulate_chronos2(
     history = panel.loc[:as_of_ts].tail(lookback_days)
     cov_slice = None
     if covariates is not None:
-        cov_slice = covariates.loc[history.index]
+        # Covariate series (VIX/MOVE/WTI) skip US holidays the panel trades
+        # through, so align onto the lookback index and carry the last known
+        # value across the gaps rather than fail a strict label lookup.
+        cov_slice = covariates.reindex(history.index).ffill().bfill()
     samples = client.predict(history, horizon=horizon, n_samples=n_paths,
                              covariates=cov_slice, conditioning=conditioning,
                              seed=seed)

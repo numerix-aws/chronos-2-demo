@@ -48,3 +48,21 @@ def test_simulate_chronos2_marks_conditional_source_when_provided():
     ps = c2.simulate_chronos2(client, panel, as_of="2022-06-01",
                               horizon=10, n_paths=50, conditioning=cond)
     assert ps.source == "chronos2_conditional"
+
+
+def test_simulate_chronos2_aligns_covariates_with_holiday_gaps():
+    """Covariate frame is missing market-holiday rows the panel has.
+
+    Real VIX/MOVE/WTI series skip US holidays that non-US panel instruments
+    still trade through, so the covariate index is a strict subset of the
+    lookback index. The lookback slice must align onto the panel index
+    rather than fail a strict label lookup.
+    """
+    client = c2.Chronos2Client(endpoint=_FakeEndpoint())
+    panel = _panel()
+    covariates = pd.DataFrame(
+        {"VIX": 20.0, "MOVE": 100.0, "WTI": 80.0}, index=panel.index
+    ).drop(panel.index[[10, 25, 40]])  # holidays present in panel, absent in cov
+    ps = c2.simulate_chronos2(client, panel, as_of="2022-06-01",
+                              horizon=30, n_paths=100, covariates=covariates)
+    assert ps.paths.shape == (100, 30, 3)
