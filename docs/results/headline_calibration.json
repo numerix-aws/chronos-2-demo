@@ -1,13 +1,14 @@
 {
-  "status": "placeholder — run scripts/calibrate_headline.py against a live endpoint",
-  "baseline_pfe_975": null,
-  "augmented_pfe_975": null,
-  "delta_pct": null,
-  "delta_usd": null,
-  "as_of": null,
-  "stress_window": null,
-  "n_paths": null,
-  "endpoint_name": null,
-  "git_sha": null,
-  "timestamp": null
+  "status": "measured",
+  "baseline_pfe_975": 5605184.38,
+  "augmented_pfe_975": 6631623.85,
+  "delta_pct": 18.31,
+  "delta_usd": 1026439.46,
+  "as_of": "2022-09-30",
+  "stress_window": "2022_rate_hike",
+  "w_stress": 0.5305,
+  "n_paths": 5000,
+  "endpoint_name": "chronos2-demo-ep",
+  "git_sha": "677e485",
+  "timestamp": "2026-06-08T18:51:53.844366+00:00"
 }

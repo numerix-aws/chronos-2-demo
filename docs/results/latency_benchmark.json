@@ -1,12 +1,12 @@
 {
-  "status": "placeholder — run scripts/benchmark_latency.py to populate",
-  "closed_form_seconds": null,
-  "nested_mc_seconds": null,
-  "speedup_x": null,
-  "nested_n_revaluations": null,
-  "n_paths": null,
-  "horizon": null,
-  "n_inner": null,
-  "git_sha": null,
-  "timestamp": null
+  "status": "measured",
+  "closed_form_seconds": 0.2751,
+  "nested_mc_seconds": 549.9743,
+  "speedup_x": 1999.5,
+  "nested_n_revaluations": 480000,
+  "n_paths": 200,
+  "horizon": 12,
+  "n_inner": 200,
+  "git_sha": "677e485",
+  "timestamp": "2026-06-08T19:01:16.093715+00:00"
 }
