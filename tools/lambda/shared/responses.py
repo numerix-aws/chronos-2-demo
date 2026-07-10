@@ -18,9 +18,14 @@ def error(message: str) -> dict:
     return {"status": "error", "message": message}
 
 
+# API Gateway's defaultCorsPreflightOptions only covers OPTIONS; proxy-integration
+# responses must carry the CORS header themselves or the browser blocks them.
+_CORS_HEADERS = {"Access-Control-Allow-Origin": "*"}
+
+
 def http_ok(body: dict, status: int = 200) -> dict:
-    return {"statusCode": status, "body": json.dumps(body)}
+    return {"statusCode": status, "headers": _CORS_HEADERS, "body": json.dumps(body)}
 
 
 def http_error(message: str, status: int = 400) -> dict:
-    return {"statusCode": status, "body": json.dumps({"error": message})}
+    return {"statusCode": status, "headers": _CORS_HEADERS, "body": json.dumps({"error": message})}

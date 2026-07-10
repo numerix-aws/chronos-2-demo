@@ -36,3 +36,13 @@ def test_http_error_defaults_to_400_with_error_key():
 def test_http_error_custom_status():
     out = responses.http_error("nope", status=404)
     assert out["statusCode"] == 404
+
+
+def test_http_ok_includes_cors_headers():
+    out = responses.http_ok({"session_id": "s1"})
+    assert out["headers"]["Access-Control-Allow-Origin"] == "*"
+
+
+def test_http_error_includes_cors_headers():
+    out = responses.http_error("bad role")
+    assert out["headers"]["Access-Control-Allow-Origin"] == "*"
