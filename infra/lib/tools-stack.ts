@@ -151,8 +151,10 @@ export class ToolsStack extends cdk.Stack {
         handler: 'handler.handler',
         code: lambda.Code.fromAsset(path.join(repoRoot, 'tools', 'lambda', dir)),
         layers: [layer],
-        memorySize: 1024,
-        timeout: cdk.Duration.seconds(30),
+        // blend/price on the demo headline load (2000 paths x 252d x full book)
+        // ran past 30s at 1024 MB; more memory also buys proportional CPU.
+        memorySize: 3008,
+        timeout: cdk.Duration.seconds(120),
         environment: { ...commonEnv, ...env },
         logRetention: logs.RetentionDays.ONE_WEEK,
       });
