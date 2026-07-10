@@ -41,3 +41,19 @@ def test_simulate_baseline_is_deterministic_under_same_seed():
     a = baseline_mc.simulate_baseline(panel, "2022-01-03", 30, 100, 3, seed=42)
     b = baseline_mc.simulate_baseline(panel, "2022-01-03", 30, 100, 3, seed=42)
     np.testing.assert_array_equal(a.paths, b.paths)
+
+
+def test_simulate_baseline_snaps_weekend_as_of_to_last_trading_day():
+    # 2022-01-02 is a Sunday; the panel index is business days only. A strict
+    # .loc[as_of] raises KeyError — the run must instead anchor on the last
+    # trading date at or before as_of (2021-12-31, Friday).
+    panel = _panel()
+    ps = baseline_mc.simulate_baseline(
+        panel, as_of="2022-01-02", horizon=10, n_paths=200, n_components=3, seed=0
+    )
+    levels_at_prev_close = panel.loc["2021-12-31"].values
+    first_step = ps.paths[:, 0, :].mean(axis=0)
+    rel_err = np.abs(first_step - levels_at_prev_close) / np.abs(levels_at_prev_close)
+    assert (rel_err < 0.05).all()
+    # Horizon dates start strictly after the effective (snapped) as-of.
+    assert ps.dates[0] == pd.Timestamp("2022-01-03")

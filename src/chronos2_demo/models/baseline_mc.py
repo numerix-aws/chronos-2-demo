@@ -121,7 +121,13 @@ def simulate_baseline(
       3. Project to standardized log-return space via loadings.T.
       4. Reverse standardization, cumulate, exponentiate, multiply by S_{as_of}.
     """
+    # as_of may fall on a weekend/holiday (e.g. the demo default 2020-03-15,
+    # a Sunday); snap to the last trading date at or before it instead of
+    # failing a strict label lookup.
     history = panel.loc[:pd.Timestamp(as_of)]
+    if history.empty:
+        raise ValueError(f"as_of {as_of} predates the panel history")
+    as_of_eff = history.index[-1]
     pca = fit_pca(history, n_components=n_components)
     dyn = fit_factor_dynamics(history, pca)
     rng = np.random.default_rng(seed)
@@ -133,11 +139,11 @@ def simulate_baseline(
     log_rets = log_rets * pca.std + pca.mean
     # Cumulate to get log levels relative to S_{as_of}.
     cum_log = np.cumsum(log_rets, axis=1)
-    s0 = panel.loc[pd.Timestamp(as_of)].values  # (n_series,)
+    s0 = panel.loc[as_of_eff].values  # (n_series,)
     levels = s0 * np.exp(cum_log)
 
     horizon_dates = pd.bdate_range(
-        start=pd.Timestamp(as_of) + pd.tseries.offsets.BDay(1), periods=horizon
+        start=as_of_eff + pd.tseries.offsets.BDay(1), periods=horizon
     )
     weights = np.full(n_paths, 1.0 / n_paths)
     return PathSet(
