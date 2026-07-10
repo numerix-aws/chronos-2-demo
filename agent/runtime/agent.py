@@ -25,10 +25,14 @@ def _gateway() -> MCPClient:
     # SigV4-signed streamable-HTTP transport to the AWS_IAM Gateway, using the
     # Runtime execution-role credentials (mcp-proxy-for-aws handles signing). A
     # plain streamablehttp_client would be unsigned and the Gateway returns 403.
+    # timeout must exceed the slowest Gateway tool call (blend/price run >30s
+    # on the headline load); the default 30s ReadTimeout kills the MCP session
+    # mid-conversation and the invocation 500s.
     return MCPClient(lambda: aws_iam_streamablehttp_client(
         endpoint=GATEWAY_URL,
         aws_region=AWS_REGION,
         aws_service="bedrock-agentcore",
+        timeout=180,
     ))
 
 
