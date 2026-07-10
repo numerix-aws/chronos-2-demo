@@ -51,6 +51,11 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
   }
 
   responseStream.setContentType('text/event-stream');
+  // Flush a comment frame immediately and heartbeat while the agent is in
+  // long tool calls: CloudFront's origin read timeout (30s) aborts the stream
+  // if no bytes arrive, and the agent can go minutes before its first token.
+  responseStream.write(': connected\n\n');
+  const heartbeat = setInterval(() => responseStream.write(': keepalive\n\n'), 15000);
 
   try {
     const cmd = new InvokeAgentRuntimeCommand({
@@ -67,6 +72,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
   } catch (err) {
     responseStream.write(sseFrame(`[ERROR] ${err.message}`));
   } finally {
+    clearInterval(heartbeat);
     responseStream.end();
   }
 });

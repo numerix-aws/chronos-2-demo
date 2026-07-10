@@ -97,7 +97,9 @@ export class ApiStack extends cdk.Stack {
       projectRoot: path.join(__dirname, '..', '..'),
       depsLockFilePath: path.join(__dirname, '..', 'package-lock.json'),
       handler: 'handler',
-      timeout: cdk.Duration.minutes(2),
+      // The full headline chain (2 Fargate tasks + pricing + plot) runs well past
+      // 2 minutes; Function URL streaming allows up to 15.
+      timeout: cdk.Duration.minutes(15),
       environment: {
         AGENT_RUNTIME_ARN: props.agent.runtimeArn,
         AGENT_QUALIFIER: 'live',
