@@ -33,9 +33,11 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["panel_uri"],
+                  "required": ["panel_uri", "regimes_uri", "n_rows"],
                   "properties": {
-                    "panel_uri": { "type": "string", "format": "uri" }
+                    "panel_uri": { "type": "string", "format": "uri" },
+                    "regimes_uri": { "type": "string", "format": "uri" },
+                    "n_rows": { "type": "integer" }
                   }
                 }
               }

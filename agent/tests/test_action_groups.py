@@ -62,6 +62,11 @@ def test_load_data_envelope_matches_lambda_contract():
     required = set(schema.get("required", []))
     assert required == {"session_id", "as_of_date", "lookback_days"}, required
 
+    response_schema = spec["paths"]["/load_data"]["post"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]
+    assert set(response_schema["required"]) == {"panel_uri", "regimes_uri", "n_rows"}
+
 
 def test_blend_paths_w_stress_constrained_to_unit_interval():
     spec = _load()

@@ -2,14 +2,23 @@ import { AppLayout, ContentLayout, Header, SpaceBetween } from '@cloudscape-desi
 import '@cloudscape-design/global-styles/index.css';
 import { useEffect, useState } from 'react';
 import { ChatPanel } from './components/ChatPanel';
+import { ExposureSummary } from './components/ExposureSummary';
+import { ToolTracePanel } from './components/ToolTracePanel';
 import { WhatIfForm, type WhatIfParams } from './components/WhatIfForm';
 import { ApiClient, type Message } from './api/client';
 import { streamAgent } from './api/stream';
 import { loadSession } from './state/session';
+import {
+  parseToolTraceEvents,
+  reduceToolTraceEvents,
+  stripToolTraceMarkers,
+  type ToolTraceEvent,
+} from './toolTrace';
 
 export function App() {
   const session = loadSession();
   const [messages, setMessages] = useState<Message[]>([]);
+  const [toolTraceEvents, setToolTraceEvents] = useState<ToolTraceEvent[]>([]);
   const [streaming, setStreaming] = useState(false);
 
   const apiBase = import.meta.env.VITE_API_URL as string;
@@ -18,34 +27,49 @@ export function App() {
 
   useEffect(() => {
     if (!client || !session) return;
-    client.listMessages(session.sessionId).then((r) => setMessages(r.messages));
+    let cancelled = false;
+    client.listMessages(session.sessionId).then((r) => {
+      if (cancelled) return;
+      setToolTraceEvents(r.messages.flatMap((m) => parseToolTraceEvents(m.content)));
+      setMessages((prev) =>
+        prev.length > 0
+          ? prev
+          : r.messages.map((m) => ({ ...m, content: stripToolTraceMarkers(m.content) })),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleSend = async (text: string) => {
     if (!client || !session) return;
     setStreaming(true);
+    const priorTraceEvents = toolTraceEvents;
     setMessages((prev) => [
       ...prev,
       { role: 'user', content: text, turn_id: `local-${Date.now()}` },
     ]);
-    let acc = '';
+    let rawAcc = '';
     setMessages((prev) => [
       ...prev,
       { role: 'assistant', content: '', turn_id: `local-asst-${Date.now()}` },
     ]);
     for await (const ev of streamAgent(streamBase, session.apiKey, session.sessionId, text)) {
       if (ev.type === 'chunk') {
-        acc += ev.text;
+        rawAcc += ev.text;
+        setToolTraceEvents([...priorTraceEvents, ...parseToolTraceEvents(rawAcc)]);
+        const visibleText = stripToolTraceMarkers(rawAcc);
         setMessages((prev) => {
           const next = [...prev];
-          next[next.length - 1] = { ...next[next.length - 1], content: acc };
+          next[next.length - 1] = { ...next[next.length - 1], content: visibleText };
           return next;
         });
       } else if (ev.type === 'error') {
-        acc += `\n[error: ${ev.message}]`;
+        rawAcc += `\n[error: ${ev.message}]`;
         setMessages((prev) => {
           const next = [...prev];
-          next[next.length - 1] = { ...next[next.length - 1], content: acc };
+          next[next.length - 1] = { ...next[next.length - 1], content: rawAcc };
           return next;
         });
       }
@@ -65,7 +89,10 @@ export function App() {
         `Apply a conditional what-if stress: ${shifts} anchored over the first ` +
         `${p.conditioning.n_anchor_days} days (use w_stress=1 for this conditional run). `;
     }
-    prompt += `Compare PFE against the previous run and explain the delta.`;
+    prompt +=
+      'Compare EE, PFE 97.5%, and ES 97.5% against the previous run and explain the delta. ' +
+      'End with a fenced json block named exposure_summary using raw numeric dollar values, ' +
+      'with previous and current objects containing date, ee, pfe_975, and es_975.';
     void handleSend(prompt);
   };
 
@@ -85,6 +112,14 @@ export function App() {
             <section aria-label="Chat" role="region">
               <Header variant="h2">Conversation</Header>
               <ChatPanel messages={messages} onSend={handleSend} streaming={streaming} />
+            </section>
+            <section aria-label="Tool trace" role="region">
+              <Header variant="h2">Tool trace</Header>
+              <ToolTracePanel items={reduceToolTraceEvents(toolTraceEvents)} />
+            </section>
+            <section aria-label="Exposure summary" role="region">
+              <Header variant="h2">Exposure summary</Header>
+              <ExposureSummary messages={messages} />
             </section>
             <section aria-label="What-if" role="region">
               <Header variant="h2">What-if parameters</Header>

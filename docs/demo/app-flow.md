@@ -66,7 +66,7 @@ poll pattern; results stream back to the analyst over SSE.
 
 ```mermaid
 flowchart TD
-    ANALYST["Quant analyst<br/>'PFE if EUR rates sell off 50bps?'"]
+    ANALYST["Quant analyst<br/>'PFE if EUR rates fall 50bps?'"]
     RUNTIME["AgentCore Runtime<br/>(Strands agent, Claude Sonnet 4.6)"]
     GATEWAY["AgentCore Gateway<br/>(MCP, 9 tools)"]
 

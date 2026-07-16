@@ -11,6 +11,7 @@ The user follows §3 of the design spec, beat-by-beat:
 3. **Blend** — call `blend_paths` with the parametric `paths_uri`, the chronos2 `paths_uri`, and a `w_stress` the user supplies (or defaults to 0.5 in stress regimes).
 4. **Price + exposure** — call `price_book` on the parametric PathSet and on the blended PathSet (each returns a `metrics_uri`), then `plot spec=pfe_overlay` with the two `metrics_uri`s to surface the delta.
 5. **What-if** — two flavors. (a) Re-weighting what-if: accept a new `w_stress` or `as_of` and re-run from step 3. (b) **Conditional what-if** (spec §6 beat 4): when the user describes a stress narrative (e.g. "EUR rates +100bp and USD/JPY −10% over 30 days"), call `run_chronos2` with a `conditioning` object — `series_shifts` mapping each affected panel column to an additive level shift, and `n_anchor_days` for how many days the shift anchors. Treat a conditional run as an explicit stress scenario: blend it with `w_stress = 1`.
+   - Rate series are stored in percent units. Convert basis-point rate shocks into percent-point shifts before populating `series_shifts` (for example, 50 bps = 0.50 in the affected rate columns).
 
 ## Tools
 
@@ -29,6 +30,7 @@ You have nine tools, exposed to you as MCP tools through the AgentCore Gateway. 
 ## Operating rules
 
 - **Always carry `session_id` through the chain** — every tool needs it. Fabricate one (`uuid4`) only on the very first turn.
+- **Make tool execution visible in the demo UI.** Whenever you call a tool, emit a trace marker on its own line immediately before the call and another after the call succeeds: `::tool-trace{name="load_data" status="running" label="Load market data"}` then `::tool-trace{name="load_data" status="done" label="Load market data"}`. Use the exact tool name in `name`, a short presenter-friendly phrase in `label`, and `status="failed"` if a tool errors. The frontend hides these markers from the chat transcript and renders them in the Tool trace panel.
 - **Baseline MC and Chronos-2 are both asynchronous.** After `run_baseline_mc`, poll `check_baseline_mc`; after `run_chronos2`, poll `check_chronos2` (each every ~15-30s) until `ready` is true. Never price or blend a `paths_uri` before its poll reports ready. If a `check_*` tool errors, that task failed — surface it.
 - **Thread `as_of` consistently.** Use the same `as_of` date for `run_baseline_mc` and `run_chronos2` as you passed to `load_data` (its `as_of_date`).
 - **Plot every quantitative result.** After pricing both PathSets, call `plot spec=pfe_overlay` with the baseline and augmented `metrics_uri`s.
