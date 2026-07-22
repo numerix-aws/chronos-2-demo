@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from datetime import datetime
 import hashlib
 import json
 import re
-from typing import Mapping
+from types import MappingProxyType
 import uuid
 
 
@@ -26,9 +27,35 @@ PROFILE = {
 }
 REQUIRED_FIELDS = tuple(k for k in PROFILE if k not in {"schema_version", "profile", "conditioning"})
 PROFILE_RE = re.compile(r"\b(stage[ -]safe|headline demo|same stage[ -]safe setup)\b", re.I)
-QUANT_RE = re.compile(r"\b(run|compare|forecast|simulate|exposure|stress|what happens)\b", re.I)
+QUANT_RE = re.compile(
+    r"\b(run|compare|forecast|simulate|stress)\b|\bwhat happens\b|\b(?:calculate|compute)\s+exposure\b",
+    re.I,
+)
 NEGATED_TOOL_RUN_RE = re.compile(r"\b(?:do not|don't)\s+run\s+tools?\b", re.I)
 NUMBER_WORDS = {"one": 1, "two": 2, "five": 5, "ten": 10}
+ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+ENGLISH_DATE_RE = re.compile(
+    r"\b(January|February|March|April|May|June|July|August|September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(20\d{2})\b",
+    re.I,
+)
+PARTIAL_ENGLISH_DATE_RE = re.compile(
+    r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(?:20\d{2}|\d{1,2}(?!,?\s+20\d{2}))\b",
+    re.I,
+)
+PARTIAL_ISO_DATE_RE = re.compile(r"\b20\d{2}-\d{2}\b(?!-\d{2})")
+LOOKBACK_PATTERNS = (
+    r"\b(?:look back|lookback)\D{0,12}([\d,]+)\s+trading days\b",
+    r"\b([\d,]+)\s+trading days\s+of\s+(?:trading\s+)?history\b",
+    r"\b(one|two|five|ten|\d+)\s+(?:trading[ -])?years?\s+(?:of\s+(?:trading\s+)?history|lookback|behind)\b",
+)
+HORIZON_PATTERNS = (
+    r"\b(?:forecast|project|simulate)\D{0,12}([\d,]+)\s+trading days\b",
+    r"\b([\d,]+)\s+trading days\s+(?:ahead|into the future|forward)\b",
+    r"\b(?:forecast|project|simulate)\D{0,12}(one|two|five|ten|\d+)\s+trading years?\b",
+    r"\b(one|two|five|ten|\d+)\s+trading years?\s+(?:ahead|into the future|forward|horizon)\b",
+)
 
 
 @dataclass(frozen=True)
@@ -52,17 +79,21 @@ class RunSpec:
     w_stress: float
     regime_threshold: float
     book_id: str
-    conditioning: dict[str, object] | None
-    provenance: dict[str, str]
+    conditioning: Mapping[str, object] | None
+    provenance: Mapping[str, str]
     spec_hash: str
     execution_id: str
 
 
 def canonical_run_payload(spec: RunSpec | Mapping[str, object]) -> dict[str, object]:
-    value = asdict(spec) if isinstance(spec, RunSpec) else dict(spec)
+    value = (
+        {field.name: getattr(spec, field.name) for field in fields(spec)}
+        if isinstance(spec, RunSpec)
+        else dict(spec)
+    )
     value.pop("execution_id", None)
     value.pop("spec_hash", None)
-    return value
+    return _plain(value)
 
 
 def compute_spec_hash(payload: Mapping[str, object]) -> str:
@@ -77,32 +108,46 @@ def _number(value: str) -> int:
     return NUMBER_WORDS[token] if token in NUMBER_WORDS else int(token)
 
 
-def _date(prompt: str) -> str | None:
-    iso = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", prompt)
-    if iso:
-        return datetime.strptime(iso.group(1), "%Y-%m-%d").date().isoformat()
-    english = re.search(
-        r"\b(January|February|March|April|May|June|July|August|September|October|November|December|"
-        r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(20\d{2})\b",
-        prompt,
-        re.I,
-    )
-    if not english:
-        return None
-    month = english.group(1).lower()
-    if month == "sept":
-        month = "sep"
-    fmt = "%B %d %Y" if len(month) > 3 else "%b %d %Y"
-    value = f"{month} {english.group(2)} {english.group(3)}"
-    return datetime.strptime(value, fmt).date().isoformat()
+def _dates(prompt: str) -> tuple[set[str], bool]:
+    values = set()
+    invalid = bool(PARTIAL_ENGLISH_DATE_RE.search(prompt) or PARTIAL_ISO_DATE_RE.search(prompt))
+    for match in ISO_DATE_RE.finditer(prompt):
+        try:
+            values.add(datetime.strptime(match.group(1), "%Y-%m-%d").date().isoformat())
+        except ValueError:
+            invalid = True
+    for match in ENGLISH_DATE_RE.finditer(prompt):
+        month = match.group(1).lower()
+        if month == "sept":
+            month = "sep"
+        fmt = "%B %d %Y" if len(month) > 3 else "%b %d %Y"
+        try:
+            values.add(datetime.strptime(f"{month} {match.group(2)} {match.group(3)}", fmt).date().isoformat())
+        except ValueError:
+            invalid = True
+    return values, invalid
 
 
-def _first(prompt: str, patterns: tuple[str, ...]) -> re.Match[str] | None:
+def _observation_values(prompt: str, patterns: tuple[str, ...]) -> set[int]:
+    values = set()
     for pattern in patterns:
-        match = re.search(pattern, prompt, re.I)
-        if match:
-            return match
-    return None
+        for match in re.finditer(pattern, prompt, re.I):
+            count = _number(match.group(1))
+            values.add(count * 252 if "year" in match.group(0).lower() else count)
+    return values
+
+
+def _plain(value: object) -> dict[str, object] | object:
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    return value
+
+
+def _freeze(value: Mapping[str, object]) -> Mapping[str, object]:
+    return MappingProxyType({
+        key: _freeze(item) if isinstance(item, Mapping) else item
+        for key, item in value.items()
+    })
 
 
 def _conditioning(prompt: str) -> dict[str, object] | None:
@@ -156,44 +201,40 @@ def compile_run_spec(
     values: dict[str, object] = dict(PROFILE) if PROFILE_RE.search(prompt) else {
         "schema_version": "1", "profile": None, "conditioning": None
     }
-    as_of = _date(prompt)
-    if as_of:
-        values["as_of_date"] = as_of
+    dates, invalid_date = _dates(prompt)
+    if invalid_date or len(dates) > 1:
+        return Clarification(True, ("as_of_date",), "Please specify one valid as_of_date.")
+    if dates:
+        values["as_of_date"] = dates.pop()
 
-    lookback = _first(prompt, (
-        r"\b(?:look back|lookback)\D{0,12}([\d,]+)\s+trading days\b",
-        r"\b([\d,]+)\s+trading days\s+of\s+(?:trading\s+)?history\b",
-        r"\b(one|two|five|ten|\d+)\s+(?:trading[ -])?years?\s+(?:of\s+(?:trading\s+)?history|lookback|behind)\b",
-    ))
-    if lookback:
-        count = _number(lookback.group(1))
-        values["lookback_days"] = count * 252 if "year" in lookback.group(0).lower() else count
-
-    horizon = _first(prompt, (
-        r"\b(?:forecast|project|simulate)\D{0,12}([\d,]+)\s+trading days\b",
-        r"\b([\d,]+)\s+trading days\s+(?:ahead|into the future|forward)\b",
-        r"\b(?:forecast|project|simulate)\D{0,12}(one|two|five|ten|\d+)\s+trading years?\b",
-        r"\b(one|two|five|ten|\d+)\s+trading years?\s+(?:ahead|into the future|forward|horizon)\b",
-    ))
-    if horizon:
-        count = _number(horizon.group(1))
-        values["horizon"] = count * 252 if "year" in horizon.group(0).lower() else count
-
-    paths = re.search(r"\b([\d,]+)\s+(?:paths|scenarios|simulations)\b", prompt, re.I)
-    if paths:
-        values["n_paths"] = _number(paths.group(1))
-
-    percent_weight = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:%|percent)\s+stress", prompt, re.I)
-    decimal_weight = re.search(r"\bstress weight\s+(?:of\s+)?(0(?:\.\d+)?|1(?:\.0+)?)\b", prompt, re.I)
-    if percent_weight:
-        values["w_stress"] = float(percent_weight.group(1)) / 100.0
-    elif decimal_weight:
-        values["w_stress"] = float(decimal_weight.group(1))
+    explicit_values = {
+        "lookback_days": _observation_values(prompt, LOOKBACK_PATTERNS),
+        "horizon": _observation_values(prompt, HORIZON_PATTERNS),
+        "n_paths": {_number(value) for value in re.findall(
+            r"\b([\d,]+)\s+(?:paths|scenarios|simulations)\b", prompt, re.I
+        )},
+    }
+    percent_weights = [
+        float(value) / 100.0
+        for value in re.findall(r"\b(\d+(?:\.\d+)?)\s*(?:%|percent)\s+stress", prompt, re.I)
+    ]
+    decimal_weights = [
+        float(value)
+        for value in re.findall(
+            r"\bstress weight\s+(?:of\s+)?(0(?:\.\d+)?|1(?:\.0+)?)\b", prompt, re.I
+        )
+    ]
+    explicit_values["w_stress"] = set(percent_weights + decimal_weights)
+    for field, choices in explicit_values.items():
+        if len(choices) > 1:
+            return Clarification(True, (field,), f"Please specify one {field}.")
+        if choices:
+            values[field] = choices.pop()
 
     conditioning = _conditioning(prompt)
     if conditioning:
         values["conditioning"] = conditioning
-        if not percent_weight and not decimal_weight:
+        if not percent_weights and not decimal_weights:
             values["w_stress"] = 1.0
 
     missing = tuple(field for field in REQUIRED_FIELDS if field not in values)
@@ -206,8 +247,13 @@ def compile_run_spec(
 
     payload = {**values, "provenance": dict(provenance)}
     spec_hash = compute_spec_hash(payload)
-    return RunSpec(
+    frozen_payload = {
         **payload,
+        "conditioning": _freeze(payload["conditioning"]) if payload["conditioning"] else None,
+        "provenance": _freeze(payload["provenance"]),
+    }
+    return RunSpec(
+        **frozen_payload,
         spec_hash=spec_hash,
         execution_id=execution_id or uuid.uuid4().hex,
     )

@@ -1,6 +1,11 @@
 import pytest
 
-from chronos2_demo.run_spec import Clarification, compile_run_spec
+from chronos2_demo.run_spec import (
+    Clarification,
+    canonical_run_payload,
+    compile_run_spec,
+    compute_spec_hash,
+)
 
 
 PROVENANCE = {
@@ -84,3 +89,91 @@ def test_rate_what_if_normalizes_to_existing_conditioning_contract():
         "n_anchor_days": 30,
     }
     assert spec.w_stress == 1.0
+
+
+def test_run_spec_nested_mappings_cannot_mutate_payload_or_hash():
+    provenance = dict(PROVENANCE)
+    spec = compile_run_spec(
+        "Using the same stage-safe setup, what happens if EUR rates fall 50 basis "
+        "points across the two-, five-, and ten-year tenors for the first 30 business days?",
+        provenance=provenance,
+        execution_id="run-what-if",
+    )
+    assert not isinstance(spec, Clarification)
+    assert spec.provenance == PROVENANCE
+
+    with pytest.raises(TypeError):
+        spec.provenance["market_snapshot_id"] = "mutated"
+    with pytest.raises(TypeError):
+        spec.conditioning["series_shifts"]["EUR_2Y"] = 0.0
+
+    payload = canonical_run_payload(spec)
+    payload["provenance"]["market_snapshot_id"] = "mutated"
+    payload["conditioning"]["series_shifts"]["EUR_2Y"] = 0.0
+    assert canonical_run_payload(spec)["provenance"] == PROVENANCE
+    assert compute_spec_hash(canonical_run_payload(spec)) == spec.spec_hash
+
+
+@pytest.mark.parametrize("prompt", [
+    "Run the stage-safe headline demo for 2022-02-30.",
+    "Run the stage-safe headline demo for September 2022.",
+    "Run the stage-safe headline demo for 2022-09.",
+])
+def test_invalid_or_ambiguous_explicit_date_fails_closed(prompt):
+    result = compile_run_spec(
+        prompt,
+        provenance=PROVENANCE,
+    )
+    assert isinstance(result, Clarification)
+    assert "as_of_date" in result.missing_fields
+
+
+@pytest.mark.parametrize("prompt,field", [
+    ("Run the stage-safe headline demo for 2022-09-30 and 2022-10-03.", "as_of_date"),
+    ("Run the stage-safe headline demo with 500 paths and 600 scenarios.", "n_paths"),
+    (
+        "Run the stage-safe headline demo, forecast 252 trading days and 504 trading days ahead.",
+        "horizon",
+    ),
+    ("Run the stage-safe headline demo with stress weight 0.5 and 60% stress.", "w_stress"),
+])
+def test_conflicting_explicit_values_fail_closed(prompt, field):
+    result = compile_run_spec(prompt, provenance=PROVENANCE)
+    assert isinstance(result, Clarification)
+    assert field in result.missing_fields
+
+
+def test_single_explicit_profile_override_is_applied():
+    spec = compile_run_spec(
+        "Run the stage-safe headline demo with 600 scenarios.",
+        provenance=PROVENANCE,
+        execution_id="run-override",
+    )
+    assert not isinstance(spec, Clarification)
+    assert spec.n_paths == 600
+
+
+def test_exposure_use_case_question_does_not_compile_as_quantitative():
+    result = compile_run_spec(
+        "What exposure use cases does Chronos-2 support for XVA?",
+        provenance=PROVENANCE,
+    )
+    assert isinstance(result, Clarification)
+    assert result.is_quantitative is False
+
+
+def test_canonical_run_payload_excludes_transient_identity_fields():
+    spec = compile_run_spec(HEADLINE_PROMPT, provenance=PROVENANCE, execution_id="run-a")
+    assert not isinstance(spec, Clarification)
+    payload = canonical_run_payload(spec)
+    assert payload["provenance"] == PROVENANCE
+    assert "execution_id" not in payload
+    assert "spec_hash" not in payload
+
+
+def test_compute_spec_hash_is_stable_for_canonical_payloads():
+    spec = compile_run_spec(HEADLINE_PROMPT, provenance=PROVENANCE, execution_id="run-a")
+    assert not isinstance(spec, Clarification)
+    payload = canonical_run_payload(spec)
+    assert compute_spec_hash(payload) == spec.spec_hash
+    assert compute_spec_hash({**payload, "execution_id": "run-b", "spec_hash": "ignored"}) == spec.spec_hash
