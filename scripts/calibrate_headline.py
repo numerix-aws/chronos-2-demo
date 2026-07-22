@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import json
 from pathlib import Path
 import uuid
@@ -31,6 +33,67 @@ OUT = config.REPO_ROOT / "docs" / "results" / "headline_calibration.json"
 PROFILE_PROMPTS = {
     "stage_safe_headline_v1": "Run the stage-safe headline demo.",
 }
+REQUIRED_PROVENANCE_KEYS = frozenset({
+    "market_snapshot_id",
+    "market_sha256",
+    "covariate_snapshot_id",
+    "covariate_sha256",
+    "chronos_endpoint",
+    "chronos_model_version",
+    "baseline_image_digest",
+    "chronos_image_digest",
+    "agent_image_digest",
+    "book_version",
+    "blend_version",
+    "pricing_version",
+    "tool_bundle_version",
+    "strands_version",
+})
+CANONICAL_BOOK_ID = "cross_asset_demo_v1"
+
+
+def _validate_provenance(provenance: object) -> dict[str, str]:
+    if not isinstance(provenance, dict):
+        raise ValueError("deployment provenance must be a JSON object")
+    missing = sorted(REQUIRED_PROVENANCE_KEYS - provenance.keys())
+    invalid = sorted(
+        key
+        for key, value in provenance.items()
+        if not isinstance(key, str)
+        or not isinstance(value, str)
+        or not value.strip()
+    )
+    if missing or invalid:
+        raise ValueError(
+            f"deployment provenance is incomplete or empty: "
+            f"missing={missing}, invalid={invalid}"
+        )
+    return dict(provenance)
+
+
+def _normalized_market_panel(panel: pd.DataFrame) -> pd.DataFrame:
+    normalized = panel.copy()
+    normalized.index = pd.DatetimeIndex(
+        pd.to_datetime(normalized.index)
+    ).normalize()
+    if normalized.index.has_duplicates:
+        raise ValueError("market snapshot index contains duplicate dates")
+    return normalized.sort_index()
+
+
+def _verify_complete_held_out_dates(
+    future_panel: pd.DataFrame,
+    distributions: dict[str, object],
+    *,
+    horizon: int,
+) -> None:
+    if len(future_panel) != horizon:
+        return
+    for role, paths in distributions.items():
+        if not future_panel.index.equals(pd.DatetimeIndex(paths.dates)):
+            raise ValueError(
+                f"complete held-out dates do not match {role} forecast dates"
+            )
 
 
 def run_calibration(
@@ -42,11 +105,20 @@ def run_calibration(
     endpoint: object,
     execution_id: str,
 ) -> dict[str, object]:
+    provenance = _validate_provenance(provenance)
     spec = compile_run_spec(
         prompt, provenance=provenance, execution_id=execution_id
     )
     if isinstance(spec, Clarification):
         raise ValueError(spec.message)
+    if (
+        spec.book_id != provenance["book_version"]
+        or provenance["book_version"] != CANONICAL_BOOK_ID
+    ):
+        raise ValueError(
+            "RunSpec book identity does not authorize the canonical book"
+        )
+    panel = _normalized_market_panel(panel)
     inputs = aligned_run_inputs(
         panel,
         covariates,
@@ -107,9 +179,13 @@ def run_calibration(
         "chronos_only": chronos,
         "augmented": augmented,
     }
-    future_panel = panel.loc[
-        panel.index > pd.Timestamp(spec.as_of_date)
-    ].head(spec.horizon)
+    as_of = pd.Timestamp(spec.as_of_date).normalize()
+    future_panel = panel.loc[panel.index > as_of].head(spec.horizon).copy()
+    _verify_complete_held_out_dates(
+        future_panel,
+        distributions,
+        horizon=spec.horizon,
+    )
     full_regimes = pd.DataFrame({
         "w_stress": data_regimes.w_stress_series(panel),
         "regime": data_regimes.label_regimes(
@@ -163,14 +239,22 @@ def run_calibration(
 
 def _load_provenance(path: Path) -> dict[str, str]:
     payload = json.loads(path.read_text())
-    if not isinstance(payload, dict) or not all(
-        isinstance(key, str) and isinstance(value, str)
-        for key, value in payload.items()
-    ):
-        raise ValueError("deployment provenance must be a JSON object of strings")
-    if "chronos_endpoint" not in payload:
-        raise ValueError("deployment provenance must include chronos_endpoint")
-    return payload
+    return _validate_provenance(payload)
+
+
+def _load_verified_parquet(
+    path: Path,
+    *,
+    expected_hash: str,
+    label: str,
+) -> pd.DataFrame:
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_hash:
+        raise ValueError(f"{label} snapshot content hash mismatch")
+    try:
+        return pd.read_parquet(io.BytesIO(raw))
+    except Exception as exc:
+        raise ValueError(f"{label} snapshot parquet decode failed: {exc}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -183,8 +267,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     provenance = _load_provenance(args.provenance_file)
-    panel = pd.read_parquet(config.DATA_CURATED / "panel.parquet")
-    covariates = pd.read_parquet(config.DATA_CURATED / "covariates.parquet")
+    panel = _load_verified_parquet(
+        config.DATA_CURATED / "panel.parquet",
+        expected_hash=provenance["market_sha256"],
+        label="market",
+    )
+    covariates = _load_verified_parquet(
+        config.DATA_CURATED / "covariates.parquet",
+        expected_hash=provenance["covariate_sha256"],
+        label="covariate",
+    )
     endpoint = sagemaker_endpoint.open_endpoint(provenance["chronos_endpoint"])
     artifact = run_calibration(
         prompt=args.prompt or PROFILE_PROMPTS[args.profile],
