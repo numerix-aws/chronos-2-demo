@@ -144,12 +144,13 @@ export class ToolsStack extends cdk.Stack {
       dir: string,
       layer: lambda.ILayerVersion,
       env: Record<string, string> = {},
+      code?: lambda.Code,
     ) =>
       new lambda.Function(this, id, {
         runtime: lambda.Runtime.PYTHON_3_11,
         architecture: lambda.Architecture.X86_64,
         handler: 'handler.handler',
-        code: lambda.Code.fromAsset(path.join(repoRoot, 'tools', 'lambda', dir)),
+        code: code ?? lambda.Code.fromAsset(path.join(repoRoot, 'tools', 'lambda', dir)),
         layers: [layer],
         // blend/price on the demo headline load (2000 paths x 252d x full book)
         // ran past 30s at 1024 MB; more memory also buys proportional CPU.
@@ -163,9 +164,34 @@ export class ToolsStack extends cdk.Stack {
     this.fnBlendPaths = py('BlendPaths', 'blend_paths', baseLayer, { BOOK_PATH });
     this.fnPriceBook = py('PriceBook', 'price_book', baseLayer, { BOOK_PATH });
     this.fnPlot = py('Plot', 'plot', plotLayer);
+    const lookupPackageScript = path.join(
+      repoRoot,
+      'infra',
+      'assets',
+      'package-lookup-use-case.sh',
+    );
+    const lookupUseCaseCode = lambda.Code.fromAsset(repoRoot, {
+      assetHashType: cdk.AssetHashType.OUTPUT,
+      bundling: {
+        image: lambda.Runtime.PYTHON_3_11.bundlingImage,
+        platform: 'linux/amd64',
+        command: [
+          'bash', '-c',
+          'bash /asset-input/infra/assets/package-lookup-use-case.sh /asset-input /asset-output',
+        ],
+        local: {
+          tryBundle(outputDir: string): boolean {
+            execFileSync('bash', [lookupPackageScript, repoRoot, outputDir], {
+              stdio: 'inherit',
+            });
+            return true;
+          },
+        },
+      },
+    });
     this.fnLookupUseCase = py('LookupUseCase', 'lookup_use_case', lightLayer, {
       KNOWLEDGE_DIR: '/var/task/knowledge',
-    });
+    }, lookupUseCaseCode);
 
     // S3 perms — least-privilege per Lambda. (run_chronos2 is a Fargate
     // launcher, wired below alongside the chronos2 task definition.)
@@ -281,7 +307,9 @@ export class ToolsStack extends cdk.Stack {
     // check_baseline_mc poll Lambda (DescribeTasks on the cluster).
     this.fnCheckBaselineMc = py('CheckBaselineMc', 'check_baseline_mc', lightLayer, {
       CLUSTER_ARN: cluster.clusterArn,
+      CONTAINER_NAME: 'App',
     });
+    props.dataBucket.grantRead(this.fnCheckBaselineMc);
     this.fnCheckBaselineMc.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ecs:DescribeTasks'],
       resources: ['*'],
@@ -355,7 +383,9 @@ export class ToolsStack extends cdk.Stack {
     // check_chronos2 poll Lambda (DescribeTasks on the cluster).
     this.fnCheckChronos2 = py('CheckChronos2', 'check_chronos2', lightLayer, {
       CLUSTER_ARN: cluster.clusterArn,
+      CONTAINER_NAME: 'App',
     });
+    props.dataBucket.grantRead(this.fnCheckChronos2);
     this.fnCheckChronos2.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ecs:DescribeTasks'],
       resources: ['*'],

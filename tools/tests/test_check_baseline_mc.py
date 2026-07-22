@@ -61,18 +61,31 @@ def _describe(spec, paths_uri, status, exit_code=None, reason=None, execution_id
         container["exitCode"] = exit_code
     if reason is not None:
         container["reason"] = reason
-    environment = [
-        {"name": "EXECUTION_ID", "value": execution_id or spec.execution_id},
-        {"name": "SPEC_HASH", "value": spec.spec_hash},
-        {"name": "OUTPUT_URI", "value": paths_uri},
-    ]
+    environment = {
+        "EXECUTION_ID": execution_id or spec.execution_id,
+        "SPEC_HASH": spec.spec_hash,
+        "PANEL_URI": f"s3://test-data/runs/{spec.execution_id}/panel.parquet",
+        "OUTPUT_URI": paths_uri,
+        "AS_OF": spec.as_of_date,
+        "HORIZON": str(spec.horizon),
+        "N_PATHS": str(spec.n_paths),
+        "N_COMPONENTS": str(spec.baseline_components),
+        "SEED": str(spec.baseline_seed),
+        "PRODUCER_VERSION": spec.provenance["baseline_image_digest"],
+    }
     return {
         "tasks": [{
             "taskArn": "arn:task/baseline",
             "lastStatus": status,
             "containers": [container],
             "overrides": {
-                "containerOverrides": [{"name": "App", "environment": environment}]
+                "containerOverrides": [{
+                    "name": "App",
+                    "environment": [
+                        {"name": key, "value": value}
+                        for key, value in environment.items()
+                    ],
+                }]
             },
         }],
         "failures": [],
@@ -148,3 +161,77 @@ def test_check_reports_nonzero_exit_with_reason_and_task_arn(poll_run):
     assert out["status"] == "error"
     assert "model failed" in out["message"]
     assert "arn:task/baseline" in out["message"]
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("HORIZON", "1"),
+        ("N_PATHS", "2"),
+        ("PANEL_URI", "s3://test-data/runs/run-1/alternate.parquet"),
+        ("PRODUCER_VERSION", "sha256:forged"),
+    ],
+)
+def test_check_rejects_same_execution_with_altered_baseline_override(
+    poll_run, name, value
+):
+    spec, uri = poll_run
+    task = _describe(spec, uri, "STOPPED", 0)
+    environment = task["tasks"][0]["overrides"]["containerOverrides"][0][
+        "environment"
+    ]
+    next(item for item in environment if item["name"] == name)["value"] = value
+
+    with patch.object(handler, "_describe_task", return_value=task), patch.object(
+        handler.run_manifest, "validate_artifact"
+    ) as validate:
+        out = handler.handler(
+            {"execution_id": "run-1", "task_arn": "arn:task/baseline", "paths_uri": uri},
+            None,
+        )
+
+    assert out["status"] == "error"
+    assert "does not belong" in out["message"]
+    validate.assert_not_called()
+
+
+def test_check_rejects_noncanonical_caller_output_even_when_task_matches(poll_run):
+    spec, _uri = poll_run
+    alternate_uri = "s3://test-data/runs/run-1/alternate.pkl"
+    task = _describe(spec, alternate_uri, "RUNNING")
+
+    with patch.object(handler, "_describe_task", return_value=task):
+        out = handler.handler(
+            {
+                "execution_id": "run-1",
+                "task_arn": "arn:task/baseline",
+                "paths_uri": alternate_uri,
+            },
+            None,
+        )
+
+    assert out["status"] == "error"
+    assert "canonical output" in out["message"]
+
+
+def test_check_rejects_forged_baseline_producer_digest(poll_run):
+    spec, uri = poll_run
+    sidecar_uri = run_manifest.sidecar_uri(uri)
+    forged = s3_io.download_json(sidecar_uri)
+    forged["producer_version"] = "sha256:forged"
+    s3_io.upload_json(
+        forged,
+        bucket="test-data",
+        key="runs/run-1/baseline.meta.json",
+    )
+
+    with patch.object(
+        handler, "_describe_task", return_value=_describe(spec, uri, "STOPPED", 0)
+    ):
+        out = handler.handler(
+            {"execution_id": "run-1", "task_arn": "arn:task/baseline", "paths_uri": uri},
+            None,
+        )
+
+    assert out["status"] == "error"
+    assert "producer" in out["message"]

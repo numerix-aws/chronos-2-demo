@@ -4,10 +4,12 @@ Inputs:  {"execution_id": str, "task_arn": str, "paths_uri": str}
 Outputs: {"task_status": str, "ready": bool, "paths_uri": str}
 """
 from __future__ import annotations
+import json
 import os
 
 import boto3
 
+from chronos2_demo.run_spec import canonical_run_payload
 from tools.lambda_.shared import responses, run_manifest
 from tools.lambda_.shared.bedrock import bedrock_action
 
@@ -20,13 +22,38 @@ def _describe_task(task_arn: str) -> dict:
 
 def _task_environment(task: dict) -> dict[str, str]:
     container_name = os.environ["CONTAINER_NAME"]
-    for override in task.get("overrides", {}).get("containerOverrides", []):
-        if override.get("name") == container_name:
-            return {
-                item["name"]: item["value"]
-                for item in override.get("environment", [])
-            }
-    return {}
+    overrides = [
+        override
+        for override in task.get("overrides", {}).get("containerOverrides", [])
+        if override.get("name") == container_name
+    ]
+    if len(overrides) != 1:
+        return {}
+    items = overrides[0].get("environment", [])
+    environment = {item["name"]: item["value"] for item in items}
+    return environment if len(environment) == len(items) else {}
+
+
+def _expected_task_environment(spec, output_uri: str) -> dict[str, str]:
+    prefix = f"s3://{os.environ['DATA_BUCKET']}/runs/{spec.execution_id}"
+    conditioning = canonical_run_payload(spec)["conditioning"]
+    return {
+        "EXECUTION_ID": spec.execution_id,
+        "SPEC_HASH": spec.spec_hash,
+        "PANEL_URI": f"{prefix}/panel.parquet",
+        "COVARIATES_URI": f"{prefix}/covariates.parquet",
+        "OUTPUT_URI": output_uri,
+        "AS_OF": spec.as_of_date,
+        "CHRONOS2_ENDPOINT": spec.provenance["chronos_endpoint"],
+        "CONDITIONING_JSON": (
+            json.dumps(conditioning, sort_keys=True) if conditioning else ""
+        ),
+        "HORIZON": str(spec.horizon),
+        "LOOKBACK_DAYS": str(spec.lookback_days),
+        "N_PATHS": str(spec.n_paths),
+        "SEED": str(spec.chronos_seed),
+        "PRODUCER_VERSION": spec.provenance["chronos_image_digest"],
+    }
 
 
 @bedrock_action
@@ -38,19 +65,25 @@ def handler(event: dict, _ctx) -> dict:
     except (KeyError, TypeError, ValueError) as exc:
         return responses.error(f"check_chronos2 validation failed: {exc}")
 
+    output_uri = (
+        f"s3://{os.environ['DATA_BUCKET']}/runs/{spec.execution_id}/chronos2.pkl"
+    )
+    if paths_uri != output_uri:
+        return responses.error(
+            f"paths_uri does not match canonical output {output_uri}"
+        )
+
     desc = _describe_task(task_arn)
     if not desc.get("tasks"):
         return responses.error(f"task {task_arn} not found")
     task = desc["tasks"][0]
     task_environment = _task_environment(task)
-    expected_identity = {
-        "EXECUTION_ID": spec.execution_id,
-        "SPEC_HASH": spec.spec_hash,
-        "OUTPUT_URI": paths_uri,
-    }
-    if task.get("taskArn", task_arn) != task_arn or any(
-        task_environment.get(key) != value
-        for key, value in expected_identity.items()
+    expected_environment = _expected_task_environment(spec, output_uri)
+    # The launcher emits exactly this map, so equality makes the described ECS
+    # override the immutable launch record without a second persistence layer.
+    if (
+        task.get("taskArn", task_arn) != task_arn
+        or task_environment != expected_environment
     ):
         return responses.error(
             f"task {task_arn} does not belong to execution {spec.execution_id}"
@@ -81,17 +114,24 @@ def handler(event: dict, _ctx) -> dict:
             f"(exit code {container.get('exitCode')})"
         )
     try:
+        expected_source = (
+            "chronos2_conditional" if spec.conditioning else "chronos2"
+        )
         meta = run_manifest.validate_artifact(
-            paths_uri,
+            output_uri,
             spec=spec,
             allowed_kinds={"pathset"},
-            allowed_sources={"chronos2", "chronos2_conditional"},
+            allowed_sources={expected_source},
         )
     except (TypeError, ValueError) as exc:
         return responses.error(f"check_chronos2 validation failed: {exc}")
+    if meta.producer_version != spec.provenance["chronos_image_digest"]:
+        return responses.error(
+            "check_chronos2 validation failed: artifact producer mismatch"
+        )
     return responses.ok({
         "task_status": status,
         "ready": True,
-        "paths_uri": paths_uri,
+        "paths_uri": output_uri,
         **meta.__dict__,
     })

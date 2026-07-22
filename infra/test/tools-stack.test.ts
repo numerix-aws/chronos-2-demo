@@ -1,10 +1,22 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NetworkStack } from '../lib/network-stack';
 import { StorageStack } from '../lib/storage-stack';
 import { ToolsStack } from '../lib/tools-stack';
 
+beforeAll(() => {
+  jest.spyOn(lambda.Code, 'fromAsset').mockImplementation(
+    () => lambda.Code.fromCfnParameters() as unknown as ReturnType<typeof lambda.Code.fromAsset>,
+  );
+});
+
+afterAll(() => jest.restoreAllMocks());
+
+let cachedTemplate: Template | undefined;
+
 function build() {
+  if (cachedTemplate) return cachedTemplate;
   const app = new cdk.App();
   const network = new NetworkStack(app, 'Net');
   const storage = new StorageStack(app, 'Storage');
@@ -14,7 +26,15 @@ function build() {
     plotsBucket: storage.plotsBucket,
     chronos2EndpointName: 'chronos2-demo-ep',
   });
-  return Template.fromStack(tools);
+  cachedTemplate = Template.fromStack(tools);
+  return cachedTemplate;
+}
+
+function resourceByPrefix(t: Template, type: string, prefix: string): any {
+  const resource = Object.entries(t.findResources(type))
+    .find(([logicalId]) => logicalId.startsWith(prefix));
+  expect(resource).toBeDefined();
+  return resource![1];
 }
 
 test('creates 9 Python Lambdas + 1 Node authorizer', () => {
@@ -76,4 +96,38 @@ test('exposes lambda function references', () => {
   expect(tools.baselineMcTaskDef).toBeDefined();
   expect(tools.baselineMcCluster).toBeDefined();
   expect(tools.chronos2TaskDef).toBeDefined();
+});
+
+test('configures both Fargate poll Lambdas with the App container name', () => {
+  const t = build();
+  const baseline = resourceByPrefix(t, 'AWS::Lambda::Function', 'CheckBaselineMc');
+  const chronos = resourceByPrefix(t, 'AWS::Lambda::Function', 'CheckChronos2');
+
+  expect(baseline.Properties.Environment.Variables.CONTAINER_NAME).toBe('App');
+  expect(chronos.Properties.Environment.Variables.CONTAINER_NAME).toBe('App');
+});
+
+test('grants both Fargate poll Lambdas read access to run artifacts', () => {
+  const t = build();
+  const baselinePolicy = resourceByPrefix(
+    t,
+    'AWS::IAM::Policy',
+    'CheckBaselineMcServiceRoleDefaultPolicy',
+  );
+  const chronosPolicy = resourceByPrefix(
+    t,
+    'AWS::IAM::Policy',
+    'CheckChronos2ServiceRoleDefaultPolicy',
+  );
+
+  for (const policy of [baselinePolicy, chronosPolicy]) {
+    expect(policy.Properties.PolicyDocument.Statement).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Action: expect.arrayContaining(['s3:GetObject*']),
+          Effect: 'Allow',
+        }),
+      ]),
+    );
+  }
 });
