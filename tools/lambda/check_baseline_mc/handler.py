@@ -1,6 +1,6 @@
 """check_baseline_mc tool: poll the launched baseline-MC Fargate task.
 
-Inputs:  {"task_arn": str, "paths_uri": str}
+Inputs:  {"execution_id": str, "task_arn": str, "paths_uri": str}
 Outputs: {"task_status": str, "ready": bool, "paths_uri": str}
 """
 from __future__ import annotations
@@ -8,7 +8,7 @@ import os
 
 import boto3
 
-from tools.lambda_.shared import responses
+from tools.lambda_.shared import responses, run_manifest
 from tools.lambda_.shared.bedrock import bedrock_action
 
 
@@ -18,23 +18,80 @@ def _describe_task(task_arn: str) -> dict:
     )
 
 
+def _task_environment(task: dict) -> dict[str, str]:
+    container_name = os.environ["CONTAINER_NAME"]
+    for override in task.get("overrides", {}).get("containerOverrides", []):
+        if override.get("name") == container_name:
+            return {
+                item["name"]: item["value"]
+                for item in override.get("environment", [])
+            }
+    return {}
+
+
 @bedrock_action
 def handler(event: dict, _ctx) -> dict:
-    task_arn = event.get("task_arn")
-    paths_uri = event.get("paths_uri")
-    if not task_arn:
-        return responses.error("missing task_arn")
+    try:
+        spec = run_manifest.load_run_spec(event["execution_id"])
+        task_arn = event["task_arn"]
+        paths_uri = event["paths_uri"]
+    except (KeyError, TypeError, ValueError) as exc:
+        return responses.error(f"check_baseline_mc validation failed: {exc}")
 
     desc = _describe_task(task_arn)
     if not desc.get("tasks"):
         return responses.error(f"task {task_arn} not found")
     task = desc["tasks"][0]
+    task_environment = _task_environment(task)
+    expected_identity = {
+        "EXECUTION_ID": spec.execution_id,
+        "SPEC_HASH": spec.spec_hash,
+        "OUTPUT_URI": paths_uri,
+    }
+    if task.get("taskArn", task_arn) != task_arn or any(
+        task_environment.get(key) != value
+        for key, value in expected_identity.items()
+    ):
+        return responses.error(
+            f"task {task_arn} does not belong to execution {spec.execution_id}"
+        )
     status = task["lastStatus"]
 
     if status != "STOPPED":
-        return responses.ok({"task_status": status, "ready": False, "paths_uri": paths_uri})
+        return responses.ok({
+            "execution_id": spec.execution_id,
+            "spec_hash": spec.spec_hash,
+            "task_status": status,
+            "ready": False,
+            "paths_uri": paths_uri,
+        })
 
-    exit_codes = [c.get("exitCode") for c in task.get("containers", [])]
-    if any(code not in (0, None) for code in exit_codes):
-        return responses.error(f"baseline MC task failed (exit codes {exit_codes})")
-    return responses.ok({"task_status": status, "ready": True, "paths_uri": paths_uri})
+    container = next(
+        (
+            item
+            for item in task.get("containers", [])
+            if item.get("name") == os.environ["CONTAINER_NAME"]
+        ),
+        {},
+    )
+    if container.get("exitCode") != 0:
+        reason = container.get("reason") or task.get("stoppedReason") or "unknown reason"
+        return responses.error(
+            f"baseline MC task {task_arn} failed: {reason} "
+            f"(exit code {container.get('exitCode')})"
+        )
+    try:
+        meta = run_manifest.validate_artifact(
+            paths_uri,
+            spec=spec,
+            allowed_kinds={"pathset"},
+            allowed_sources={"parametric"},
+        )
+    except (TypeError, ValueError) as exc:
+        return responses.error(f"check_baseline_mc validation failed: {exc}")
+    return responses.ok({
+        "task_status": status,
+        "ready": True,
+        "paths_uri": paths_uri,
+        **meta.__dict__,
+    })

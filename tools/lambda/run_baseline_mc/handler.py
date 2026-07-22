@@ -1,7 +1,6 @@
 """run_baseline_mc tool: launch the baseline-MC Fargate task (async).
 
-Inputs:  {"panel_uri": str, "as_of": "YYYY-MM-DD", "horizon": int,
-          "n_paths": int, "n_components": int?, "seed": int?}
+Inputs:  {"execution_id": str, "panel_uri": str}
 Outputs: {"task_arn": str, "paths_uri": str}
 
 Returns immediately; the result PathSet lands at `paths_uri` when the task
@@ -9,44 +8,47 @@ finishes. Poll with `check_baseline_mc`.
 """
 from __future__ import annotations
 import os
-import uuid
 
 import boto3
 
-from tools.lambda_.shared import responses
+from tools.lambda_.shared import responses, run_manifest
 from tools.lambda_.shared.bedrock import bedrock_action
 
 
 @bedrock_action
 def handler(event: dict, _ctx) -> dict:
-    horizon = int(event.get("horizon", 0))
-    n_paths = int(event.get("n_paths", 0))
-    if horizon <= 0 or horizon > 1000:
-        return responses.error("horizon must be in (0, 1000]")
-    if n_paths <= 0 or n_paths > 50_000:
-        return responses.error("n_paths must be in (0, 50000]")
     try:
+        spec = run_manifest.load_run_spec(event["execution_id"])
         panel_uri = event["panel_uri"]
-        as_of = event["as_of"]
-    except KeyError as e:
-        return responses.error(f"missing input: {e}")
+        run_manifest.validate_artifact(
+            panel_uri,
+            spec=spec,
+            allowed_kinds={"market_panel"},
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return responses.error(f"run_baseline_mc validation failed: {exc}")
 
     bucket = os.environ["DATA_BUCKET"]
-    sid = uuid.uuid4().hex[:12]
-    output_key = f"sessions/{sid}/baseline.pkl"
+    output_uri = f"s3://{bucket}/runs/{spec.execution_id}/baseline.pkl"
+    environment = {
+        "EXECUTION_ID": spec.execution_id,
+        "SPEC_HASH": spec.spec_hash,
+        "PANEL_URI": panel_uri,
+        "OUTPUT_URI": output_uri,
+        "AS_OF": spec.as_of_date,
+        "HORIZON": str(spec.horizon),
+        "N_PATHS": str(spec.n_paths),
+        "N_COMPONENTS": str(spec.baseline_components),
+        "SEED": str(spec.baseline_seed),
+        "PRODUCER_VERSION": spec.provenance["baseline_image_digest"],
+    }
 
     overrides = {
         "containerOverrides": [{
             "name": os.environ["CONTAINER_NAME"],
             "environment": [
-                {"name": "DATA_BUCKET", "value": bucket},
-                {"name": "PANEL_URI", "value": panel_uri},
-                {"name": "AS_OF", "value": as_of},
-                {"name": "HORIZON", "value": str(horizon)},
-                {"name": "N_PATHS", "value": str(n_paths)},
-                {"name": "N_COMPONENTS", "value": str(int(event.get("n_components", 3)))},
-                {"name": "OUTPUT_KEY", "value": output_key},
-                {"name": "SEED", "value": str(int(event.get("seed", 0)))},
+                {"name": key, "value": value}
+                for key, value in environment.items()
             ],
         }],
     }
@@ -67,6 +69,8 @@ def handler(event: dict, _ctx) -> dict:
     )
     task_arn = resp["tasks"][0]["taskArn"]
     return responses.ok({
+        "execution_id": spec.execution_id,
+        "spec_hash": spec.spec_hash,
         "task_arn": task_arn,
-        "paths_uri": f"s3://{bucket}/{output_key}",
+        "paths_uri": output_uri,
     })

@@ -1,8 +1,6 @@
 """run_chronos2 tool: launch the chronos2 Fargate task (async).
 
-Inputs:  {"panel_uri": str, "as_of": "YYYY-MM-DD", "horizon": int,
-          "n_paths": int, "covariates_uri": str?, "conditioning": dict?,
-          "seed": int?}
+Inputs:  {"execution_id": str, "panel_uri": str, "covariates_uri": str}
 Outputs: {"task_arn": str, "paths_uri": str}
 
 Returns immediately; the result PathSet lands at `paths_uri` when the task
@@ -12,46 +10,57 @@ Cloud) runs in the Fargate container, not here.
 from __future__ import annotations
 import json
 import os
-import uuid
 
 import boto3
 
-from tools.lambda_.shared import responses
+from chronos2_demo.run_spec import canonical_run_payload
+from tools.lambda_.shared import responses, run_manifest
 from tools.lambda_.shared.bedrock import bedrock_action
 
 
 @bedrock_action
 def handler(event: dict, _ctx) -> dict:
-    horizon = int(event.get("horizon", 0))
-    n_paths = int(event.get("n_paths", 0))
-    if horizon <= 0 or horizon > 1000:
-        return responses.error("horizon must be in (0, 1000]")
-    if n_paths <= 0 or n_paths > 20_000:
-        return responses.error("n_paths must be in (0, 20000]")
     try:
+        spec = run_manifest.load_run_spec(event["execution_id"])
         panel_uri = event["panel_uri"]
-        as_of = event["as_of"]
-    except KeyError as e:
-        return responses.error(f"missing input: {e}")
+        covariates_uri = event["covariates_uri"]
+        run_manifest.validate_artifact(
+            panel_uri,
+            spec=spec,
+            allowed_kinds={"market_panel"},
+        )
+        run_manifest.validate_artifact(
+            covariates_uri,
+            spec=spec,
+            allowed_kinds={"covariates"},
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return responses.error(f"run_chronos2 validation failed: {exc}")
 
     bucket = os.environ["DATA_BUCKET"]
-    sid = uuid.uuid4().hex[:12]
-    output_key = f"sessions/{sid}/chronos2.pkl"
-
+    output_uri = f"s3://{bucket}/runs/{spec.execution_id}/chronos2.pkl"
+    conditioning = canonical_run_payload(spec)["conditioning"]
+    environment = {
+        "EXECUTION_ID": spec.execution_id,
+        "SPEC_HASH": spec.spec_hash,
+        "PANEL_URI": panel_uri,
+        "COVARIATES_URI": covariates_uri,
+        "OUTPUT_URI": output_uri,
+        "AS_OF": spec.as_of_date,
+        "CHRONOS2_ENDPOINT": spec.provenance["chronos_endpoint"],
+        "CONDITIONING_JSON": (
+            json.dumps(conditioning, sort_keys=True) if conditioning else ""
+        ),
+        "HORIZON": str(spec.horizon),
+        "LOOKBACK_DAYS": str(spec.lookback_days),
+        "N_PATHS": str(spec.n_paths),
+        "SEED": str(spec.chronos_seed),
+        "PRODUCER_VERSION": spec.provenance["chronos_image_digest"],
+    }
     env = [
-        {"name": "DATA_BUCKET", "value": bucket},
-        {"name": "PANEL_URI", "value": panel_uri},
-        {"name": "AS_OF", "value": as_of},
-        {"name": "HORIZON", "value": str(horizon)},
-        {"name": "N_PATHS", "value": str(n_paths)},
-        {"name": "OUTPUT_KEY", "value": output_key},
-        {"name": "CHRONOS2_ENDPOINT", "value": os.environ["CHRONOS2_ENDPOINT"]},
-        {"name": "SEED", "value": str(int(event.get("seed", 0)))},
+        {"name": key, "value": value}
+        for key, value in environment.items()
     ]
-    if event.get("covariates_uri"):
-        env.append({"name": "COVARIATES_URI", "value": event["covariates_uri"]})
-    if event.get("conditioning"):
-        env.append({"name": "CONDITIONING_JSON", "value": json.dumps(event["conditioning"])})
 
     overrides = {"containerOverrides": [{"name": os.environ["CONTAINER_NAME"], "environment": env}]}
     network = {
@@ -71,6 +80,8 @@ def handler(event: dict, _ctx) -> dict:
     )
     task_arn = resp["tasks"][0]["taskArn"]
     return responses.ok({
+        "execution_id": spec.execution_id,
+        "spec_hash": spec.spec_hash,
         "task_arn": task_arn,
-        "paths_uri": f"s3://{bucket}/{output_key}",
+        "paths_uri": output_uri,
     })

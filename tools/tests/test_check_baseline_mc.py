@@ -1,41 +1,150 @@
 from unittest.mock import patch
 
+import pytest
+
+from chronos2_demo.run_spec import PROFILE, RunSpec, compute_spec_hash
 from tools.lambda_.check_baseline_mc import handler
+from tools.lambda_.shared import run_manifest, s3_io
 
 
-def _describe(last_status, exit_code=0):
-    container = {"name": "App", "lastStatus": last_status}
+PROVENANCE = {
+    "market_snapshot_id": "market-v1",
+    "market_sha256": "a" * 64,
+    "covariate_snapshot_id": "covariates-v1",
+    "covariate_sha256": "b" * 64,
+    "chronos_endpoint": "chronos2-demo",
+    "baseline_image_digest": "sha256:baseline",
+    "chronos_image_digest": "sha256:chronos",
+    "agent_image_digest": "sha256:agent",
+    "book_version": "cross_asset_demo_v1",
+    "blend_version": "importance_weight_v1",
+    "pricing_version": "cross_asset_v1",
+    "tool_bundle_version": "git:test",
+    "strands_version": "1.30.0",
+}
+
+
+@pytest.fixture
+def poll_run(s3, monkeypatch):
+    monkeypatch.setenv("DATA_BUCKET", "test-data")
+    monkeypatch.setenv("CLUSTER_ARN", "baseline-mc")
+    monkeypatch.setenv("CONTAINER_NAME", "App")
+    payload = {**PROFILE, "provenance": PROVENANCE}
+    spec = RunSpec(
+        **payload,
+        spec_hash=compute_spec_hash(payload),
+        execution_id="run-1",
+    )
+    s3_io.upload_json(
+        spec.__dict__, bucket="test-data", key="runs/run-1/run_spec.json"
+    )
+    uri, digest = s3_io.upload_bytes(
+        b"pathset bytes",
+        bucket="test-data",
+        key="runs/run-1/baseline.pkl",
+        content_type="application/octet-stream",
+    )
+    run_manifest.put_artifact_sidecar(
+        artifact_uri=uri,
+        artifact_sha256=digest,
+        artifact_kind="pathset",
+        source="parametric",
+        spec=spec,
+        producer_version="sha256:baseline",
+    )
+    return spec, uri
+
+
+def _describe(spec, paths_uri, status, exit_code=None, reason=None, execution_id=None):
+    container = {"name": "App", "lastStatus": status}
     if exit_code is not None:
         container["exitCode"] = exit_code
-    return {"tasks": [{"lastStatus": last_status, "containers": [container]}], "failures": []}
+    if reason is not None:
+        container["reason"] = reason
+    environment = [
+        {"name": "EXECUTION_ID", "value": execution_id or spec.execution_id},
+        {"name": "SPEC_HASH", "value": spec.spec_hash},
+        {"name": "OUTPUT_URI", "value": paths_uri},
+    ]
+    return {
+        "tasks": [{
+            "taskArn": "arn:task/baseline",
+            "lastStatus": status,
+            "containers": [container],
+            "overrides": {
+                "containerOverrides": [{"name": "App", "environment": environment}]
+            },
+        }],
+        "failures": [],
+    }
 
 
-def test_check_reports_running(monkeypatch):
-    monkeypatch.setenv("CLUSTER_ARN", "baseline-mc")
-    with patch.object(handler, "_describe_task", return_value=_describe("RUNNING", exit_code=None)):
-        out = handler.handler({"task_arn": "arn:task/abc", "paths_uri": "s3://b/k.pkl"}, None)
+def test_check_reports_running_without_validating_output(poll_run):
+    spec, uri = poll_run
+    with patch.object(
+        handler, "_describe_task", return_value=_describe(spec, uri, "RUNNING")
+    ), patch.object(handler.run_manifest, "validate_artifact") as validate:
+        out = handler.handler(
+            {"execution_id": "run-1", "task_arn": "arn:task/baseline", "paths_uri": uri},
+            None,
+        )
+
+    assert out["result"] == {
+        "execution_id": "run-1",
+        "spec_hash": spec.spec_hash,
+        "task_status": "RUNNING",
+        "ready": False,
+        "paths_uri": uri,
+    }
+    validate.assert_not_called()
+
+
+def test_check_returns_validated_sidecar_only_after_success(poll_run):
+    spec, uri = poll_run
+    with patch.object(
+        handler, "_describe_task", return_value=_describe(spec, uri, "STOPPED", 0)
+    ):
+        out = handler.handler(
+            {"execution_id": "run-1", "task_arn": "arn:task/baseline", "paths_uri": uri},
+            None,
+        )
+
     assert out["status"] == "ok"
-    assert out["result"]["task_status"] == "RUNNING"
-    assert out["result"]["ready"] is False
-
-
-def test_check_reports_ready_when_stopped_ok(monkeypatch):
-    monkeypatch.setenv("CLUSTER_ARN", "baseline-mc")
-    with patch.object(handler, "_describe_task", return_value=_describe("STOPPED", exit_code=0)):
-        out = handler.handler({"task_arn": "arn:task/abc", "paths_uri": "s3://b/k.pkl"}, None)
     assert out["result"]["ready"] is True
-    assert out["result"]["paths_uri"] == "s3://b/k.pkl"
+    assert out["result"]["artifact_uri"] == uri
+    assert out["result"]["source"] == "parametric"
+    assert out["result"]["scenario_role"] == "baseline"
+    assert out["result"]["producer_version"] == "sha256:baseline"
 
 
-def test_check_reports_failure_when_stopped_nonzero(monkeypatch):
-    monkeypatch.setenv("CLUSTER_ARN", "baseline-mc")
-    with patch.object(handler, "_describe_task", return_value=_describe("STOPPED", exit_code=1)):
-        out = handler.handler({"task_arn": "arn:task/abc", "paths_uri": "s3://b/k.pkl"}, None)
+def test_check_rejects_task_owned_by_another_execution(poll_run):
+    spec, uri = poll_run
+    with patch.object(
+        handler,
+        "_describe_task",
+        return_value=_describe(spec, uri, "RUNNING", execution_id="run-2"),
+    ):
+        out = handler.handler(
+            {"execution_id": "run-1", "task_arn": "arn:task/baseline", "paths_uri": uri},
+            None,
+        )
+
     assert out["status"] == "error"
+    assert "does not belong" in out["message"]
 
 
-def test_check_rejects_missing_task_arn(monkeypatch):
-    monkeypatch.setenv("CLUSTER_ARN", "baseline-mc")
-    out = handler.handler({"paths_uri": "s3://b/k.pkl"}, None)
+def test_check_reports_nonzero_exit_with_reason_and_task_arn(poll_run):
+    spec, uri = poll_run
+    with patch.object(
+        handler,
+        "_describe_task",
+        return_value=_describe(spec, uri, "STOPPED", 17, "model failed"),
+    ):
+        out = handler.handler(
+            {"execution_id": "run-1", "task_arn": "arn:task/baseline", "paths_uri": uri},
+            None,
+        )
+
     assert out["status"] == "error"
-    assert "task_arn" in out["message"]
+    assert "model failed" in out["message"]
+    assert "arn:task/baseline" in out["message"]
