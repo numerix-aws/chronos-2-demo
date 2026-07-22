@@ -77,6 +77,14 @@ def _body(s3, key):
     return s3.get_object(Bucket="test-data", Key=key)["Body"].read()
 
 
+def _put_manifest(s3, payload):
+    s3.put_object(
+        Bucket="test-data",
+        Key="runs/run-1/run_spec.json",
+        Body=json.dumps(payload).encode("utf-8"),
+    )
+
+
 def test_load_data_stages_exact_manifest_aligned_inputs_and_sidecars(s3, monkeypatch):
     monkeypatch.setenv("DATA_BUCKET", "test-data")
     panel, covariates, panel_raw, covariates_raw, spec = _seed_run(s3)
@@ -167,3 +175,59 @@ def test_load_data_rejects_mutated_source_snapshot(
     assert s3.list_objects_v2(Bucket="test-data", Prefix="runs/run-1/panel.parquet").get(
         "KeyCount", 0
     ) == 0
+
+
+def test_load_data_returns_validation_error_for_non_object_manifest(s3, monkeypatch):
+    monkeypatch.setenv("DATA_BUCKET", "test-data")
+    s3.put_object(
+        Bucket="test-data",
+        Key="runs/run-1/run_spec.json",
+        Body=b"[]",
+    )
+
+    out = handler.handler(
+        {"session_id": "session-1", "execution_id": "run-1"},
+        None,
+    )
+
+    assert out["status"] == "error"
+    assert out["message"].startswith("load_data validation failed:")
+    assert "JSON object" in out["message"]
+
+
+def test_load_data_returns_validation_error_for_missing_source_object(s3, monkeypatch):
+    monkeypatch.setenv("DATA_BUCKET", "test-data")
+    _seed_run(s3)
+    s3.delete_object(Bucket="test-data", Key="panel.parquet")
+
+    out = handler.handler(
+        {"session_id": "session-1", "execution_id": "run-1"},
+        None,
+    )
+
+    assert out["status"] == "error"
+    assert out["message"].startswith("load_data validation failed:")
+    assert "market snapshot unavailable at s3://test-data/panel.parquet" in out["message"]
+    assert "NoSuchKey" in out["message"]
+
+
+def test_load_data_returns_validation_error_for_unreadable_verified_parquet(
+    s3, monkeypatch
+):
+    monkeypatch.setenv("DATA_BUCKET", "test-data")
+    _, _, _, _, payload = _seed_run(s3)
+    invalid = b"verified but not parquet"
+    payload["provenance"]["market_sha256"] = hashlib.sha256(invalid).hexdigest()
+    payload["spec_hash"] = compute_spec_hash(payload)
+    s3.put_object(Bucket="test-data", Key="panel.parquet", Body=invalid)
+    _put_manifest(s3, payload)
+
+    out = handler.handler(
+        {"session_id": "session-1", "execution_id": "run-1"},
+        None,
+    )
+
+    assert out["status"] == "error"
+    assert out["message"].startswith("load_data validation failed:")
+    assert "market snapshot parquet decode failed" in out["message"]
+    assert "Parquet" in out["message"]

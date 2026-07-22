@@ -7,6 +7,7 @@ import io
 import os
 
 import pandas as pd
+from botocore.exceptions import BotoCoreError, ClientError
 
 from chronos2_demo.data.regimes import label_regimes, w_stress_series
 from chronos2_demo.execution import aligned_run_inputs
@@ -17,7 +18,17 @@ from tools.lambda_.shared.bedrock import bedrock_action
 def _verified_source(raw: bytes, expected_hash: str, name: str) -> pd.DataFrame:
     if s3_io.sha256_bytes(raw) != expected_hash:
         raise ValueError(f"{name} snapshot content hash mismatch")
-    return pd.read_parquet(io.BytesIO(raw))
+    try:
+        return pd.read_parquet(io.BytesIO(raw))
+    except Exception as exc:
+        raise ValueError(f"{name} snapshot parquet decode failed: {exc}") from exc
+
+
+def _download_source(uri: str, name: str) -> bytes:
+    try:
+        return s3_io.download_bytes(uri)
+    except (BotoCoreError, ClientError) as exc:
+        raise ValueError(f"{name} snapshot unavailable at {uri}: {exc}") from exc
 
 
 def _upload_frame(
@@ -52,8 +63,10 @@ def handler(event: dict, _ctx) -> dict:
         event["session_id"]
         spec = run_manifest.load_run_spec(event["execution_id"])
         bucket = os.environ["DATA_BUCKET"]
-        panel_raw = s3_io.download_bytes(f"s3://{bucket}/panel.parquet")
-        covariates_raw = s3_io.download_bytes(f"s3://{bucket}/covariates.parquet")
+        panel_raw = _download_source(f"s3://{bucket}/panel.parquet", "market")
+        covariates_raw = _download_source(
+            f"s3://{bucket}/covariates.parquet", "covariate"
+        )
         panel = _verified_source(
             panel_raw,
             spec.provenance["market_sha256"],
@@ -100,7 +113,9 @@ def handler(event: dict, _ctx) -> dict:
             spec=spec,
         )
     except (KeyError, TypeError, ValueError) as exc:
-        return responses.error(str(exc))
+        return responses.error(f"load_data validation failed: {exc}")
+    except (BotoCoreError, ClientError) as exc:
+        return responses.error(f"load_data validation failed: storage error: {exc}")
 
     return responses.ok({
         "execution_id": spec.execution_id,
