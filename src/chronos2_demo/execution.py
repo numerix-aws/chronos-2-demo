@@ -65,6 +65,8 @@ def aligned_run_inputs(
             f"panel has {len(historical)} observations through {as_of_date}; {lookback_days} required"
         )
     selected_panel = historical.tail(lookback_days).copy()
+    if selected_panel.isna().any(axis=None):
+        raise ValueError("selected panel contains missing values")
     selected_covariates = covariates.reindex(selected_panel.index)[list(REQUIRED_COVARIATES)].copy()
     if selected_covariates.isna().any(axis=None):
         missing_dates = selected_covariates.index[selected_covariates.isna().any(axis=1)]

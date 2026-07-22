@@ -58,6 +58,14 @@ def test_aligned_run_inputs_rejects_missing_covariate_values(panel_and_covariate
         aligned_run_inputs(panel, covariates, as_of_date="2022-09-30", lookback_days=1260)
 
 
+def test_aligned_run_inputs_rejects_missing_panel_values(panel_and_covariates):
+    panel, covariates = panel_and_covariates
+    panel.loc[panel.index[-10], "USDEUR"] = None
+
+    with pytest.raises(ValueError, match="panel contains missing values"):
+        aligned_run_inputs(panel, covariates, as_of_date="2022-09-30", lookback_days=1260)
+
+
 @pytest.mark.parametrize("lookback_days", [0, -1])
 def test_aligned_run_inputs_rejects_nonpositive_lookback(panel_and_covariates, lookback_days):
     panel, covariates = panel_and_covariates
