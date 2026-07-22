@@ -16,11 +16,13 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "as_of_date", "lookback_days"],
+                "required": ["session_id", "execution_id"],
                 "properties": {
                   "session_id": { "type": "string" },
-                  "as_of_date": { "type": "string", "format": "date" },
-                  "lookback_days": { "type": "integer", "minimum": 1, "maximum": 5000 }
+                  "execution_id": {
+                    "type": "string",
+                    "description": "Identifier for the validated quantitative run."
+                  }
                 }
               }
             }
@@ -33,11 +35,29 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["panel_uri", "regimes_uri", "n_rows"],
+                  "required": [
+                    "execution_id",
+                    "spec_hash",
+                    "panel_uri",
+                    "panel_sha256",
+                    "covariates_uri",
+                    "covariates_sha256",
+                    "regimes_uri",
+                    "regimes_sha256",
+                    "n_rows",
+                    "as_of_date"
+                  ],
                   "properties": {
+                    "execution_id": { "type": "string" },
+                    "spec_hash": { "type": "string" },
                     "panel_uri": { "type": "string", "format": "uri" },
+                    "panel_sha256": { "type": "string" },
+                    "covariates_uri": { "type": "string", "format": "uri" },
+                    "covariates_sha256": { "type": "string" },
                     "regimes_uri": { "type": "string", "format": "uri" },
-                    "n_rows": { "type": "integer" }
+                    "regimes_sha256": { "type": "string" },
+                    "n_rows": { "type": "integer" },
+                    "as_of_date": { "type": "string", "format": "date" }
                   }
                 }
               }
@@ -57,15 +77,17 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "panel_uri", "as_of", "horizon", "n_paths"],
+                "required": ["execution_id", "panel_uri"],
                 "properties": {
-                  "session_id": { "type": "string" },
-                  "panel_uri": { "type": "string", "format": "uri" },
-                  "as_of": { "type": "string", "format": "date" },
-                  "horizon": { "type": "integer", "minimum": 1, "maximum": 1000 },
-                  "n_paths": { "type": "integer", "minimum": 1, "maximum": 50000 },
-                  "n_components": { "type": "integer", "minimum": 1, "maximum": 20 },
-                  "seed": { "type": "integer" }
+                  "execution_id": {
+                    "type": "string",
+                    "description": "Identifier for the validated quantitative run."
+                  },
+                  "panel_uri": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "S3 location of the aligned market history for this run."
+                  }
                 }
               }
             }
@@ -78,8 +100,10 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["task_arn", "paths_uri"],
+                  "required": ["execution_id", "spec_hash", "task_arn", "paths_uri"],
                   "properties": {
+                    "execution_id": { "type": "string" },
+                    "spec_hash": { "type": "string" },
                     "task_arn": { "type": "string" },
                     "paths_uri": { "type": "string", "format": "uri" }
                   }
@@ -102,9 +126,12 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "task_arn", "paths_uri"],
+                "required": ["execution_id", "task_arn", "paths_uri"],
                 "properties": {
-                  "session_id": { "type": "string" },
+                  "execution_id": {
+                    "type": "string",
+                    "description": "Identifier for the validated quantitative run."
+                  },
                   "task_arn": { "type": "string" },
                   "paths_uri": { "type": "string", "format": "uri" }
                 }
@@ -121,9 +148,17 @@
                   "type": "object",
                   "required": ["task_status", "ready", "paths_uri"],
                   "properties": {
+                    "execution_id": { "type": "string" },
+                    "spec_hash": { "type": "string" },
                     "task_status": { "type": "string" },
                     "ready": { "type": "boolean" },
-                    "paths_uri": { "type": "string", "format": "uri" }
+                    "paths_uri": { "type": "string", "format": "uri" },
+                    "artifact_uri": { "type": "string", "format": "uri" },
+                    "artifact_sha256": { "type": "string" },
+                    "artifact_kind": { "type": "string" },
+                    "source": { "type": "string" },
+                    "scenario_role": { "type": "string" },
+                    "producer_version": { "type": "string" }
                   }
                 }
               }
@@ -144,25 +179,21 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "panel_uri", "as_of", "horizon", "n_paths"],
+                "required": ["execution_id", "panel_uri", "covariates_uri"],
                 "properties": {
-                  "session_id": { "type": "string" },
-                  "panel_uri": { "type": "string", "format": "uri" },
-                  "as_of": { "type": "string", "format": "date" },
-                  "horizon": { "type": "integer", "minimum": 1, "maximum": 1000 },
-                  "n_paths": { "type": "integer", "minimum": 1, "maximum": 20000 },
-                  "covariates_uri": { "type": "string", "format": "uri" },
-                  "conditioning": {
-                    "type": "object",
-                    "description": "Optional what-if stress narrative. series_shifts maps a panel column to an additive level shift applied over the first n_anchor_days of the horizon.",
-                    "properties": {
-                      "series_shifts": {
-                        "type": "object",
-                        "additionalProperties": { "type": "number" }
-                      },
-                      "n_anchor_days": { "type": "integer", "minimum": 1, "maximum": 1000 }
-                    },
-                    "required": ["series_shifts", "n_anchor_days"]
+                  "execution_id": {
+                    "type": "string",
+                    "description": "Identifier for the validated quantitative run."
+                  },
+                  "panel_uri": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "S3 location of the aligned market history for this run."
+                  },
+                  "covariates_uri": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "S3 location of the aligned conditioning covariates for this run."
                   }
                 }
               }
@@ -176,8 +207,10 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["task_arn", "paths_uri"],
+                  "required": ["execution_id", "spec_hash", "task_arn", "paths_uri"],
                   "properties": {
+                    "execution_id": { "type": "string" },
+                    "spec_hash": { "type": "string" },
                     "task_arn": { "type": "string" },
                     "paths_uri": { "type": "string", "format": "uri" }
                   }
@@ -200,9 +233,12 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "task_arn", "paths_uri"],
+                "required": ["execution_id", "task_arn", "paths_uri"],
                 "properties": {
-                  "session_id": { "type": "string" },
+                  "execution_id": {
+                    "type": "string",
+                    "description": "Identifier for the validated quantitative run."
+                  },
                   "task_arn": { "type": "string" },
                   "paths_uri": { "type": "string", "format": "uri" }
                 }
@@ -219,9 +255,17 @@
                   "type": "object",
                   "required": ["task_status", "ready", "paths_uri"],
                   "properties": {
+                    "execution_id": { "type": "string" },
+                    "spec_hash": { "type": "string" },
                     "task_status": { "type": "string" },
                     "ready": { "type": "boolean" },
-                    "paths_uri": { "type": "string", "format": "uri" }
+                    "paths_uri": { "type": "string", "format": "uri" },
+                    "artifact_uri": { "type": "string", "format": "uri" },
+                    "artifact_sha256": { "type": "string" },
+                    "artifact_kind": { "type": "string" },
+                    "source": { "type": "string" },
+                    "scenario_role": { "type": "string" },
+                    "producer_version": { "type": "string" }
                   }
                 }
               }
@@ -242,12 +286,22 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "parametric_uri", "chronos2_uri", "w_stress"],
+                "required": ["execution_id", "parametric_uri", "chronos2_uri"],
                 "properties": {
-                  "session_id": { "type": "string" },
-                  "parametric_uri": { "type": "string", "format": "uri" },
-                  "chronos2_uri": { "type": "string", "format": "uri" },
-                  "w_stress": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                  "execution_id": {
+                    "type": "string",
+                    "description": "Identifier for the validated quantitative run."
+                  },
+                  "parametric_uri": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "S3 location of the baseline scenario paths for this run."
+                  },
+                  "chronos2_uri": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "S3 location of the Chronos-2 scenario paths for this run."
+                  }
                 }
               }
             }
@@ -260,9 +314,22 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["blended_uri", "w_stress", "n_paths"],
+                  "required": [
+                    "execution_id",
+                    "spec_hash",
+                    "blended_uri",
+                    "blended_sha256",
+                    "diagnostics_uri",
+                    "diagnostics_sha256"
+                  ],
                   "properties": {
+                    "execution_id": { "type": "string" },
+                    "spec_hash": { "type": "string" },
                     "blended_uri": { "type": "string", "format": "uri" },
+                    "blended_sha256": { "type": "string" },
+                    "diagnostics_uri": { "type": "string", "format": "uri" },
+                    "diagnostics_sha256": { "type": "string" },
+                    "diagnostics": { "type": "object" },
                     "w_stress": { "type": "number" },
                     "n_paths": { "type": "integer" }
                   }
@@ -284,11 +351,17 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "paths_uri"],
+                "required": ["execution_id", "paths_uri"],
                 "properties": {
-                  "session_id": { "type": "string" },
-                  "paths_uri": { "type": "string", "format": "uri" },
-                  "book_id": { "type": "string" }
+                  "execution_id": {
+                    "type": "string",
+                    "description": "Identifier for the validated quantitative run."
+                  },
+                  "paths_uri": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "S3 location of the scenario paths to price for this run."
+                  }
                 }
               }
             }
@@ -301,13 +374,44 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["ee", "pfe_975", "es_975", "dates", "metrics_uri"],
+                  "required": [
+                    "execution_id",
+                    "spec_hash",
+                    "scenario_role",
+                    "source",
+                    "paths_uri",
+                    "paths_sha256",
+                    "ee",
+                    "pfe_975",
+                    "es_975",
+                    "dates",
+                    "terminal",
+                    "metrics_uri",
+                    "metrics_sha256"
+                  ],
                   "properties": {
+                    "execution_id": { "type": "string" },
+                    "spec_hash": { "type": "string" },
+                    "scenario_role": { "type": "string" },
+                    "source": { "type": "string" },
+                    "paths_uri": { "type": "string", "format": "uri" },
+                    "paths_sha256": { "type": "string" },
                     "ee": { "type": "array", "items": { "type": "number" } },
                     "pfe_975": { "type": "array", "items": { "type": "number" } },
                     "es_975": { "type": "array", "items": { "type": "number" } },
                     "dates": { "type": "array", "items": { "type": "string", "format": "date" } },
-                    "metrics_uri": { "type": "string", "format": "uri" }
+                    "terminal": {
+                      "type": "object",
+                      "required": ["date", "ee", "pfe_975", "es_975"],
+                      "properties": {
+                        "date": { "type": "string", "format": "date" },
+                        "ee": { "type": "number" },
+                        "pfe_975": { "type": "number" },
+                        "es_975": { "type": "number" }
+                      }
+                    },
+                    "metrics_uri": { "type": "string", "format": "uri" },
+                    "metrics_sha256": { "type": "string" }
                   }
                 }
               }
@@ -327,21 +431,38 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["session_id", "spec"],
+                "required": ["execution_id", "spec"],
                 "properties": {
-                  "session_id": { "type": "string" },
+                  "execution_id": {
+                    "type": "string",
+                    "description": "Identifier for the validated quantitative run."
+                  },
                   "spec": {
                     "type": "string",
-                    "enum": ["pfe_overlay", "path_fan", "regime_ribbon"]
+                    "enum": ["pfe_overlay", "path_fan", "regime_ribbon"],
+                    "description": "Chart type inferred from the requested visual comparison."
                   },
                   "baseline_uri": { "type": "string", "format": "uri" },
                   "augmented_uri": { "type": "string", "format": "uri" },
                   "paths_uri": { "type": "string", "format": "uri" },
                   "regimes_uri": { "type": "string", "format": "uri" },
                   "series": { "type": "string" },
-                  "threshold": { "type": "number" },
                   "title": { "type": "string" }
-                }
+                },
+                "oneOf": [
+                  {
+                    "properties": { "spec": { "enum": ["pfe_overlay"] } },
+                    "required": ["baseline_uri", "augmented_uri"]
+                  },
+                  {
+                    "properties": { "spec": { "enum": ["path_fan"] } },
+                    "required": ["paths_uri", "series"]
+                  },
+                  {
+                    "properties": { "spec": { "enum": ["regime_ribbon"] } },
+                    "required": ["regimes_uri"]
+                  }
+                ]
               }
             }
           }
@@ -353,9 +474,21 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["image_uri"],
+                  "required": [
+                    "execution_id",
+                    "spec_hash",
+                    "plot_role",
+                    "image_s3_uri",
+                    "image_uri",
+                    "image_sha256"
+                  ],
                   "properties": {
+                    "execution_id": { "type": "string" },
+                    "spec_hash": { "type": "string" },
+                    "plot_role": { "type": "string" },
+                    "image_s3_uri": { "type": "string", "format": "uri" },
                     "image_uri": { "type": "string", "format": "uri" },
+                    "image_sha256": { "type": "string" },
                     "spec": { "type": "string" }
                   }
                 }
@@ -376,7 +509,6 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["topic"],
                 "properties": {
                   "topic": { "type": "string" }
                 }
@@ -391,8 +523,12 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["topic", "summary", "markdown"],
+                  "description": "Returns topics for catalog discovery, or topic, summary, and markdown for a requested brief.",
                   "properties": {
+                    "topics": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
                     "topic": { "type": "string" },
                     "summary": { "type": "string" },
                     "markdown": { "type": "string" }
