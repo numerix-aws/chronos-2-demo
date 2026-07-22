@@ -98,7 +98,7 @@ def test_attribution_keeps_negative_chronos_delta_and_source_label(book, paramet
     assert chronos_result["scenario_role"] == "chronos_only"
     assert chronos_result["delta_pfe_975"] < 0.0
     assert "uplift" not in chronos_result
-    json.dumps(report)
+    json.dumps(report, allow_nan=False)
 
 
 def _portfolio_distributions(dates):
@@ -139,7 +139,7 @@ def test_portfolio_coverage_counts_exact_pfe_as_covered_and_reports_breaches(boo
     assert baseline["maximum_breach"] == pytest.approx(2.0)
     assert report["results"]["uniform_chronos"]["breach_count"] == 2
     assert report["results"]["final_blend"]["breach_count"] == 1
-    json.dumps(report)
+    json.dumps(report, allow_nan=False)
 
 
 def test_portfolio_coverage_requires_complete_realized_horizon(book):
@@ -169,6 +169,55 @@ def test_portfolio_coverage_requires_exact_forecast_dates_after_as_of(book):
         "available": False,
         "reason": "realized dates do not match the forecast horizon",
     }
+
+
+@pytest.mark.parametrize(
+    ("mismatch", "reason"),
+    [
+        (
+            "horizon",
+            "model distribution 'uniform_chronos' horizon does not match the other distributions",
+        ),
+        (
+            "dates",
+            "model distribution 'uniform_chronos' dates do not match the other distributions",
+        ),
+        (
+            "series",
+            "model distribution 'uniform_chronos' series do not match the other distributions",
+        ),
+    ],
+)
+def test_portfolio_coverage_rejects_nonfirst_distribution_misalignment(
+    book, mismatch, reason
+):
+    dates = pd.bdate_range(AS_OF_DATE + pd.offsets.BDay(), periods=3)
+    distributions = _portfolio_distributions(dates)
+    if mismatch == "horizon":
+        distributions["uniform_chronos"] = _pathset(
+            [[[100.0]] * 2, [[108.0]] * 2],
+            dates=dates[:2],
+            source="chronos2",
+        )
+    elif mismatch == "dates":
+        distributions["uniform_chronos"] = _pathset(
+            [[[100.0]] * 3, [[108.0]] * 3],
+            dates=dates + pd.offsets.BDay(),
+            source="chronos2",
+        )
+    else:
+        distributions["uniform_chronos"] = _pathset(
+            [[[100.0]] * 3, [[108.0]] * 3],
+            dates=dates,
+            series=["OTHER"],
+            source="chronos2",
+        )
+    realized = pd.DataFrame({"SPX": [100.0, 100.0, 100.0]}, index=dates)
+
+    report = compute_portfolio_coverage(book, distributions, realized)
+
+    assert report == {"available": False, "reason": reason}
+    json.dumps(report, allow_nan=False)
 
 
 def _factor_distributions(dates):
@@ -219,6 +268,7 @@ def test_factor_coverage_reports_central_95_percent_by_series_and_regime():
     assert baseline["per_series"] == {"S1": 0.5, "S2": 0.5}
     assert baseline["calm"] == {"S1": 1.0, "S2": 0.5}
     assert baseline["stress"] == {"S1": 0.0, "S2": 0.5}
+    json.dumps(report, allow_nan=False)
 
 
 def test_factor_coverage_uses_null_for_an_empty_regime():
@@ -260,3 +310,51 @@ def test_factor_coverage_rejects_misaligned_regimes():
         "available": False,
         "reason": "realized regimes do not match the forecast horizon",
     }
+
+
+def test_factor_coverage_rejects_nonfirst_distribution_misalignment():
+    dates = pd.bdate_range(AS_OF_DATE + pd.offsets.BDay(), periods=2)
+    distributions = _factor_distributions(dates)
+    nonfirst = distributions["uniform_chronos"]
+    distributions["uniform_chronos"] = _pathset(
+        nonfirst.paths,
+        dates=dates + pd.offsets.BDay(),
+        series=nonfirst.series,
+        source="chronos2",
+    )
+    realized = pd.DataFrame({"S1": [5.0, 5.0], "S2": [5.0, 5.0]}, index=dates)
+    regimes = pd.DataFrame({"w_stress": [0.2, 0.8]}, index=dates)
+
+    report = compute_factor_coverage(
+        distributions,
+        realized,
+        regimes,
+        regime_threshold=0.7,
+    )
+
+    assert report == {
+        "available": False,
+        "reason": "model distribution 'uniform_chronos' dates do not match the other distributions",
+    }
+    json.dumps(report, allow_nan=False)
+
+
+@pytest.mark.parametrize("invalid_weight", [np.nan, np.inf, -np.inf])
+def test_factor_coverage_rejects_nonfinite_regime_weights(invalid_weight):
+    dates = pd.bdate_range(AS_OF_DATE + pd.offsets.BDay(), periods=2)
+    distributions = _factor_distributions(dates)
+    realized = pd.DataFrame({"S1": [5.0, 5.0], "S2": [5.0, 5.0]}, index=dates)
+    regimes = pd.DataFrame({"w_stress": [0.2, invalid_weight]}, index=dates)
+
+    report = compute_factor_coverage(
+        distributions,
+        realized,
+        regimes,
+        regime_threshold=0.7,
+    )
+
+    assert report == {
+        "available": False,
+        "reason": "realized regimes contain missing or non-finite w_stress values",
+    }
+    json.dumps(report, allow_nan=False)

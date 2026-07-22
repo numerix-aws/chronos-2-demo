@@ -115,6 +115,13 @@ def _coverage_ready(distributions: Mapping[str, PathSet], realized: pd.DataFrame
     if not distributions:
         return "no model distributions were supplied"
     reference = next(iter(distributions.values()))
+    for name, paths in distributions.items():
+        if paths.horizon != reference.horizon:
+            return f"model distribution {name!r} horizon does not match the other distributions"
+        if not paths.dates.equals(reference.dates):
+            return f"model distribution {name!r} dates do not match the other distributions"
+        if paths.series != reference.series:
+            return f"model distribution {name!r} series do not match the other distributions"
     if len(realized) != reference.horizon:
         return f"realized horizon has {len(realized)} of {reference.horizon} required observations"
     if not realized.index.equals(reference.dates):
@@ -177,6 +184,12 @@ def compute_factor_coverage(
             "available": False,
             "reason": "realized regimes do not match the forecast horizon",
         }
+    w_stress = pd.to_numeric(realized_regimes["w_stress"], errors="coerce")
+    if not np.isfinite(w_stress.to_numpy(dtype=float)).all():
+        return {
+            "available": False,
+            "reason": "realized regimes contain missing or non-finite w_stress values",
+        }
     results: dict[str, object] = {}
 
     def json_series(values: pd.Series) -> dict[str, float | None]:
@@ -190,7 +203,7 @@ def compute_factor_coverage(
         conditional = regime_conditional_coverage(
             paths,
             realized_panel,
-            realized_regimes["w_stress"],
+            w_stress,
             q_low=0.025,
             q_high=0.975,
             stress_threshold=regime_threshold,
