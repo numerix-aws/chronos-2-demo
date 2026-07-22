@@ -36,6 +36,10 @@ STRESS_REQUEST_RE = re.compile(
     r"|\b\d+(?:\.\d+)?\s*(?:%|percent)\s+stress\b|\bstress weight\b",
     re.I,
 )
+INFORMATIONAL_RE = re.compile(
+    r"\b(?:what|which|how|does|do|is|are|can)\b.*\b(?:use cases?|capabilit(?:y|ies)|support(?:s|ed)?)\b",
+    re.I,
+)
 NEGATED_TOOL_RUN_RE = re.compile(r"\b(?:do not|don't)\s+run\s+tools?\b", re.I)
 NUMBER_WORDS = {"one": 1, "two": 2, "five": 5, "ten": 10}
 ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
@@ -200,7 +204,9 @@ def compile_run_spec(
     provenance: Mapping[str, str],
     execution_id: str | None = None,
 ) -> RunSpec | Clarification:
-    if NEGATED_TOOL_RUN_RE.search(prompt) or not (QUANT_RE.search(prompt) or STRESS_REQUEST_RE.search(prompt)):
+    if INFORMATIONAL_RE.search(prompt) or NEGATED_TOOL_RUN_RE.search(prompt) or not (
+        QUANT_RE.search(prompt) or STRESS_REQUEST_RE.search(prompt)
+    ):
         return Clarification(False, (), "This request does not require quantitative tools.")
 
     values: dict[str, object] = dict(PROFILE) if PROFILE_RE.search(prompt) else {

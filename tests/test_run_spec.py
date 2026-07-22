@@ -184,11 +184,29 @@ def test_stress_use_case_question_does_not_compile_as_quantitative():
     assert result.is_quantitative is False
 
 
+def test_stress_test_use_case_question_does_not_compile_as_quantitative():
+    result = compile_run_spec(
+        "What stress test use cases does this demo support?",
+        provenance=PROVENANCE,
+    )
+    assert isinstance(result, Clarification)
+    assert result.is_quantitative is False
+
+
 def test_stress_request_compiles_as_quantitative():
     spec = compile_run_spec(
         "Stress the stage-safe headline demo.",
         provenance=PROVENANCE,
         execution_id="run-stress",
+    )
+    assert not isinstance(spec, Clarification)
+
+
+def test_run_a_stress_test_compiles_as_quantitative():
+    spec = compile_run_spec(
+        "Run a stress test using the stage-safe headline demo.",
+        provenance=PROVENANCE,
+        execution_id="run-stress-test",
     )
     assert not isinstance(spec, Clarification)
 
