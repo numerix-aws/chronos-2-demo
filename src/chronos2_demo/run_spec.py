@@ -159,6 +159,18 @@ def _freeze(value: Mapping[str, object]) -> Mapping[str, object]:
     })
 
 
+def _has_direct_execution_action(prompt: str) -> bool:
+    return bool(QUANT_RE.search(prompt))
+
+
+def _is_stress_request(prompt: str) -> bool:
+    return bool(STRESS_REQUEST_RE.search(prompt))
+
+
+def _is_informational(prompt: str) -> bool:
+    return bool(INFORMATIONAL_RE.search(prompt))
+
+
 def _conditioning(prompt: str) -> dict[str, object] | None:
     canonical = re.search(
         r"\bseries shifts?:\s*([A-Z0-9_]+\s*=\s*[+-]?\d+(?:\.\d+)?"
@@ -204,9 +216,13 @@ def compile_run_spec(
     provenance: Mapping[str, str],
     execution_id: str | None = None,
 ) -> RunSpec | Clarification:
-    if INFORMATIONAL_RE.search(prompt) or NEGATED_TOOL_RUN_RE.search(prompt) or not (
-        QUANT_RE.search(prompt) or STRESS_REQUEST_RE.search(prompt)
-    ):
+    direct_execution = _has_direct_execution_action(prompt)
+    stress_request = _is_stress_request(prompt)
+    if NEGATED_TOOL_RUN_RE.search(prompt):
+        return Clarification(False, (), "This request does not require quantitative tools.")
+    if _is_informational(prompt) and not direct_execution:
+        return Clarification(False, (), "This request does not require quantitative tools.")
+    if not direct_execution and not stress_request:
         return Clarification(False, (), "This request does not require quantitative tools.")
 
     values: dict[str, object] = dict(PROFILE) if PROFILE_RE.search(prompt) else {

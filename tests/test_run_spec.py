@@ -211,6 +211,16 @@ def test_run_a_stress_test_compiles_as_quantitative():
     assert not isinstance(spec, Clarification)
 
 
+def test_conversational_run_with_supported_inputs_compiles_as_quantitative():
+    spec = compile_run_spec(
+        "Can you run a stress test using the stage-safe headline demo with supported inputs?",
+        provenance=PROVENANCE,
+        execution_id="run-supported-inputs",
+    )
+    assert not isinstance(spec, Clarification)
+    assert spec.profile == "stage_safe_headline_v1"
+
+
 def test_canonical_run_payload_excludes_transient_identity_fields():
     spec = compile_run_spec(HEADLINE_PROMPT, provenance=PROVENANCE, execution_id="run-a")
     assert not isinstance(spec, Clarification)
