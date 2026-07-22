@@ -166,6 +166,39 @@ def test_exposure_use_case_question_does_not_compile_as_quantitative():
     assert result.is_quantitative is False
 
 
+@pytest.mark.parametrize("prompt", [
+    "What forecast use cases does this demo support?",
+    "What comparison use cases does this demo support?",
+    "What simulation capabilities does this demo have?",
+    "Can this demo forecast rates?",
+])
+def test_action_category_questions_do_not_compile_as_quantitative(prompt):
+    result = compile_run_spec(prompt, provenance=PROVENANCE)
+    assert isinstance(result, Clarification)
+    assert result.is_quantitative is False
+
+
+@pytest.mark.parametrize("prompt", [
+    "Run the stage-safe headline demo.",
+    "Compare the stage-safe headline demo.",
+    "Forecast the stage-safe headline demo.",
+    "Simulate the stage-safe headline demo.",
+    "Expose the stage-safe headline demo.",
+])
+def test_imperative_actions_compile_as_quantitative(prompt):
+    spec = compile_run_spec(prompt, provenance=PROVENANCE, execution_id="run-imperative")
+    assert not isinstance(spec, Clarification)
+
+
+def test_negated_tool_use_wins_over_direct_action():
+    result = compile_run_spec(
+        "Do not run tools; forecast the stage-safe headline demo.",
+        provenance=PROVENANCE,
+    )
+    assert isinstance(result, Clarification)
+    assert result.is_quantitative is False
+
+
 def test_expose_request_compiles_as_quantitative():
     spec = compile_run_spec(
         "Expose the stage-safe headline demo.",

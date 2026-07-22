@@ -27,17 +27,28 @@ PROFILE = {
 }
 REQUIRED_FIELDS = tuple(k for k in PROFILE if k not in {"schema_version", "profile", "conditioning"})
 PROFILE_RE = re.compile(r"\b(stage[ -]safe|headline demo|same stage[ -]safe setup)\b", re.I)
-QUANT_RE = re.compile(
-    r"\b(run|compare|forecast|simulate|expose)\b|\bwhat happens\b|\b(?:calculate|compute)\s+exposure\b",
+IMPERATIVE_ACTION_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:run|compare|forecast|simulate|expose)\b",
     re.I,
 )
+POLITE_ACTION_RE = re.compile(
+    r"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:run|compare|forecast|simulate|expose)\b",
+    re.I,
+)
+WHAT_HAPPENS_IF_RE = re.compile(r"\bwhat happens if\b", re.I)
+PARAMETERIZED_ACTION_RE = re.compile(
+    r"\b(?:forecast|simulate)\s+[\d,]+\s+trading years?\b|\b(?:forecast|simulate)\s+[\d,]+\s+trading days\b",
+    re.I,
+)
+EXPOSURE_ACTION_RE = re.compile(r"\b(?:calculate|compute)\s+exposure\b", re.I)
 STRESS_REQUEST_RE = re.compile(
     r"\bstress\s+(?:the|this|my|a|an|test|scenario|portfolio|book|rates?|market)\b"
     r"|\b\d+(?:\.\d+)?\s*(?:%|percent)\s+stress\b|\bstress weight\b",
     re.I,
 )
 INFORMATIONAL_RE = re.compile(
-    r"\b(?:what|which|how|does|do|is|are|can)\b.*\b(?:use cases?|capabilit(?:y|ies)|support(?:s|ed)?)\b",
+    r"\b(?:what|which|how)\b.*\b(?:use cases?|capabilit(?:y|ies)|support(?:s|ed)?)\b"
+    r"|\bcan\s+(?:this|the)\s+demo\b.*\b(?:run|compare|forecast|simulate|expose)\b",
     re.I,
 )
 NEGATED_TOOL_RUN_RE = re.compile(r"\b(?:do not|don't)\s+run\s+tools?\b", re.I)
@@ -160,7 +171,13 @@ def _freeze(value: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def _has_direct_execution_action(prompt: str) -> bool:
-    return bool(QUANT_RE.search(prompt))
+    return bool(
+        IMPERATIVE_ACTION_RE.search(prompt)
+        or POLITE_ACTION_RE.search(prompt)
+        or WHAT_HAPPENS_IF_RE.search(prompt)
+        or PARAMETERIZED_ACTION_RE.search(prompt)
+        or EXPOSURE_ACTION_RE.search(prompt)
+    )
 
 
 def _is_stress_request(prompt: str) -> bool:
