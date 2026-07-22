@@ -230,15 +230,10 @@ def test_check_rejects_noncanonical_caller_output_even_when_task_matches(poll_ru
     assert "canonical output" in out["message"]
 
 
-def test_unconditioned_run_rejects_conditional_chronos_source(poll_run):
-    spec, uri = poll_run
-    run_manifest.put_artifact_sidecar(
-        artifact_uri=uri,
-        artifact_sha256=s3_io.sha256_bytes(s3_io.download_bytes(uri)),
-        artifact_kind="pathset",
+def test_unconditioned_run_rejects_conditional_chronos_source(s3, monkeypatch):
+    spec, uri = _stage_poll_run(
+        monkeypatch,
         source="chronos2_conditional",
-        spec=spec,
-        producer_version="sha256:chronos",
     )
 
     with patch.object(

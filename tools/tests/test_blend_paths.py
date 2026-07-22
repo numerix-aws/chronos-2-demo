@@ -31,7 +31,7 @@ PROVENANCE = {
 SERIES = ["USDEUR", "USD_5Y"]
 
 
-def _put_run(s3, monkeypatch, *, horizon=3, future_rows=None):
+def _put_run(s3, monkeypatch, *, horizon=3, future_rows=None, conditioning=None):
     monkeypatch.setenv("DATA_BUCKET", "test-data")
     monkeypatch.setenv("BOOK_PATH", str(DEFAULT_BOOK_PATH))
     dates = pd.bdate_range("2022-06-29", periods=2 + (future_rows or horizon))
@@ -53,6 +53,7 @@ def _put_run(s3, monkeypatch, *, horizon=3, future_rows=None):
         "n_paths": 4,
         "w_stress": 0.65,
         "regime_threshold": 0.6,
+        "conditioning": conditioning,
         "provenance": provenance,
     }
     spec = RunSpec(
@@ -63,7 +64,7 @@ def _put_run(s3, monkeypatch, *, horizon=3, future_rows=None):
     manifest = {
         **spec.__dict__,
         "provenance": dict(spec.provenance),
-        "conditioning": None,
+        "conditioning": conditioning,
     }
     s3.put_object(
         Bucket="test-data",
@@ -129,6 +130,24 @@ def _stub_pricing(monkeypatch):
     return book
 
 
+def _stub_diagnostics(monkeypatch):
+    monkeypatch.setattr(
+        handler.run_evaluation,
+        "compute_attribution",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(
+        handler.run_evaluation,
+        "compute_portfolio_coverage",
+        lambda *_a, **_k: {"available": True},
+    )
+    monkeypatch.setattr(
+        handler.run_evaluation,
+        "compute_factor_coverage",
+        lambda *_a, **_k: {"available": True},
+    )
+
+
 def test_blend_uses_manifest_identity_and_writes_diagnostics(s3, monkeypatch):
     spec = _put_run(s3, monkeypatch)
     parametric_uri = _put_pathset(s3, spec, "baseline", "parametric")
@@ -192,7 +211,7 @@ def test_blend_uses_manifest_identity_and_writes_diagnostics(s3, monkeypatch):
 def test_blend_marks_incomplete_held_out_horizon_unavailable(s3, monkeypatch):
     spec = _put_run(s3, monkeypatch, horizon=4, future_rows=3)
     parametric_uri = _put_pathset(s3, spec, "baseline", "parametric")
-    chronos_uri = _put_pathset(s3, spec, "chronos2", "chronos2_conditional")
+    chronos_uri = _put_pathset(s3, spec, "chronos2", "chronos2")
     _stub_pricing(monkeypatch)
     run_evaluation = getattr(handler, "run_evaluation", type("RunEvaluation", (), {})())
     monkeypatch.setattr(handler, "run_evaluation", run_evaluation, raising=False)
@@ -213,6 +232,91 @@ def test_blend_marks_incomplete_held_out_horizon_unavailable(s3, monkeypatch):
     assert result["diagnostics"]["portfolio_coverage"]["available"] is False
     assert result["diagnostics"]["factor_coverage"]["available"] is False
     assert "3 of 4" in result["diagnostics"]["portfolio_coverage"]["reason"]
+
+
+@pytest.mark.parametrize(
+    "conditioning,chronos_source",
+    [
+        (None, "chronos2_conditional"),
+        (
+            {"series_shifts": {"USD_5Y": -0.25}, "n_anchor_days": 1},
+            "chronos2",
+        ),
+    ],
+)
+def test_blend_rejects_chronos_source_conditioning_mismatch(
+    s3, monkeypatch, conditioning, chronos_source
+):
+    spec = _put_run(s3, monkeypatch, conditioning=conditioning)
+    parametric_uri = _put_pathset(s3, spec, "baseline", "parametric")
+    chronos_uri = _put_pathset(s3, spec, "chronos2", chronos_source)
+    _stub_pricing(monkeypatch)
+    _stub_diagnostics(monkeypatch)
+
+    out = handler.handler({
+        "execution_id": "run-1",
+        "parametric_uri": parametric_uri,
+        "chronos2_uri": chronos_uri,
+    }, None)
+
+    assert out["status"] == "error"
+    assert "source" in out["message"].lower() or "conditioning" in out["message"].lower()
+
+
+@pytest.mark.parametrize("engine", ["baseline", "chronos2"])
+def test_blend_rejects_alias_engine_key_with_valid_identity(s3, monkeypatch, engine):
+    spec = _put_run(s3, monkeypatch)
+    parametric_uri = _put_pathset(
+        s3,
+        spec,
+        "baseline-alias" if engine == "baseline" else "baseline",
+        "parametric",
+    )
+    chronos_uri = _put_pathset(
+        s3,
+        spec,
+        "chronos2-alias" if engine == "chronos2" else "chronos2",
+        "chronos2",
+    )
+    _stub_pricing(monkeypatch)
+    _stub_diagnostics(monkeypatch)
+
+    out = handler.handler({
+        "execution_id": "run-1",
+        "parametric_uri": parametric_uri,
+        "chronos2_uri": chronos_uri,
+    }, None)
+
+    assert out["status"] == "error"
+    assert "key" in out["message"].lower() or "exact" in out["message"].lower()
+
+
+@pytest.mark.parametrize("artifact", ["blended.pkl", "diagnostics.json"])
+def test_blend_deterministic_outputs_reject_sequential_conflicts(
+    s3, monkeypatch, artifact
+):
+    spec = _put_run(s3, monkeypatch)
+    parametric_uri = _put_pathset(s3, spec, "baseline", "parametric")
+    chronos_uri = _put_pathset(s3, spec, "chronos2", "chronos2")
+    _stub_pricing(monkeypatch)
+    _stub_diagnostics(monkeypatch)
+    event = {
+        "execution_id": "run-1",
+        "parametric_uri": parametric_uri,
+        "chronos2_uri": chronos_uri,
+    }
+    first = _body(handler.handler(event, None))
+    target_uri = (
+        first["blended_uri"] if artifact == "blended.pkl" else first["diagnostics_uri"]
+    )
+    bucket, key = s3_io.split_s3_uri(target_uri)
+    s3.put_object(Bucket=bucket, Key=key, Body=b"conflicting-winner")
+
+    retry = handler.handler(event, None)
+
+    assert retry["status"] == "error"
+    assert "different bytes" in retry["message"]
+    assert s3_io.download_bytes(target_uri) == b"conflicting-winner"
 
 
 def test_blend_rejects_non_finite_diagnostics_json(s3, monkeypatch):

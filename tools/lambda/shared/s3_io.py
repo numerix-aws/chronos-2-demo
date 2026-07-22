@@ -6,7 +6,16 @@ import io
 import json
 
 import boto3
+from botocore.exceptions import ClientError
 import pandas as pd
+
+
+_CONDITIONAL_CONFLICT_CODES = {
+    "409",
+    "412",
+    "ConditionalRequestConflict",
+    "PreconditionFailed",
+}
 
 
 def split_s3_uri(uri: str) -> tuple[str, str]:
@@ -43,8 +52,50 @@ def upload_bytes(
     return f"s3://{bucket}/{key}", sha256_bytes(value)
 
 
+def create_or_verify_bytes(
+    value: bytes,
+    *,
+    bucket: str,
+    key: str,
+    content_type: str,
+) -> tuple[str, str]:
+    """Atomically create an object, or verify a concurrent winner byte-for-byte."""
+    client = boto3.client("s3")
+    uri = f"s3://{bucket}/{key}"
+    try:
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=value,
+            ContentType=content_type,
+            IfNoneMatch="*",
+        )
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code not in _CONDITIONAL_CONFLICT_CODES:
+            raise
+        try:
+            existing = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except ClientError as verify_exc:
+            raise ValueError(
+                f"conditional create conflict for {uri} could not verify winner bytes"
+            ) from verify_exc
+        if existing != value:
+            raise ValueError(f"{uri} already exists with different bytes")
+    return uri, sha256_bytes(value)
+
+
 def download_json(uri: str) -> dict[str, object]:
     return json.loads(download_bytes(uri))
+
+
+def json_bytes(value: Mapping[str, object]) -> bytes:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
 
 
 def upload_json(
@@ -53,12 +104,7 @@ def upload_json(
     bucket: str,
     key: str,
 ) -> tuple[str, str]:
-    raw = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    ).encode("utf-8")
+    raw = json_bytes(value)
     return upload_bytes(
         raw,
         bucket=bucket,
@@ -81,7 +127,12 @@ def download_parquet(uri: str) -> pd.DataFrame:
 
 def upload_png_signed(data: bytes, bucket: str, key: str, expires_in: int = 300) -> str:
     s3 = boto3.client("s3")
-    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="image/png")
+    create_or_verify_bytes(
+        data,
+        bucket=bucket,
+        key=key,
+        content_type="image/png",
+    )
     return s3.generate_presigned_url(
         "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=expires_in
     )

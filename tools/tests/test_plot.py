@@ -91,7 +91,12 @@ def _put_pathset(s3, spec, name, source):
 
 
 def _put_metrics(s3, spec, name, source, role, *, payload_updates=None):
-    paths_uri, paths_sha256 = _put_pathset(s3, spec, f"{name}-paths", source)
+    path_name = {
+        "parametric": "baseline",
+        "chronos2": "chronos2",
+        "blended": "blended",
+    }[source]
+    paths_uri, paths_sha256 = _put_pathset(s3, spec, path_name, source)
     payload = {
         "execution_id": spec.execution_id,
         "spec_hash": spec.spec_hash,
@@ -130,6 +135,29 @@ def _put_metrics(s3, spec, name, source, role, *, payload_updates=None):
 def _result(out):
     assert out["status"] == "ok", out
     return out["result"]
+
+
+def _put_regimes(s3, spec, name="regimes"):
+    regimes = pd.DataFrame(
+        {"w_stress": [0.2, 0.8, 0.4], "regime": ["calm", "stress", "calm"]},
+        index=pd.bdate_range("2022-06-28", periods=3),
+    )
+    buffer = io.BytesIO()
+    regimes.to_parquet(buffer)
+    uri, digest = s3_io.upload_bytes(
+        buffer.getvalue(),
+        bucket="test-data",
+        key=f"runs/{spec.execution_id}/{name}.parquet",
+        content_type="application/vnd.apache.parquet",
+    )
+    run_manifest.put_artifact_sidecar(
+        artifact_uri=uri,
+        artifact_sha256=digest,
+        artifact_kind="regimes",
+        spec=spec,
+        producer_version=spec.provenance["tool_bundle_version"],
+    )
+    return regimes, uri
 
 
 def test_pfe_overlay_derives_roles_in_either_uri_order_and_publishes_identity(
@@ -174,6 +202,14 @@ def test_pfe_overlay_derives_roles_in_either_uri_order_and_publishes_identity(
     assert meta["artifact_kind"] == "plot"
     assert meta["producer_version"] == spec.provenance["tool_bundle_version"]
     assert meta["artifact_sha256"] == result["image_sha256"]
+    assert run_manifest.validate_artifact(
+        result["image_s3_uri"],
+        spec=spec,
+        allowed_kinds={"plot"},
+        expected_bucket="test-plots",
+        expected_key="runs/run-1/plots/pfe_overlay.png",
+        expected_uri=result["image_s3_uri"],
+    ).artifact_sha256 == result["image_sha256"]
 
 
 @pytest.mark.parametrize(
@@ -195,7 +231,27 @@ def test_pfe_overlay_requires_exactly_baseline_and_augmented(
     }, None)
 
     assert out["status"] == "error"
-    assert "baseline" in out["message"] and "augmented" in out["message"]
+    assert (
+        "baseline" in out["message"] and "augmented" in out["message"]
+    ) or "exact" in out["message"]
+
+
+def test_pfe_overlay_rejects_alias_metrics_key_with_valid_identity(s3, monkeypatch):
+    spec = _put_run(s3, monkeypatch)
+    baseline_uri = _put_metrics(
+        s3, spec, "baseline-alias", "parametric", "baseline"
+    )
+    augmented_uri = _put_metrics(s3, spec, "augmented", "blended", "augmented")
+
+    out = handler.handler({
+        "execution_id": "run-1",
+        "spec": "pfe_overlay",
+        "baseline_uri": baseline_uri,
+        "augmented_uri": augmented_uri,
+    }, None)
+
+    assert out["status"] == "error"
+    assert "key" in out["message"].lower() or "exact" in out["message"].lower()
 
 
 def test_pfe_overlay_rejects_cross_run_artifact(s3, monkeypatch):
@@ -250,25 +306,7 @@ def test_pfe_overlay_rejects_hash_content_and_source_mismatches(s3, monkeypatch,
 
 def test_regime_ribbon_validates_staged_identity_and_manifest_threshold(s3, monkeypatch):
     spec = _put_run(s3, monkeypatch)
-    regimes = pd.DataFrame(
-        {"w_stress": [0.2, 0.8, 0.4], "regime": ["calm", "stress", "calm"]},
-        index=pd.bdate_range("2022-06-28", periods=3),
-    )
-    buffer = io.BytesIO()
-    regimes.to_parquet(buffer)
-    uri, digest = s3_io.upload_bytes(
-        buffer.getvalue(),
-        bucket="test-data",
-        key="runs/run-1/regimes.parquet",
-        content_type="application/vnd.apache.parquet",
-    )
-    run_manifest.put_artifact_sidecar(
-        artifact_uri=uri,
-        artifact_sha256=digest,
-        artifact_kind="regimes",
-        spec=spec,
-        producer_version=spec.provenance["tool_bundle_version"],
-    )
+    regimes, uri = _put_regimes(s3, spec)
     rendered = {}
 
     def render(values, *, threshold, title):
@@ -293,9 +331,106 @@ def test_regime_ribbon_validates_staged_identity_and_manifest_threshold(s3, monk
     assert result["image_s3_uri"] == "s3://test-plots/runs/run-1/plots/regime_ribbon.png"
 
 
+def test_regime_ribbon_rejects_alias_staged_key(s3, monkeypatch):
+    spec = _put_run(s3, monkeypatch)
+    _, uri = _put_regimes(s3, spec, name="regimes-alias")
+
+    out = handler.handler({
+        "execution_id": "run-1",
+        "spec": "regime_ribbon",
+        "regimes_uri": uri,
+    }, None)
+
+    assert out["status"] == "error"
+    assert "key" in out["message"].lower() or "exact" in out["message"].lower()
+
+
+def test_path_fan_rejects_alias_path_key(s3, monkeypatch):
+    spec = _put_run(s3, monkeypatch)
+    uri, _ = _put_pathset(s3, spec, "baseline-alias", "parametric")
+
+    out = handler.handler({
+        "execution_id": "run-1",
+        "spec": "path_fan",
+        "paths_uri": uri,
+        "series": "USDEUR",
+    }, None)
+
+    assert out["status"] == "error"
+    assert "key" in out["message"].lower() or "exact" in out["message"].lower()
+
+
+def test_path_fan_malformed_pickle_returns_error_envelope(s3, monkeypatch):
+    spec = _put_run(s3, monkeypatch)
+    uri, _ = _put_pathset(s3, spec, "baseline", "parametric")
+    bucket, key = s3_io.split_s3_uri(uri)
+    raw = b"not-a-pickle"
+    s3.put_object(Bucket=bucket, Key=key, Body=raw)
+    meta_uri = run_manifest.sidecar_uri(uri)
+    meta = s3_io.download_json(meta_uri)
+    meta["artifact_sha256"] = s3_io.sha256_bytes(raw)
+    meta_bucket, meta_key = s3_io.split_s3_uri(meta_uri)
+    s3_io.upload_json(meta, bucket=meta_bucket, key=meta_key)
+
+    out = handler.handler({
+        "execution_id": "run-1",
+        "spec": "path_fan",
+        "paths_uri": uri,
+        "series": "USDEUR",
+    }, None)
+
+    assert out["status"] == "error"
+    assert "decode" in out["message"].lower() or "pickle" in out["message"].lower()
+
+
+def test_plot_closes_figure_when_png_rendering_fails(s3, monkeypatch):
+    spec = _put_run(s3, monkeypatch)
+    _, uri = _put_regimes(s3, spec)
+    fig = plt.subplots()[0]
+    monkeypatch.setattr(
+        handler.regime_ribbon,
+        "plot_regime_ribbon",
+        lambda *_args, **_kwargs: fig,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_fig_to_png",
+        lambda _fig: (_ for _ in ()).throw(ValueError("render failed")),
+    )
+
+    out = handler.handler({
+        "execution_id": "run-1",
+        "spec": "regime_ribbon",
+        "regimes_uri": uri,
+    }, None)
+
+    assert out["status"] == "error"
+    assert not plt.fignum_exists(fig.number)
+
+
+def test_plot_png_retry_rejects_sequential_byte_conflict(s3, monkeypatch):
+    spec = _put_run(s3, monkeypatch)
+    _, uri = _put_regimes(s3, spec)
+    event = {
+        "execution_id": "run-1",
+        "spec": "regime_ribbon",
+        "regimes_uri": uri,
+    }
+    first = _result(handler.handler(event, None))
+    bucket, key = s3_io.split_s3_uri(first["image_s3_uri"])
+    s3.put_object(Bucket=bucket, Key=key, Body=b"conflicting-winner")
+
+    retry = handler.handler(event, None)
+
+    assert retry["status"] == "error"
+    assert "different bytes" in retry["message"]
+    assert s3_io.download_bytes(first["image_s3_uri"]) == b"conflicting-winner"
+
+
 def test_publish_keeps_chart_url_valid_for_one_hour(monkeypatch):
     monkeypatch.setenv("PLOTS_BUCKET", "test-plots")
     captured = {}
+    validated = {}
 
     def upload(_data, *, bucket, key, expires_in):
         captured.update(bucket=bucket, key=key, expires_in=expires_in)
@@ -308,6 +443,13 @@ def test_publish_keeps_chart_url_valid_for_one_hour(monkeypatch):
         run_manifest_module,
         "put_artifact_sidecar",
         lambda **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        run_manifest_module,
+        "validate_artifact",
+        lambda uri, **kwargs: validated.update(uri=uri, **kwargs)
+        or type("Meta", (), {"producer_version": "git:test"})(),
         raising=False,
     )
     spec = type("Spec", (), {
@@ -324,6 +466,8 @@ def test_publish_keeps_chart_url_valid_for_one_hour(monkeypatch):
         "key": "runs/run-1/plots/pfe_overlay.png",
         "expires_in": 3600,
     }
+    assert validated["expected_bucket"] == "test-plots"
+    assert validated["expected_key"] == "runs/run-1/plots/pfe_overlay.png"
 
 
 def test_plot_rejects_unknown_spec(s3, monkeypatch):

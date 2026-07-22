@@ -96,6 +96,9 @@ def put_artifact_sidecar(
     producer_version: str,
     source: str | None = None,
 ) -> ArtifactMeta:
+    actual_hash = s3_io.sha256_bytes(s3_io.download_bytes(artifact_uri))
+    if actual_hash != artifact_sha256:
+        raise ValueError("artifact content hash does not match sidecar claim")
     meta = ArtifactMeta(
         execution_id=spec.execution_id,
         spec_hash=spec.spec_hash,
@@ -107,7 +110,12 @@ def put_artifact_sidecar(
         producer_version=producer_version,
     )
     bucket, key = s3_io.split_s3_uri(sidecar_uri(artifact_uri))
-    s3_io.upload_json(meta.__dict__, bucket=bucket, key=key)
+    s3_io.create_or_verify_bytes(
+        s3_io.json_bytes(meta.__dict__),
+        bucket=bucket,
+        key=key,
+        content_type="application/json",
+    )
     return meta
 
 
@@ -117,10 +125,19 @@ def validate_artifact(
     spec: RunSpec,
     allowed_kinds: set[str],
     allowed_sources: set[str] | None = None,
+    expected_bucket: str | None = None,
+    expected_key: str | None = None,
+    expected_uri: str | None = None,
 ) -> ArtifactMeta:
     bucket, key = s3_io.split_s3_uri(artifact_uri)
-    if bucket != os.environ["DATA_BUCKET"]:
-        raise ValueError("artifact bucket does not match configured DATA_BUCKET")
+    trusted_bucket = expected_bucket or os.environ["DATA_BUCKET"]
+    if bucket != trusted_bucket:
+        label = "expected bucket" if expected_bucket else "configured DATA_BUCKET"
+        raise ValueError(f"artifact bucket does not match {label}")
+    if expected_key is not None and key != expected_key:
+        raise ValueError("artifact key does not match exact expected key")
+    if expected_uri is not None and artifact_uri != expected_uri:
+        raise ValueError("artifact URI does not match exact expected URI")
     run_prefix = f"runs/{spec.execution_id}/"
     if not key.startswith(run_prefix):
         raise ValueError(f"artifact key does not match run prefix {run_prefix!r}")

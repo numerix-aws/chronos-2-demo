@@ -89,7 +89,7 @@ def _put_artifact(
     source: str | None = None,
 ) -> tuple[str, str]:
     bucket = os.environ["DATA_BUCKET"]
-    uri, digest = s3_io.upload_bytes(
+    uri, digest = s3_io.create_or_verify_bytes(
         raw,
         bucket=bucket,
         key=key,
@@ -103,6 +103,16 @@ def _put_artifact(
         spec=spec,
         producer_version=producer_version,
     )
+    meta = run_manifest.validate_artifact(
+        uri,
+        spec=spec,
+        allowed_kinds={artifact_kind},
+        allowed_sources={source} if source is not None else None,
+        expected_key=key,
+        expected_uri=uri,
+    )
+    if meta.producer_version != producer_version:
+        raise ValueError("artifact producer version disagrees with RunSpec provenance")
     return uri, digest
 
 
@@ -116,12 +126,17 @@ def handler(event: dict, _ctx) -> dict:
             spec=spec,
             allowed_kinds={"pathset"},
             allowed_sources={"parametric"},
+            expected_key=f"runs/{spec.execution_id}/baseline.pkl",
+        )
+        expected_chronos_source = (
+            "chronos2_conditional" if spec.conditioning is not None else "chronos2"
         )
         chronos_meta = run_manifest.validate_artifact(
             event["chronos2_uri"],
             spec=spec,
             allowed_kinds={"pathset"},
-            allowed_sources={"chronos2", "chronos2_conditional"},
+            allowed_sources={expected_chronos_source},
+            expected_key=f"runs/{spec.execution_id}/chronos2.pkl",
         )
         parametric = _pathset(
             parametric_meta, spec, spec.provenance["baseline_image_digest"]

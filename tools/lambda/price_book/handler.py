@@ -32,6 +32,16 @@ def _book(spec):
     return book_mod.load_cross_asset_book(os.environ["BOOK_PATH"])
 
 
+def _path_key(spec, source: str) -> str:
+    filename = {
+        "parametric": "baseline.pkl",
+        "chronos2": "chronos2.pkl",
+        "chronos2_conditional": "chronos2.pkl",
+        "blended": "blended.pkl",
+    }[source]
+    return f"runs/{spec.execution_id}/{filename}"
+
+
 def _json_bytes(payload: dict) -> bytes:
     return json.dumps(
         payload,
@@ -45,28 +55,8 @@ def _json_bytes(payload: dict) -> bytes:
 def _put_metrics(payload: dict, *, spec, source: str, role: str) -> tuple[str, str]:
     bucket = os.environ["DATA_BUCKET"]
     key = f"runs/{spec.execution_id}/metrics/{role}.json"
-    uri = f"s3://{bucket}/{key}"
     raw = _json_bytes(payload)
-    digest = s3_io.sha256_bytes(raw)
-    try:
-        existing = s3_io.download_bytes(uri)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") not in {"404", "NoSuchKey"}:
-            raise
-    else:
-        if existing != raw:
-            raise ValueError(f"refusing to overwrite existing metrics role {role!r}")
-        meta = run_manifest.validate_artifact(
-            uri,
-            spec=spec,
-            allowed_kinds={"metrics"},
-            allowed_sources={source},
-        )
-        if meta.producer_version != spec.provenance["pricing_version"]:
-            raise ValueError("metrics producer version disagrees with RunSpec provenance")
-        return uri, digest
-
-    uri, digest = s3_io.upload_bytes(
+    uri, digest = s3_io.create_or_verify_bytes(
         raw,
         bucket=bucket,
         key=key,
@@ -80,6 +70,16 @@ def _put_metrics(payload: dict, *, spec, source: str, role: str) -> tuple[str, s
         spec=spec,
         producer_version=spec.provenance["pricing_version"],
     )
+    meta = run_manifest.validate_artifact(
+        uri,
+        spec=spec,
+        allowed_kinds={"metrics"},
+        allowed_sources={source},
+        expected_key=key,
+        expected_uri=uri,
+    )
+    if meta.producer_version != spec.provenance["pricing_version"]:
+        raise ValueError("metrics producer version disagrees with RunSpec provenance")
     return uri, digest
 
 
@@ -87,6 +87,14 @@ def _put_metrics(payload: dict, *, spec, source: str, role: str) -> tuple[str, s
 def handler(event: dict, _ctx) -> dict:
     try:
         spec = run_manifest.load_run_spec(event["execution_id"])
+        _, supplied_key = s3_io.split_s3_uri(event["paths_uri"])
+        canonical_keys = {
+            f"runs/{spec.execution_id}/baseline.pkl",
+            f"runs/{spec.execution_id}/chronos2.pkl",
+            f"runs/{spec.execution_id}/blended.pkl",
+        }
+        if supplied_key not in canonical_keys:
+            raise ValueError("PathSet key does not match an exact producer-owned key")
         meta = run_manifest.validate_artifact(
             event["paths_uri"],
             spec=spec,
@@ -94,7 +102,10 @@ def handler(event: dict, _ctx) -> dict:
             allowed_sources={
                 "parametric", "chronos2", "chronos2_conditional", "blended"
             },
+            expected_key=supplied_key,
         )
+        if supplied_key != _path_key(spec, meta.source):
+            raise ValueError("PathSet source does not match its exact producer-owned key")
         expected_producer = _expected_producer(spec, meta.source)
         if meta.producer_version != expected_producer:
             raise ValueError("PathSet producer version disagrees with RunSpec provenance")

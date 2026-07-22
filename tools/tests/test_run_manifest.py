@@ -1,5 +1,6 @@
 import json
 
+from botocore.exceptions import ClientError
 import pytest
 
 from chronos2_demo.run_spec import (
@@ -91,6 +92,90 @@ def test_s3_byte_and_json_helpers_preserve_uploaded_bytes(s3):
     assert s3_io.download_bytes(json_uri) == expected
     assert s3_io.download_json(json_uri) == payload
     assert json_digest == s3_io.sha256_bytes(expected)
+
+
+@pytest.mark.parametrize(
+    "bucket,key,content_type",
+    [
+        ("test-data", "runs/run-1/blended.pkl", "application/octet-stream"),
+        ("test-data", "runs/run-1/diagnostics.json", "application/json"),
+        ("test-data", "runs/run-1/metrics/baseline.json", "application/json"),
+        ("test-plots", "runs/run-1/plots/pfe_overlay.png", "image/png"),
+        ("test-data", "runs/run-1/blended.meta.json", "application/json"),
+    ],
+)
+def test_create_or_verify_bytes_is_atomic_and_conflict_safe(
+    s3, bucket, key, content_type
+):
+    first = s3_io.create_or_verify_bytes(
+        b"exact-bytes",
+        bucket=bucket,
+        key=key,
+        content_type=content_type,
+    )
+    retry = s3_io.create_or_verify_bytes(
+        b"exact-bytes",
+        bucket=bucket,
+        key=key,
+        content_type=content_type,
+    )
+
+    assert retry == first
+    assert s3_io.download_bytes(first[0]) == b"exact-bytes"
+    with pytest.raises(ValueError, match="different bytes"):
+        s3_io.create_or_verify_bytes(
+            b"conflicting-bytes",
+            bucket=bucket,
+            key=key,
+            content_type=content_type,
+        )
+    assert s3_io.download_bytes(first[0]) == b"exact-bytes"
+
+
+@pytest.mark.parametrize(
+    "bucket,key",
+    [
+        ("test-data", "runs/run-1/blended.pkl"),
+        ("test-data", "runs/run-1/diagnostics.json"),
+        ("test-data", "runs/run-1/metrics/baseline.json"),
+        ("test-plots", "runs/run-1/plots/pfe_overlay.png"),
+        ("test-data", "runs/run-1/blended.meta.json"),
+    ],
+)
+def test_create_or_verify_bytes_verifies_concurrent_precondition_winner(
+    monkeypatch, bucket, key
+):
+    class Body:
+        def read(self):
+            return b"winner-bytes"
+
+    class ConcurrentClient:
+        def put_object(self, **_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "PreconditionFailed", "Message": "lost race"}},
+                "PutObject",
+            )
+
+        def get_object(self, **_kwargs):
+            return {"Body": Body()}
+
+    monkeypatch.setattr(s3_io.boto3, "client", lambda _service: ConcurrentClient())
+
+    uri, digest = s3_io.create_or_verify_bytes(
+        b"winner-bytes",
+        bucket=bucket,
+        key=key,
+        content_type="application/octet-stream",
+    )
+    assert uri == f"s3://{bucket}/{key}"
+    assert digest == s3_io.sha256_bytes(b"winner-bytes")
+    with pytest.raises(ValueError, match="different bytes"):
+        s3_io.create_or_verify_bytes(
+            b"loser-bytes",
+            bucket=bucket,
+            key=key,
+            content_type="application/octet-stream",
+        )
 
 
 @pytest.mark.parametrize("uri", ["https://bucket/key", "s3://", "s3://bucket", "s3:///key"])
@@ -358,3 +443,140 @@ def test_validate_artifact_rejects_mismatched_scenario_role(
             allowed_kinds={"pathset", "market_panel"},
             allowed_sources={"parametric"} if source else None,
         )
+
+
+def test_validate_artifact_supports_explicit_bucket_key_and_uri(
+    s3, monkeypatch, run_spec
+):
+    monkeypatch.setenv("DATA_BUCKET", "test-data")
+    artifact_uri, artifact_sha256 = s3_io.upload_bytes(
+        b"plot-bytes",
+        bucket="test-plots",
+        key="runs/run-1/plots/pfe_overlay.png",
+        content_type="image/png",
+    )
+    meta = put_artifact_sidecar(
+        artifact_uri=artifact_uri,
+        artifact_sha256=artifact_sha256,
+        artifact_kind="plot",
+        spec=run_spec,
+        producer_version="git:test",
+    )
+
+    assert validate_artifact(
+        artifact_uri,
+        spec=run_spec,
+        allowed_kinds={"plot"},
+        expected_bucket="test-plots",
+        expected_key="runs/run-1/plots/pfe_overlay.png",
+        expected_uri=artifact_uri,
+    ) == meta
+
+
+@pytest.mark.parametrize("expectation", ["key", "uri"])
+def test_validate_artifact_rejects_alias_key_even_with_valid_sidecar(
+    s3, monkeypatch, run_spec, expectation
+):
+    monkeypatch.setenv("DATA_BUCKET", "test-data")
+    alias_uri, artifact_sha256 = s3_io.upload_bytes(
+        b"serialized-pathset",
+        bucket="test-data",
+        key="runs/run-1/baseline-alias.pkl",
+        content_type="application/octet-stream",
+    )
+    put_artifact_sidecar(
+        artifact_uri=alias_uri,
+        artifact_sha256=artifact_sha256,
+        artifact_kind="pathset",
+        spec=run_spec,
+        producer_version="sha256:baseline",
+        source="parametric",
+    )
+    kwargs = (
+        {"expected_key": "runs/run-1/baseline.pkl"}
+        if expectation == "key"
+        else {"expected_uri": "s3://test-data/runs/run-1/baseline.pkl"}
+    )
+
+    with pytest.raises(ValueError, match="exact"):
+        validate_artifact(
+            alias_uri,
+            spec=run_spec,
+            allowed_kinds={"pathset"},
+            allowed_sources={"parametric"},
+            **kwargs,
+        )
+
+
+def test_sidecar_retry_recovers_only_for_verified_object_and_metadata(
+    s3, monkeypatch, run_spec
+):
+    monkeypatch.setenv("DATA_BUCKET", "test-data")
+    artifact_uri, artifact_sha256 = s3_io.create_or_verify_bytes(
+        b"serialized-pathset",
+        bucket="test-data",
+        key="runs/run-1/baseline.pkl",
+        content_type="application/octet-stream",
+    )
+    assert sidecar_uri(artifact_uri) not in [
+        f"s3://test-data/{item['Key']}"
+        for item in s3.list_objects_v2(Bucket="test-data").get("Contents", [])
+    ]
+
+    meta = put_artifact_sidecar(
+        artifact_uri=artifact_uri,
+        artifact_sha256=artifact_sha256,
+        artifact_kind="pathset",
+        spec=run_spec,
+        producer_version="sha256:baseline",
+        source="parametric",
+    )
+    assert put_artifact_sidecar(
+        artifact_uri=artifact_uri,
+        artifact_sha256=artifact_sha256,
+        artifact_kind="pathset",
+        spec=run_spec,
+        producer_version="sha256:baseline",
+        source="parametric",
+    ) == meta
+
+    with pytest.raises(ValueError, match="different bytes"):
+        put_artifact_sidecar(
+            artifact_uri=artifact_uri,
+            artifact_sha256=artifact_sha256,
+            artifact_kind="pathset",
+            spec=run_spec,
+            producer_version="sha256:forged",
+            source="parametric",
+        )
+    assert validate_artifact(
+        artifact_uri,
+        spec=run_spec,
+        allowed_kinds={"pathset"},
+        allowed_sources={"parametric"},
+        expected_key="runs/run-1/baseline.pkl",
+    ) == meta
+
+
+def test_sidecar_recovery_rejects_claimed_hash_that_does_not_match_object(
+    s3, monkeypatch, run_spec
+):
+    monkeypatch.setenv("DATA_BUCKET", "test-data")
+    artifact_uri, _ = s3_io.create_or_verify_bytes(
+        b"winner-bytes",
+        bucket="test-data",
+        key="runs/run-1/baseline.pkl",
+        content_type="application/octet-stream",
+    )
+
+    with pytest.raises(ValueError, match="content hash"):
+        put_artifact_sidecar(
+            artifact_uri=artifact_uri,
+            artifact_sha256=s3_io.sha256_bytes(b"loser-bytes"),
+            artifact_kind="pathset",
+            spec=run_spec,
+            producer_version="sha256:baseline",
+            source="parametric",
+        )
+    with pytest.raises(ClientError):
+        s3_io.download_bytes(sidecar_uri(artifact_uri))

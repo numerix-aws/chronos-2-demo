@@ -171,9 +171,6 @@ def test_price_book_prices_the_full_cross_asset_book(s3, monkeypatch):
 def test_price_book_allows_identical_retry_but_prevents_role_overwrite(s3, monkeypatch):
     spec = _put_run(s3, monkeypatch)
     chronos_uri = _put_pathset(s3, spec, "chronos2", "chronos2", value=1.0)
-    conditional_uri = _put_pathset(
-        s3, spec, "chronos2_conditional", "chronos2_conditional", value=2.0
-    )
     monkeypatch.setattr(handler.exposure, "compute_metrics", lambda _swaps, paths, **_k: _metrics(paths))
 
     first = _result(handler.handler({"execution_id": "run-1", "paths_uri": chronos_uri}, None))
@@ -182,12 +179,53 @@ def test_price_book_allows_identical_retry_but_prevents_role_overwrite(s3, monke
     assert retry["metrics_sha256"] == first["metrics_sha256"]
     assert s3_io.download_bytes(first["metrics_uri"]) == first_bytes
 
-    conflict = handler.handler(
-        {"execution_id": "run-1", "paths_uri": conditional_uri}, None
-    )
-    assert conflict["status"] == "error"
-    assert "overwrite" in conflict["message"]
+    conflicting_payload = s3_io.download_json(first["metrics_uri"])
+    conflicting_payload["source"] = "chronos2_conditional"
+    with pytest.raises(ValueError, match="different bytes|overwrite"):
+        handler._put_metrics(
+            conflicting_payload,
+            spec=spec,
+            source="chronos2_conditional",
+            role="chronos_only",
+        )
     assert s3_io.download_bytes(first["metrics_uri"]) == first_bytes
+
+
+@pytest.mark.parametrize("source", ["parametric", "chronos2", "blended"])
+def test_price_book_rejects_alias_path_key_with_valid_identity(
+    s3, monkeypatch, source
+):
+    spec = _put_run(s3, monkeypatch)
+    uri = _put_pathset(s3, spec, f"{source}-alias", source)
+    monkeypatch.setattr(
+        handler.exposure,
+        "compute_metrics",
+        lambda _swaps, paths, **_kwargs: _metrics(paths),
+    )
+
+    out = handler.handler({"execution_id": "run-1", "paths_uri": uri}, None)
+
+    assert out["status"] == "error"
+    assert "key" in out["message"].lower() or "exact" in out["message"].lower()
+
+
+def test_price_metrics_retry_rejects_sequential_byte_conflict(s3, monkeypatch):
+    spec = _put_run(s3, monkeypatch)
+    uri = _put_pathset(s3, spec, "baseline", "parametric")
+    monkeypatch.setattr(
+        handler.exposure,
+        "compute_metrics",
+        lambda _swaps, paths, **_kwargs: _metrics(paths),
+    )
+    first = _result(handler.handler({"execution_id": "run-1", "paths_uri": uri}, None))
+    bucket, key = s3_io.split_s3_uri(first["metrics_uri"])
+    s3.put_object(Bucket=bucket, Key=key, Body=b"conflicting-winner")
+
+    retry = handler.handler({"execution_id": "run-1", "paths_uri": uri}, None)
+
+    assert retry["status"] == "error"
+    assert "different bytes" in retry["message"] or "overwrite" in retry["message"]
+    assert s3_io.download_bytes(first["metrics_uri"]) == b"conflicting-winner"
 
 
 def test_price_book_rejects_pathset_source_sidecar_mismatch(s3, monkeypatch):
@@ -195,7 +233,7 @@ def test_price_book_rejects_pathset_source_sidecar_mismatch(s3, monkeypatch):
     uri = _put_pathset(
         s3,
         spec,
-        "bad",
+        "baseline",
         "parametric",
         sidecar_source="chronos2",
     )

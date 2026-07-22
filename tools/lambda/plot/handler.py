@@ -26,12 +26,25 @@ def _expected_path_producer(spec, source: str) -> str:
     return spec.provenance["blend_version"]
 
 
+def _path_key(spec, source: str) -> str:
+    filename = {
+        "parametric": "baseline.pkl",
+        "chronos2": "chronos2.pkl",
+        "chronos2_conditional": "chronos2.pkl",
+        "blended": "blended.pkl",
+    }[source]
+    return f"runs/{spec.execution_id}/{filename}"
+
+
 def _validated_path_meta(uri: str, spec, source: str):
+    expected_key = _path_key(spec, source)
     meta = run_manifest.validate_artifact(
         uri,
         spec=spec,
         allowed_kinds={"pathset"},
         allowed_sources={source},
+        expected_key=expected_key,
+        expected_uri=f"s3://{os.environ['DATA_BUCKET']}/{expected_key}",
     )
     if meta.producer_version != _expected_path_producer(spec, source):
         raise ValueError("PathSet producer version disagrees with RunSpec provenance")
@@ -39,16 +52,27 @@ def _validated_path_meta(uri: str, spec, source: str):
 
 
 def _metrics(uri: str, spec) -> dict:
+    _, key = s3_io.split_s3_uri(uri)
+    canonical_keys = {
+        f"runs/{spec.execution_id}/metrics/{role}.json"
+        for role in ("baseline", "chronos_only", "augmented")
+    }
+    if key not in canonical_keys:
+        raise ValueError("metrics key does not match an exact scenario-role key")
     meta = run_manifest.validate_artifact(
         uri,
         spec=spec,
         allowed_kinds={"metrics"},
         allowed_sources={"parametric", "chronos2", "chronos2_conditional", "blended"},
+        expected_key=key,
     )
     if meta.producer_version != spec.provenance["pricing_version"]:
         raise ValueError("metrics producer version disagrees with RunSpec provenance")
     payload = s3_io.download_json(meta.artifact_uri)
     role = scenario_role(meta.source)
+    expected_key = f"runs/{spec.execution_id}/metrics/{role}.json"
+    if key != expected_key:
+        raise ValueError("metrics source does not match its exact scenario-role key")
     if (
         payload["execution_id"] != spec.execution_id
         or payload["spec_hash"] != spec.spec_hash
@@ -71,7 +95,6 @@ def _metrics(uri: str, spec) -> dict:
 def _fig_to_png(fig) -> bytes:
     buffer = io.BytesIO()
     fig.savefig(buffer, format="png", dpi=120, bbox_inches="tight")
-    plt.close(fig)
     return buffer.getvalue()
 
 
@@ -93,6 +116,16 @@ def _publish(png: bytes, *, spec, plot_role: str) -> dict:
         spec=spec,
         producer_version=spec.provenance["tool_bundle_version"],
     )
+    meta = run_manifest.validate_artifact(
+        image_s3_uri,
+        spec=spec,
+        allowed_kinds={"plot"},
+        expected_bucket=bucket,
+        expected_key=key,
+        expected_uri=image_s3_uri,
+    )
+    if meta.producer_version != spec.provenance["tool_bundle_version"]:
+        raise ValueError("plot producer version disagrees with RunSpec provenance")
     return {
         "image_s3_uri": image_s3_uri,
         "image_uri": image_uri,
@@ -102,6 +135,7 @@ def _publish(png: bytes, *, spec, plot_role: str) -> dict:
 
 @bedrock_action
 def handler(event: dict, _ctx) -> dict:
+    fig = None
     try:
         spec = run_manifest.load_run_spec(event["execution_id"])
         plot_role = event["spec"]
@@ -123,6 +157,7 @@ def handler(event: dict, _ctx) -> dict:
                 event["regimes_uri"],
                 spec=spec,
                 allowed_kinds={"regimes"},
+                expected_key=f"runs/{spec.execution_id}/regimes.parquet",
             )
             if meta.source is not None or (
                 meta.producer_version != spec.provenance["tool_bundle_version"]
@@ -135,6 +170,14 @@ def handler(event: dict, _ctx) -> dict:
                 title="Regime ribbon",
             )
         elif plot_role == "path_fan":
+            _, supplied_key = s3_io.split_s3_uri(event["paths_uri"])
+            canonical_keys = {
+                f"runs/{spec.execution_id}/baseline.pkl",
+                f"runs/{spec.execution_id}/chronos2.pkl",
+                f"runs/{spec.execution_id}/blended.pkl",
+            }
+            if supplied_key not in canonical_keys:
+                raise ValueError("PathSet key does not match an exact producer-owned key")
             meta = run_manifest.validate_artifact(
                 event["paths_uri"],
                 spec=spec,
@@ -142,10 +185,16 @@ def handler(event: dict, _ctx) -> dict:
                 allowed_sources={
                     "parametric", "chronos2", "chronos2_conditional", "blended"
                 },
+                expected_key=supplied_key,
             )
+            if supplied_key != _path_key(spec, meta.source):
+                raise ValueError("PathSet source does not match its exact producer-owned key")
             if meta.producer_version != _expected_path_producer(spec, meta.source):
                 raise ValueError("PathSet producer version disagrees with RunSpec provenance")
-            paths = pickle.loads(s3_io.download_bytes(meta.artifact_uri))
+            try:
+                paths = pickle.loads(s3_io.download_bytes(meta.artifact_uri))
+            except Exception as exc:
+                raise ValueError(f"PathSet pickle decode failed: {exc}") from exc
             if not isinstance(paths, PathSet) or paths.source != meta.source:
                 raise ValueError("PathSet source disagrees with artifact sidecar")
             fig = path_samples.plot_path_fan(
@@ -160,6 +209,9 @@ def handler(event: dict, _ctx) -> dict:
         published = _publish(png, spec=spec, plot_role=plot_role)
     except (KeyError, TypeError, ValueError, BotoCoreError, ClientError) as exc:
         return responses.error(f"plot validation failed: {exc}")
+    finally:
+        if fig is not None:
+            plt.close(fig)
 
     return responses.ok({
         "execution_id": spec.execution_id,
