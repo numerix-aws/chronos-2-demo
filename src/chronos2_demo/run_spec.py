@@ -28,7 +28,12 @@ PROFILE = {
 REQUIRED_FIELDS = tuple(k for k in PROFILE if k not in {"schema_version", "profile", "conditioning"})
 PROFILE_RE = re.compile(r"\b(stage[ -]safe|headline demo|same stage[ -]safe setup)\b", re.I)
 QUANT_RE = re.compile(
-    r"\b(run|compare|forecast|simulate|stress)\b|\bwhat happens\b|\b(?:calculate|compute)\s+exposure\b",
+    r"\b(run|compare|forecast|simulate|expose)\b|\bwhat happens\b|\b(?:calculate|compute)\s+exposure\b",
+    re.I,
+)
+STRESS_REQUEST_RE = re.compile(
+    r"\bstress\s+(?:the|this|my|a|an|test|scenario|portfolio|book|rates?|market)\b"
+    r"|\b\d+(?:\.\d+)?\s*(?:%|percent)\s+stress\b|\bstress weight\b",
     re.I,
 )
 NEGATED_TOOL_RUN_RE = re.compile(r"\b(?:do not|don't)\s+run\s+tools?\b", re.I)
@@ -195,7 +200,7 @@ def compile_run_spec(
     provenance: Mapping[str, str],
     execution_id: str | None = None,
 ) -> RunSpec | Clarification:
-    if NEGATED_TOOL_RUN_RE.search(prompt) or not QUANT_RE.search(prompt):
+    if NEGATED_TOOL_RUN_RE.search(prompt) or not (QUANT_RE.search(prompt) or STRESS_REQUEST_RE.search(prompt)):
         return Clarification(False, (), "This request does not require quantitative tools.")
 
     values: dict[str, object] = dict(PROFILE) if PROFILE_RE.search(prompt) else {

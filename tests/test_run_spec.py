@@ -135,6 +135,10 @@ def test_invalid_or_ambiguous_explicit_date_fails_closed(prompt):
         "Run the stage-safe headline demo, forecast 252 trading days and 504 trading days ahead.",
         "horizon",
     ),
+    (
+        "Run the stage-safe headline demo with five years of history and 504 trading days of history.",
+        "lookback_days",
+    ),
     ("Run the stage-safe headline demo with stress weight 0.5 and 60% stress.", "w_stress"),
 ])
 def test_conflicting_explicit_values_fail_closed(prompt, field):
@@ -160,6 +164,33 @@ def test_exposure_use_case_question_does_not_compile_as_quantitative():
     )
     assert isinstance(result, Clarification)
     assert result.is_quantitative is False
+
+
+def test_expose_request_compiles_as_quantitative():
+    spec = compile_run_spec(
+        "Expose the stage-safe headline demo.",
+        provenance=PROVENANCE,
+        execution_id="run-expose",
+    )
+    assert not isinstance(spec, Clarification)
+
+
+def test_stress_use_case_question_does_not_compile_as_quantitative():
+    result = compile_run_spec(
+        "What stress use cases does this demo support?",
+        provenance=PROVENANCE,
+    )
+    assert isinstance(result, Clarification)
+    assert result.is_quantitative is False
+
+
+def test_stress_request_compiles_as_quantitative():
+    spec = compile_run_spec(
+        "Stress the stage-safe headline demo.",
+        provenance=PROVENANCE,
+        execution_id="run-stress",
+    )
+    assert not isinstance(spec, Clarification)
 
 
 def test_canonical_run_payload_excludes_transient_identity_fields():
