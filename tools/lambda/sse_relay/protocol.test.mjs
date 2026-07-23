@@ -496,6 +496,53 @@ test('relay serializes heartbeat and frames behind drain before ending', async (
   assert.equal(stream.endCount, 1);
 });
 
+test('relay never queues heartbeat after a backpressured terminal frame', async () => {
+  const { handleRelayRequest } = await loadProtocol();
+  const cases = [
+    {
+      terminal: { type: 'done' },
+      invokeAgent: async () => ({
+        contentType: 'text/event-stream',
+        response: chunks(),
+      }),
+    },
+    {
+      terminal: { type: 'error', message: 'AgentCore failed' },
+      invokeAgent: async () => {
+        throw new Error('AgentCore failed');
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const stream = new FakeResponseStream({ backpressureAt: [2] });
+    const { dependencies, state } = relayDependencies({
+      invokeAgent: item.invokeAgent,
+    });
+    const handling = handleRelayRequest(validRequest(), stream, dependencies);
+
+    while (stream.writes.length < 2) await immediate();
+    state.intervalCallback();
+    await immediate();
+
+    assert.deepEqual(stream.writes, [
+      ': connected\n\n',
+      `data: ${JSON.stringify(item.terminal)}\n\n`,
+    ]);
+    assert.equal(stream.endCount, 0);
+
+    stream.emit('drain');
+    await handling;
+
+    assert.deepEqual(stream.writes, [
+      ': connected\n\n',
+      `data: ${JSON.stringify(item.terminal)}\n\n`,
+    ]);
+    assert.deepEqual(state.cleared, ['heartbeat-handle']);
+    assert.equal(stream.endCount, 1);
+  }
+});
+
 test('relay emits structured AgentCore errors and stops heartbeat', async () => {
   const { handleRelayRequest } = await loadProtocol();
   const stream = new FakeResponseStream();

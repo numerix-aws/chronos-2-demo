@@ -233,6 +233,29 @@ export async function handleRelayRequest(event, responseStream, dependencies) {
   const writer = createAwaitableWriter(responseStream);
   let heartbeat = null;
   let sseStarted = false;
+  let terminalQueued = false;
+
+  function stopHeartbeat() {
+    if (heartbeat === null) return;
+    const handle = heartbeat;
+    heartbeat = null;
+    try {
+      dependencies.clearIntervalFn(handle);
+    } catch {
+      // Terminal gating still prevents writes if timer cancellation fails.
+    }
+  }
+
+  function writeRelay(value) {
+    const type = frameObject(value)?.type;
+    const isTerminal = type === 'done' || type === 'error';
+    if (terminalQueued) return Promise.resolve();
+    if (isTerminal) {
+      terminalQueued = true;
+      stopHeartbeat();
+    }
+    return writer.write(value);
+  }
 
   try {
     const key = await dependencies.getApiKey();
@@ -253,20 +276,20 @@ export async function handleRelayRequest(event, responseStream, dependencies) {
 
     responseStream.setContentType('text/event-stream');
     sseStarted = true;
-    await writer.write(': connected\n\n');
+    await writeRelay(': connected\n\n');
     heartbeat = dependencies.setIntervalFn(() => {
-      writer.write(': keepalive\n\n').catch(() => {});
+      writeRelay(': keepalive\n\n').catch(() => {});
     }, 15000);
 
     const response = await dependencies.invokeAgent({ sessionId, prompt });
-    const outcome = await forwardAgentResponse(response, writer.write);
+    const outcome = await forwardAgentResponse(response, writeRelay);
     if (!outcome.doneSeen && !outcome.errorSeen) {
-      await writer.write(sseEvent({ type: 'done' }));
+      await writeRelay(sseEvent({ type: 'done' }));
     }
   } catch (error) {
     try {
       if (sseStarted) {
-        await writer.write(sseEvent({
+        await writeRelay(sseEvent({
           type: 'error',
           message: errorMessage(error),
         }));
@@ -278,13 +301,7 @@ export async function handleRelayRequest(event, responseStream, dependencies) {
       // The stream itself failed; cleanup below still owns timer and end.
     }
   } finally {
-    if (heartbeat !== null) {
-      try {
-        dependencies.clearIntervalFn(heartbeat);
-      } catch {
-        // Cleanup continues to flush and end even if timer cancellation fails.
-      }
-    }
+    stopHeartbeat();
     try {
       await writer.flush();
     } catch {
