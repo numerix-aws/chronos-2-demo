@@ -171,11 +171,26 @@ def test_exposure_use_case_question_does_not_compile_as_quantitative():
     "What comparison use cases does this demo support?",
     "What simulation capabilities does this demo have?",
     "Can this demo forecast rates?",
+    "Run through the use cases supported by this demo",
+    "Can you run through the supported use cases?",
+    "Please walk me through the demo capability catalog.",
 ])
 def test_action_category_questions_do_not_compile_as_quantitative(prompt):
     result = compile_run_spec(prompt, provenance=PROVENANCE)
     assert isinstance(result, Clarification)
     assert result.is_quantitative is False
+
+
+def test_catalog_framing_with_concrete_quantitative_scenario_compiles():
+    spec = compile_run_spec(
+        "From the supported use cases, run the stage-safe headline demo with "
+        "500 paths and a 60% stress weight.",
+        provenance=PROVENANCE,
+        execution_id="run-catalog-scenario",
+    )
+    assert not isinstance(spec, Clarification)
+    assert spec.n_paths == 500
+    assert spec.w_stress == pytest.approx(0.6)
 
 
 @pytest.mark.parametrize("prompt", [

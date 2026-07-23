@@ -252,6 +252,8 @@ export class AgentStack extends cdk.Stack {
         GATEWAY_URL: gateway.attrGatewayUrl,
         MODEL_ID,
         DATA_BUCKET: props.tools.dataBucket.bucketName,
+        POLL_MAX_ATTEMPTS: '300',
+        POLL_INTERVAL_SECONDS: '2',
         ...Object.fromEntries(
           Object.entries(PROVENANCE_ENV).map(([name, envName]) => [
             envName,

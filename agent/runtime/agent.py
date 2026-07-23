@@ -6,10 +6,11 @@ SigV4-signed with the Runtime's execution-role credentials.
 """
 import json
 import os
+import time
 
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from strands import Agent
 from strands.models import BedrockModel
 from strands.tools.mcp import MCPClient
@@ -29,6 +30,9 @@ SYSTEM_PROMPT = open(os.path.join(_HERE, "system_prompt.md"), encoding="utf-8").
 GATEWAY_URL = os.environ["GATEWAY_URL"]
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+POLL_MAX_ATTEMPTS = int(os.environ.get("POLL_MAX_ATTEMPTS", "300"))
+POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "2"))
+PERSIST_CONFLICT_DELAYS = (0.05, 0.1)
 
 PROVENANCE_ENV = {
     "market_snapshot_id": "MARKET_SNAPSHOT_ID",
@@ -96,9 +100,14 @@ def _serialize_run_spec(spec) -> bytes:
 
 def _persist_run_spec(spec) -> None:
     raw = _serialize_run_spec(spec)
-    client = boto3.client("s3")
     bucket = os.environ["DATA_BUCKET"]
     key = f"runs/{spec.execution_id}/run_spec.json"
+    try:
+        client = boto3.client("s3")
+    except (BotoCoreError, ClientError) as exc:
+        raise RuntimeError(
+            f"run manifest persistence failed for {key}: {exc}"
+        ) from exc
     for attempt in range(3):
         try:
             client.put_object(
@@ -111,12 +120,31 @@ def _persist_run_spec(spec) -> None:
             return
         except ClientError as exc:
             code = str(exc.response.get("Error", {}).get("Code", ""))
-            if code in {"ConditionalRequestConflict", "409"} and attempt < 2:
-                continue
-            if code not in {"PreconditionFailed", "412"}:
-                raise
-            break
-    existing = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+            if code in {"ConditionalRequestConflict", "409"}:
+                if attempt < len(PERSIST_CONFLICT_DELAYS):
+                    time.sleep(PERSIST_CONFLICT_DELAYS[attempt])
+                    continue
+                break
+            if code in {"PreconditionFailed", "412"}:
+                break
+            raise RuntimeError(
+                f"run manifest persistence failed for {key}: {code}: {exc}"
+            ) from exc
+        except BotoCoreError as exc:
+            raise RuntimeError(
+                f"run manifest persistence failed for {key}: {exc}"
+            ) from exc
+    try:
+        existing = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+    except (BotoCoreError, ClientError, KeyError, AttributeError, OSError) as exc:
+        code = (
+            str(exc.response.get("Error", {}).get("Code", ""))
+            if isinstance(exc, ClientError)
+            else type(exc).__name__
+        )
+        raise RuntimeError(
+            f"run manifest winner verification failed for {key}: {code}: {exc}"
+        ) from exc
     if existing != raw:
         raise RuntimeError(
             f"run manifest {key} already exists with different canonical bytes"
@@ -145,7 +173,12 @@ async def invoke(payload: dict):
         }
         with _gateway() as gateway:
             try:
-                workflow_events = run_quantitative_workflow(gateway, compiled)
+                workflow_events = run_quantitative_workflow(
+                    gateway,
+                    compiled,
+                    max_poll_attempts=POLL_MAX_ATTEMPTS,
+                    poll_interval_seconds=POLL_INTERVAL_SECONDS,
+                )
                 while True:
                     try:
                         outgoing = next(workflow_events)

@@ -47,7 +47,8 @@ STRESS_REQUEST_RE = re.compile(
     re.I,
 )
 INFORMATIONAL_RE = re.compile(
-    r"\b(?:what|which|how)\b.*\b(?:use cases?|capabilit(?:y|ies)|support(?:s|ed)?)\b"
+    r"\b(?:use cases?|capabilit(?:y|ies)|catalog)\b"
+    r"|\b(?:what|which|how)\b.*\bsupport(?:s|ed)?\b"
     r"|\bcan\s+(?:this|the)\s+demo\b.*\b(?:run|compare|forecast|simulate|expose)\b",
     re.I,
 )
@@ -188,6 +189,27 @@ def _is_informational(prompt: str) -> bool:
     return bool(INFORMATIONAL_RE.search(prompt))
 
 
+def _has_quantitative_run_details(prompt: str) -> bool:
+    dates, invalid_date = _dates(prompt)
+    return bool(
+        PROFILE_RE.search(prompt)
+        or dates
+        or invalid_date
+        or any(_observation_values(prompt, patterns) for patterns in (
+            LOOKBACK_PATTERNS,
+            HORIZON_PATTERNS,
+        ))
+        or re.search(r"\b[\d,]+\s+(?:paths|scenarios|simulations)\b", prompt, re.I)
+        or re.search(
+            r"\b\d+(?:\.\d+)?\s*(?:%|percent)\s+stress\b|\bstress weight\b",
+            prompt,
+            re.I,
+        )
+        or _conditioning(prompt)
+        or re.search(r"\b(?:market|rates?|portfolio|book)\s+(?:scenario|shock)\b", prompt, re.I)
+    )
+
+
 def _conditioning(prompt: str) -> dict[str, object] | None:
     canonical = re.search(
         r"\bseries shifts?:\s*([A-Z0-9_]+\s*=\s*[+-]?\d+(?:\.\d+)?"
@@ -237,7 +259,7 @@ def compile_run_spec(
     stress_request = _is_stress_request(prompt)
     if NEGATED_TOOL_RUN_RE.search(prompt):
         return Clarification(False, (), "This request does not require quantitative tools.")
-    if _is_informational(prompt) and not direct_execution:
+    if _is_informational(prompt) and not _has_quantitative_run_details(prompt):
         return Clarification(False, (), "This request does not require quantitative tools.")
     if not direct_execution and not stress_request:
         return Clarification(False, (), "This request does not require quantitative tools.")
