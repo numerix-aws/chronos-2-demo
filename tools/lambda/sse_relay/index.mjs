@@ -5,6 +5,7 @@ import {
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { forwardAgentResponse, sseEvent } from './protocol.mjs';
 
 const agentClient = new BedrockAgentCoreClient({});
 const secretsClient = new SecretsManagerClient({});
@@ -24,10 +25,6 @@ function isAuthorized(headers, key) {
     if (name.toLowerCase() === 'x-api-key' && value === key) return true;
   }
   return false;
-}
-
-function sseFrame(text) {
-  return text.split('\n').map((l) => `data: ${l}\n`).join('') + '\n';
 }
 
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
@@ -61,16 +58,22 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
     const cmd = new InvokeAgentRuntimeCommand({
       agentRuntimeArn: process.env.AGENT_RUNTIME_ARN,
       runtimeSessionId: sessionId,
+      qualifier: process.env.AGENT_QUALIFIER,
       payload: new TextEncoder().encode(JSON.stringify({ prompt })),
     });
     const response = await agentClient.send(cmd);
-    for await (const chunk of response.response) {
-      const text = Buffer.from(chunk).toString('utf-8');
-      responseStream.write(sseFrame(text));
+    const outcome = await forwardAgentResponse(
+      response,
+      (frame) => responseStream.write(frame),
+    );
+    if (!outcome.doneSeen && !outcome.errorSeen) {
+      responseStream.write(sseEvent({ type: 'done' }));
     }
-    responseStream.write(sseFrame('[DONE]'));
   } catch (err) {
-    responseStream.write(sseFrame(`[ERROR] ${err.message}`));
+    responseStream.write(sseEvent({
+      type: 'error',
+      message: err?.message ?? String(err),
+    }));
   } finally {
     clearInterval(heartbeat);
     responseStream.end();

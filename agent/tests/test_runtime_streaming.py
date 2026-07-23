@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 RUNTIME_DIR = Path(__file__).resolve().parents[1] / "runtime"
+SPEC_HASH = "c" * 64
 
 
 def _load_events_module():
@@ -61,17 +62,17 @@ def test_translator_emits_text_and_deduplicated_tool_lifecycle_events():
     running = {
         "current_tool_use": {
             "toolUseId": "tool-1",
-            "name": "price-book___price_book",
-            "input": {"paths_uri": "s3://bucket/baseline.pkl"},
+            "name": "plot-tools___plot",
+            "input": {"spec": "pfe_overlay"},
         }
     }
     assert translator.translate(running) == [
         {
             "type": "tool",
             "tool_use_id": "tool-1",
-            "name": "price_book",
+            "name": "plot",
             "status": "running",
-            "input": {"paths_uri": "s3://bucket/baseline.pkl"},
+            "input": {"spec": "pfe_overlay"},
         }
     ]
     assert translator.translate(running) == []
@@ -104,7 +105,7 @@ def test_translator_emits_text_and_deduplicated_tool_lifecycle_events():
         {
             "type": "tool",
             "tool_use_id": "tool-1",
-            "name": "price_book",
+            "name": "plot",
             "status": "done",
             "result": result,
         }
@@ -150,7 +151,7 @@ def test_translator_emits_direct_tool_result_and_ignores_later_duplicate():
     translator.translate({
         "current_tool_use": {
             "toolUseId": "tool-3",
-            "name": "price_book",
+            "name": "plot",
             "input": {},
         }
     })
@@ -168,7 +169,7 @@ def test_translator_emits_direct_tool_result_and_ignores_later_duplicate():
     }) == [{
         "type": "tool",
         "tool_use_id": "tool-3",
-        "name": "price_book",
+        "name": "plot",
         "status": "done",
         "result": result,
     }]
@@ -177,4 +178,342 @@ def test_translator_emits_direct_tool_result_and_ignores_later_duplicate():
             "role": "user",
             "content": [{"toolResult": tool_result}],
         }
+    }) == []
+
+
+def test_completion_name_cannot_replace_tool_use_identity():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+    _start(translator, "tool-identity", "plot", {"spec": "pfe_overlay"})
+    envelope = {"status": "ok", "result": {"image_uri": "https://example.test/plot.png"}}
+
+    events = translator.translate({
+        "tool_result": {
+            "toolUseId": "tool-identity",
+            "name": "price_book",
+            "status": "success",
+            "content": [{"json": envelope}],
+        }
+    })
+
+    assert events == [{
+        "type": "tool",
+        "tool_use_id": "tool-identity",
+        "name": "plot",
+        "status": "done",
+        "result": envelope,
+    }]
+
+
+def _price_result(
+    *,
+    role="baseline",
+    source="parametric",
+    paths_uri="s3://chronos-data/runs/run-1/baseline.pkl",
+):
+    return {
+        "status": "ok",
+        "result": {
+            "execution_id": "run-1",
+            "spec_hash": SPEC_HASH,
+            "scenario_role": role,
+            "source": source,
+            "paths_uri": paths_uri,
+            "paths_sha256": "a" * 64,
+            "ee": [400000.0, 450586.45],
+            "pfe_975": [4800000.0, 4901670.11],
+            "es_975": [5700000.0, 5828331.63],
+            "dates": ["2023-09-18", "2023-09-19"],
+            "terminal": {
+                "date": "2023-09-19",
+                "ee": 450586.45,
+                "pfe_975": 4901670.11,
+                "es_975": 5828331.63,
+            },
+            "metrics_uri": f"s3://chronos-data/runs/run-1/metrics/{role}.json",
+            "metrics_sha256": "b" * 64,
+        },
+    }
+
+
+def _blend_result():
+    return {
+        "status": "ok",
+        "result": {
+            "execution_id": "run-1",
+            "spec_hash": SPEC_HASH,
+            "blended_uri": "s3://chronos-data/runs/run-1/blended.pkl",
+            "blended_sha256": "d" * 64,
+            "diagnostics_uri": "s3://chronos-data/runs/run-1/diagnostics.json",
+            "diagnostics_sha256": "e" * 64,
+            "diagnostics": {
+                "execution_id": "run-1",
+                "spec_hash": SPEC_HASH,
+                "attribution": {"distribution_count": 5},
+                "portfolio_coverage": {"available": True},
+                "factor_coverage": {"available": True},
+            },
+            "w_stress": 0.35,
+            "n_paths": 5000,
+        },
+    }
+
+
+def _start(translator, tool_use_id, name, tool_input):
+    return translator.translate({
+        "current_tool_use": {
+            "toolUseId": tool_use_id,
+            "name": name,
+            "input": tool_input,
+        }
+    })
+
+
+def _complete(translator, tool_use_id, envelope, *, direct=False):
+    result = {
+        "toolUseId": tool_use_id,
+        "status": "success",
+        "content": [{"json": envelope}],
+    }
+    if direct:
+        return translator.translate({"tool_result": result})
+    return translator.translate({
+        "message": {
+            "role": "user",
+            "content": [{"toolResult": result}],
+        }
+    })
+
+
+def test_price_book_done_is_followed_by_one_identity_bearing_exposure_result():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+    paths_uri = "s3://chronos-data/runs/run-1/baseline.pkl"
+    _start(
+        translator,
+        "price-1",
+        "price-book___price_book",
+        {"execution_id": "run-1", "paths_uri": paths_uri},
+    )
+    envelope = _price_result(paths_uri=paths_uri)
+
+    events = _complete(translator, "price-1", envelope)
+
+    assert events == [
+        {
+            "type": "tool",
+            "tool_use_id": "price-1",
+            "name": "price_book",
+            "status": "done",
+            "result": envelope,
+        },
+        {
+            "type": "exposure_result",
+            "execution_id": "run-1",
+            "spec_hash": SPEC_HASH,
+            "scenario_role": "baseline",
+            "source": "parametric",
+            "paths_uri": paths_uri,
+            "paths_sha256": "a" * 64,
+            "metrics_uri": "s3://chronos-data/runs/run-1/metrics/baseline.json",
+            "metrics_sha256": "b" * 64,
+            "terminal": {
+                "date": "2023-09-19",
+                "ee": 450586.45,
+                "pfe_975": 4901670.11,
+                "es_975": 5828331.63,
+            },
+        },
+    ]
+    assert _complete(translator, "price-1", envelope, direct=True) == []
+
+
+def test_blend_paths_done_is_followed_by_one_identity_bearing_diagnostics_event():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+    _start(
+        translator,
+        "blend-1",
+        "blend_paths",
+        {"execution_id": "run-1"},
+    )
+    envelope = _blend_result()
+
+    events = _complete(translator, "blend-1", envelope, direct=True)
+
+    assert events == [
+        {
+            "type": "tool",
+            "tool_use_id": "blend-1",
+            "name": "blend_paths",
+            "status": "done",
+            "result": envelope,
+        },
+        {
+            "type": "diagnostics",
+            "execution_id": "run-1",
+            "spec_hash": SPEC_HASH,
+            "diagnostics_uri": "s3://chronos-data/runs/run-1/diagnostics.json",
+            "diagnostics_sha256": "e" * 64,
+            "diagnostics": envelope["result"]["diagnostics"],
+        },
+    ]
+    assert _complete(translator, "blend-1", envelope) == []
+
+
+def test_distinct_price_book_attempts_preserve_each_scenario_role():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+    cases = (
+        ("price-baseline", "baseline", "parametric", "baseline.pkl"),
+        ("price-augmented", "augmented", "blended", "blended.pkl"),
+    )
+    events = []
+    for tool_use_id, role, source, filename in cases:
+        paths_uri = f"s3://chronos-data/runs/run-1/{filename}"
+        _start(
+            translator,
+            tool_use_id,
+            "price_book",
+            {"execution_id": "run-1", "paths_uri": paths_uri},
+        )
+        events.extend(_complete(
+            translator,
+            tool_use_id,
+            _price_result(role=role, source=source, paths_uri=paths_uri),
+        ))
+
+    assert [
+        event["scenario_role"]
+        for event in events
+        if event["type"] == "exposure_result"
+    ] == ["baseline", "augmented"]
+    assert [
+        event["tool_use_id"]
+        for event in events
+        if event["type"] == "tool" and event["status"] == "done"
+    ] == ["price-baseline", "price-augmented"]
+
+
+def test_failed_structured_tool_attempt_emits_lifecycle_failure_only():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+    _start(
+        translator,
+        "price-failed",
+        "price_book",
+        {
+            "execution_id": "run-1",
+            "paths_uri": "s3://chronos-data/runs/run-1/baseline.pkl",
+        },
+    )
+
+    events = translator.translate({
+        "tool_result": {
+            "toolUseId": "price-failed",
+            "status": "error",
+            "content": [{"json": {"status": "error", "message": "pricing failed"}}],
+        }
+    })
+
+    assert events == [{
+        "type": "tool",
+        "tool_use_id": "price-failed",
+        "name": "price_book",
+        "status": "failed",
+        "result": {"status": "error", "message": "pricing failed"},
+    }]
+
+
+def test_malformed_nominally_ok_price_book_result_is_failed_before_summary():
+    module = _load_events_module()
+    mutations = (
+        lambda result: result.pop("metrics_sha256"),
+        lambda result: result.__setitem__("execution_id", "run-2"),
+        lambda result: result.__setitem__("spec_hash", "not-a-spec-hash"),
+        lambda result: result.__setitem__("scenario_role", "augmented"),
+        lambda result: (
+            result.__setitem__("source", "chronos2"),
+            result.__setitem__("scenario_role", "chronos_only"),
+        ),
+        lambda result: result.__setitem__(
+            "metrics_uri",
+            "s3://chronos-data/runs/run-1/metrics/augmented.json",
+        ),
+        lambda result: result["terminal"].__setitem__("ee", "450586.45"),
+        lambda result: result["terminal"].__setitem__("ee", 1.0),
+        lambda result: result["ee"].__setitem__(1, float("nan")),
+    )
+
+    for index, mutate in enumerate(mutations):
+        translator = module.StrandsEventTranslator()
+        tool_use_id = f"malformed-price-{index}"
+        paths_uri = "s3://chronos-data/runs/run-1/baseline.pkl"
+        _start(
+            translator,
+            tool_use_id,
+            "price_book",
+            {"execution_id": "run-1", "paths_uri": paths_uri},
+        )
+        envelope = _price_result(paths_uri=paths_uri)
+        mutate(envelope["result"])
+
+        events = _complete(translator, tool_use_id, envelope)
+
+        assert len(events) == 1
+        assert events[0]["type"] == "tool"
+        assert events[0]["status"] == "failed"
+        assert events[0]["result"]["status"] == "error"
+
+
+def test_malformed_nominally_ok_blend_result_is_failed_before_diagnostics():
+    module = _load_events_module()
+    mutations = (
+        lambda result: result.pop("diagnostics_sha256"),
+        lambda result: result.__setitem__("execution_id", "run-2"),
+        lambda result: result.__setitem__("spec_hash", 7),
+        lambda result: result["diagnostics"].__setitem__("execution_id", "run-2"),
+        lambda result: result["diagnostics"].__setitem__("spec_hash", "other"),
+        lambda result: result.__setitem__(
+            "diagnostics_uri",
+            "s3://chronos-data/runs/run-1/other-diagnostics.json",
+        ),
+        lambda result: result.__setitem__(
+            "blended_uri",
+            "s3://chronos-data/runs/run-1/other.pkl",
+        ),
+        lambda result: result["diagnostics"].__setitem__("bad", float("inf")),
+    )
+
+    for index, mutate in enumerate(mutations):
+        translator = module.StrandsEventTranslator()
+        tool_use_id = f"malformed-blend-{index}"
+        _start(
+            translator,
+            tool_use_id,
+            "blend_paths",
+            {"execution_id": "run-1"},
+        )
+        envelope = _blend_result()
+        mutate(envelope["result"])
+
+        events = _complete(translator, tool_use_id, envelope)
+
+        assert len(events) == 1
+        assert events[0]["type"] == "tool"
+        assert events[0]["status"] == "failed"
+        assert events[0]["result"]["status"] == "error"
+
+
+def test_translator_does_not_reinterpret_deterministic_specialized_events():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+
+    assert translator.translate({
+        "type": "exposure_result",
+        **_price_result()["result"],
+    }) == []
+    assert translator.translate({
+        "type": "diagnostics",
+        **_blend_result()["result"],
     }) == []
