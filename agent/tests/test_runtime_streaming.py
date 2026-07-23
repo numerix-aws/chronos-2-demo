@@ -205,6 +205,114 @@ def test_completion_name_cannot_replace_tool_use_identity():
     }]
 
 
+def test_duplicate_plot_start_cannot_replace_first_price_book_binding():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+    paths_uri = "s3://chronos-data/runs/run-1/baseline.pkl"
+
+    assert _start(
+        translator,
+        "immutable-price",
+        "price_book",
+        {"execution_id": "run-1", "paths_uri": paths_uri},
+    )[0]["name"] == "price_book"
+    assert _start(
+        translator,
+        "immutable-price",
+        "plot",
+        {"spec": "pfe_overlay"},
+    ) == []
+
+    events = _complete(
+        translator,
+        "immutable-price",
+        _price_result(paths_uri=paths_uri),
+    )
+
+    assert [event["type"] for event in events] == ["tool", "exposure_result"]
+    assert events[0]["name"] == "price_book"
+    assert events[0]["status"] == "done"
+    assert events[1]["paths_uri"] == paths_uri
+
+
+def test_first_attempt_input_is_snapshotted_before_external_mutation():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+    paths_uri = "s3://chronos-data/runs/run-1/baseline.pkl"
+    tool_input = {"execution_id": "run-1", "paths_uri": paths_uri}
+
+    _start(translator, "snapshot-price", "price_book", tool_input)
+    tool_input["paths_uri"] = "s3://chronos-data/runs/run-1/blended.pkl"
+
+    events = _complete(
+        translator,
+        "snapshot-price",
+        _price_result(paths_uri=paths_uri),
+    )
+
+    assert [event["type"] for event in events] == ["tool", "exposure_result"]
+    assert events[0]["status"] == "done"
+
+
+def test_duplicate_price_book_start_cannot_replace_first_plot_binding():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+    envelope = {"status": "ok", "result": {"image_uri": "https://example.test/plot.png"}}
+
+    assert _start(
+        translator,
+        "immutable-plot",
+        "plot",
+        {"spec": "pfe_overlay"},
+    )[0]["name"] == "plot"
+    assert _start(
+        translator,
+        "immutable-plot",
+        "price_book",
+        {
+            "execution_id": "run-1",
+            "paths_uri": "s3://chronos-data/runs/run-1/baseline.pkl",
+        },
+    ) == []
+
+    assert _complete(translator, "immutable-plot", envelope) == [{
+        "type": "tool",
+        "tool_use_id": "immutable-plot",
+        "name": "plot",
+        "status": "done",
+        "result": envelope,
+    }]
+
+
+def test_invalid_start_does_not_claim_attempt_binding():
+    module = _load_events_module()
+    translator = module.StrandsEventTranslator()
+
+    assert translator.translate({
+        "current_tool_use": {
+            "toolUseId": "valid-after-invalid",
+            "name": "plot",
+            "input": [],
+        }
+    }) == []
+    assert translator.translate({
+        "current_tool_use": {
+            "toolUseId": "valid-after-invalid",
+            "name": "gateway___",
+            "input": {"spec": "pfe_overlay"},
+        }
+    }) == []
+    assert _start(
+        translator,
+        "valid-after-invalid",
+        "price_book",
+        {
+            "execution_id": "run-1",
+            "paths_uri": "s3://chronos-data/runs/run-1/baseline.pkl",
+        },
+    )[0]["name"] == "price_book"
+
+
 def _price_result(
     *,
     role="baseline",
@@ -448,6 +556,42 @@ def test_malformed_nominally_ok_price_book_result_is_failed_before_summary():
     for index, mutate in enumerate(mutations):
         translator = module.StrandsEventTranslator()
         tool_use_id = f"malformed-price-{index}"
+        paths_uri = "s3://chronos-data/runs/run-1/baseline.pkl"
+        _start(
+            translator,
+            tool_use_id,
+            "price_book",
+            {"execution_id": "run-1", "paths_uri": paths_uri},
+        )
+        envelope = _price_result(paths_uri=paths_uri)
+        mutate(envelope["result"])
+
+        events = _complete(translator, tool_use_id, envelope)
+
+        assert len(events) == 1
+        assert events[0]["type"] == "tool"
+        assert events[0]["status"] == "failed"
+        assert events[0]["result"]["status"] == "error"
+
+
+def test_price_book_terminal_requires_exact_keys_canonical_date_and_finite_numbers():
+    module = _load_events_module()
+
+    def set_date(result, value):
+        result["dates"][-1] = value
+        result["terminal"]["date"] = value
+
+    mutations = (
+        lambda result: result["terminal"].__setitem__("extra", 1),
+        lambda result: result["terminal"].pop("es_975"),
+        lambda result: set_date(result, "2023-02-29"),
+        lambda result: set_date(result, "2023-9-19"),
+        lambda result: result["terminal"].__setitem__("pfe_975", float("inf")),
+    )
+
+    for index, mutate in enumerate(mutations):
+        translator = module.StrandsEventTranslator()
+        tool_use_id = f"invalid-terminal-{index}"
         paths_uri = "s3://chronos-data/runs/run-1/baseline.pkl"
         _start(
             translator,

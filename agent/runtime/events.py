@@ -1,8 +1,11 @@
 """Translate verbose Strands stream events into the demo UI protocol."""
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import date
 import json
 import math
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -161,8 +164,22 @@ def _validate_price_result(envelope: Any, tool_input: dict[str, Any]) -> None:
     terminal = result["terminal"]
     if not isinstance(terminal, dict):
         raise ValueError("field terminal must be an object")
-    _require_fields(terminal, {"date", "ee", "pfe_975", "es_975"})
-    if terminal["date"] != dates[-1]:
+    terminal_fields = {"date", "ee", "pfe_975", "es_975"}
+    if set(terminal) != terminal_fields:
+        raise ValueError("field terminal must contain exactly date, ee, pfe_975, es_975")
+    terminal_date = terminal["date"]
+    if not isinstance(terminal_date, str) or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}",
+        terminal_date,
+    ):
+        raise ValueError("terminal date must be a canonical ISO calendar date")
+    try:
+        parsed_terminal_date = date.fromisoformat(terminal_date)
+    except ValueError as exc:
+        raise ValueError("terminal date must be a canonical ISO calendar date") from exc
+    if parsed_terminal_date.isoformat() != terminal_date:
+        raise ValueError("terminal date must be a canonical ISO calendar date")
+    if terminal_date != dates[-1]:
         raise ValueError("terminal date does not match the final metric date")
     for field, values in zip(("ee", "pfe_975", "es_975"), metrics):
         _require_number(terminal[field], f"terminal.{field}")
@@ -295,21 +312,29 @@ class StrandsEventTranslator:
         if isinstance(current, dict):
             tool_use_id = current.get("toolUseId")
             name = current.get("name")
-            if isinstance(tool_use_id, str) and isinstance(name, str) and name:
-                name = _canonical_tool_name(name)
-                self._tool_names[tool_use_id] = name
-                tool_input = current.get("input", {})
-                if isinstance(tool_input, dict):
-                    self._tool_inputs[tool_use_id] = tool_input
-                if tool_use_id not in self._started:
-                    self._started.add(tool_use_id)
-                    outgoing.append({
-                        "type": "tool",
-                        "tool_use_id": tool_use_id,
-                        "name": name,
-                        "status": "running",
-                        "input": current.get("input", {}),
-                    })
+            tool_input = current.get("input")
+            canonical_name = (
+                _canonical_tool_name(name)
+                if isinstance(name, str)
+                else None
+            )
+            if (
+                isinstance(tool_use_id, str)
+                and canonical_name
+                and isinstance(tool_input, dict)
+                and tool_use_id not in self._started
+            ):
+                bound_input = deepcopy(tool_input)
+                self._tool_names[tool_use_id] = canonical_name
+                self._tool_inputs[tool_use_id] = bound_input
+                self._started.add(tool_use_id)
+                outgoing.append({
+                    "type": "tool",
+                    "tool_use_id": tool_use_id,
+                    "name": canonical_name,
+                    "status": "running",
+                    "input": deepcopy(bound_input),
+                })
 
         direct_result = event.get("tool_result")
         if isinstance(direct_result, dict):

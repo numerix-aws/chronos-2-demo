@@ -5,7 +5,7 @@ import {
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { forwardAgentResponse, sseEvent } from './protocol.mjs';
+import { handleRelayRequest } from './protocol.mjs';
 
 const agentClient = new BedrockAgentCoreClient({});
 const secretsClient = new SecretsManagerClient({});
@@ -20,62 +20,19 @@ async function getApiKey() {
   return cachedKey;
 }
 
-function isAuthorized(headers, key) {
-  for (const [name, value] of Object.entries(headers || {})) {
-    if (name.toLowerCase() === 'x-api-key' && value === key) return true;
-  }
-  return false;
-}
-
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
-  const headers = event.headers || {};
-  const key = await getApiKey();
-  if (!isAuthorized(headers, key)) {
-    responseStream.setContentType('text/plain');
-    responseStream.write('unauthorized');
-    responseStream.end();
-    return;
-  }
-
-  const qs = event.queryStringParameters || {};
-  const sessionId = qs.session_id;
-  const prompt = qs.prompt;
-  if (!sessionId || !prompt) {
-    responseStream.setContentType('text/plain');
-    responseStream.write('session_id and prompt required');
-    responseStream.end();
-    return;
-  }
-
-  responseStream.setContentType('text/event-stream');
-  // Flush a comment frame immediately and heartbeat while the agent is in
-  // long tool calls: CloudFront's origin read timeout (30s) aborts the stream
-  // if no bytes arrive, and the agent can go minutes before its first token.
-  responseStream.write(': connected\n\n');
-  const heartbeat = setInterval(() => responseStream.write(': keepalive\n\n'), 15000);
-
-  try {
-    const cmd = new InvokeAgentRuntimeCommand({
-      agentRuntimeArn: process.env.AGENT_RUNTIME_ARN,
-      runtimeSessionId: sessionId,
-      qualifier: process.env.AGENT_QUALIFIER,
-      payload: new TextEncoder().encode(JSON.stringify({ prompt })),
-    });
-    const response = await agentClient.send(cmd);
-    const outcome = await forwardAgentResponse(
-      response,
-      (frame) => responseStream.write(frame),
-    );
-    if (!outcome.doneSeen && !outcome.errorSeen) {
-      responseStream.write(sseEvent({ type: 'done' }));
-    }
-  } catch (err) {
-    responseStream.write(sseEvent({
-      type: 'error',
-      message: err?.message ?? String(err),
-    }));
-  } finally {
-    clearInterval(heartbeat);
-    responseStream.end();
-  }
+  await handleRelayRequest(event, responseStream, {
+    getApiKey,
+    async invokeAgent({ sessionId, prompt }) {
+      const command = new InvokeAgentRuntimeCommand({
+        agentRuntimeArn: process.env.AGENT_RUNTIME_ARN,
+        runtimeSessionId: sessionId,
+        qualifier: process.env.AGENT_QUALIFIER,
+        payload: new TextEncoder().encode(JSON.stringify({ prompt })),
+      });
+      return agentClient.send(command);
+    },
+    setIntervalFn: setInterval,
+    clearIntervalFn: clearInterval,
+  });
 });
