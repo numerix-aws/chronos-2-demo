@@ -28,7 +28,7 @@ PROFILE = {
 REQUIRED_FIELDS = tuple(k for k in PROFILE if k not in {"schema_version", "profile", "conditioning"})
 PROFILE_RE = re.compile(r"\b(stage[ -]safe|headline demo|same stage[ -]safe setup)\b", re.I)
 IMPERATIVE_ACTION_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:run|compare|forecast|simulate|expose)\b",
+    r"\b(?:please\s+)?(?:run|compare|forecast|simulate|expose)\b",
     re.I,
 )
 POLITE_ACTION_RE = re.compile(
@@ -206,7 +206,6 @@ def _has_quantitative_run_details(prompt: str) -> bool:
             re.I,
         )
         or _conditioning(prompt)
-        or re.search(r"\b(?:market|rates?|portfolio|book)\s+(?:scenario|shock)\b", prompt, re.I)
     )
 
 

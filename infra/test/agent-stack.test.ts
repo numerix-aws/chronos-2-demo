@@ -114,6 +114,8 @@ test('runtime receives complete pinned provenance and the data bucket', () => {
   expect(environment.STRANDS_VERSION).toBe('1.30.0');
   expect(environment.POLL_MAX_ATTEMPTS).toBe('300');
   expect(environment.POLL_INTERVAL_SECONDS).toBe('2');
+  expect(environment.POLL_BUDGET_SECONDS).toBe('600');
+  expect(environment.GATEWAY_READ_TIMEOUT_SECONDS).toBe('90');
   expect(environment.BASELINE_IMAGE_DIGEST).toBe(PROVENANCE.baseline_image_digest);
   expect(environment.CHRONOS_IMAGE_DIGEST).toBe(PROVENANCE.chronos_image_digest);
   expect(environment.AGENT_IMAGE_DIGEST).toBe(PROVENANCE.agent_image_digest);

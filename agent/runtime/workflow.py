@@ -155,19 +155,53 @@ class WorkflowRunner:
         spec_hash: str,
         max_poll_attempts: int,
         poll_interval_seconds: float,
+        poll_budget_seconds: float,
+        gateway_call_timeout_seconds: float,
+        monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if max_poll_attempts < 1:
             raise ValueError("max_poll_attempts must be positive")
         if poll_interval_seconds < 0:
             raise ValueError("poll_interval_seconds must be nonnegative")
+        if poll_budget_seconds <= 0:
+            raise ValueError("poll_budget_seconds must be positive")
+        if gateway_call_timeout_seconds <= 0:
+            raise ValueError("gateway_call_timeout_seconds must be positive")
         self.client = client
         self.execution_id = execution_id
         self.spec_hash = spec_hash
         self.max_poll_attempts = max_poll_attempts
         self.poll_interval_seconds = poll_interval_seconds
+        self.poll_budget_seconds = poll_budget_seconds
+        self.gateway_call_timeout_seconds = gateway_call_timeout_seconds
+        self.monotonic = monotonic
         self.sleep = sleep
+        self.poll_started_at = monotonic()
         self.names = _available_tools(client)
+
+    def _poll_elapsed(self) -> float:
+        return max(0.0, self.monotonic() - self.poll_started_at)
+
+    def _poll_remaining(self) -> float:
+        return self.poll_budget_seconds - self._poll_elapsed()
+
+    def _poll_error(
+        self,
+        reason: str,
+        *,
+        attempt: int,
+        latest_status: str,
+        task_arn: str,
+        tool_name: str,
+    ) -> RuntimeError:
+        return RuntimeError(
+            f"{reason}; attempts={attempt}; elapsed={self._poll_elapsed():.3f}s; "
+            f"budget={self.poll_budget_seconds:.3f}s; "
+            f"latest task_status={latest_status}; task_arn={task_arn}; "
+            f"poll_tool={tool_name}; "
+            f"max_call_overrun={self.gateway_call_timeout_seconds:.3f}s"
+        )
 
     def _validate_result(
         self,
@@ -311,6 +345,7 @@ class WorkflowRunner:
         expected_source: str | None = None,
         expected_role: str | None = None,
         expected_plot_role: str | None = None,
+        before_call: Callable[[], None] | None = None,
         semantic_check: Callable[[dict[str, Any]], None] | None = None,
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         tool_use_id = str(uuid.uuid4())
@@ -322,6 +357,8 @@ class WorkflowRunner:
             "input": arguments,
         }
         try:
+            if before_call is not None:
+                before_call()
             raw = self.client.call_tool_sync(
                 tool_use_id=tool_use_id,
                 name=self.names[name],
@@ -418,18 +455,38 @@ class WorkflowRunner:
         expected_source: str,
         expected_role: str,
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
+        latest_status = "unknown"
         for attempt in range(1, self.max_poll_attempts + 1):
             final_attempt = attempt == self.max_poll_attempts
 
+            def require_budget_before_call() -> None:
+                if self._poll_remaining() <= 0:
+                    raise self._poll_error(
+                        "elapsed polling deadline exhausted before poll call",
+                        attempt=attempt,
+                        latest_status=latest_status,
+                        task_arn=task_arn,
+                        tool_name=name,
+                    )
+
             def require_ready(result: dict[str, Any]) -> None:
+                nonlocal latest_status
+                latest_status = result["task_status"]
+                if self._poll_remaining() <= 0:
+                    raise self._poll_error(
+                        "elapsed polling deadline exceeded during poll call",
+                        attempt=attempt,
+                        latest_status=latest_status,
+                        task_arn=task_arn,
+                        tool_name=name,
+                    )
                 if final_attempt and result["ready"] is not True:
-                    deadline = self.max_poll_attempts * self.poll_interval_seconds
-                    raise RuntimeError(
-                        "polling exhausted after "
-                        f"{self.max_poll_attempts} attempts "
-                        f"(attempts={attempt}, deadline={deadline:.1f}s); "
-                        f"latest task_status={result['task_status']}; "
-                        f"task_arn={task_arn}; poll_tool={name}"
+                    raise self._poll_error(
+                        "poll attempt limit exhausted",
+                        attempt=attempt,
+                        latest_status=latest_status,
+                        task_arn=task_arn,
+                        tool_name=name,
                     )
 
             result = yield from self.call(
@@ -441,11 +498,15 @@ class WorkflowRunner:
                 },
                 expected_source=expected_source,
                 expected_role=expected_role,
+                before_call=require_budget_before_call,
                 semantic_check=require_ready,
             )
             if result.get("ready") is True:
                 return result
-            self.sleep(self.poll_interval_seconds)
+            remaining = self._poll_remaining()
+            if remaining <= 0:
+                continue
+            self.sleep(min(self.poll_interval_seconds, remaining))
 
 
 def run_quantitative_workflow(
@@ -453,8 +514,11 @@ def run_quantitative_workflow(
     spec,
     *,
     sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
     max_poll_attempts: int = 300,
     poll_interval_seconds: float = 2.0,
+    poll_budget_seconds: float = 600.0,
+    gateway_call_timeout_seconds: float = 90.0,
 ) -> Generator[dict[str, Any], None, dict[str, Any]]:
     runner = WorkflowRunner(
         client,
@@ -462,6 +526,9 @@ def run_quantitative_workflow(
         spec_hash=spec.spec_hash,
         max_poll_attempts=max_poll_attempts,
         poll_interval_seconds=poll_interval_seconds,
+        poll_budget_seconds=poll_budget_seconds,
+        gateway_call_timeout_seconds=gateway_call_timeout_seconds,
+        monotonic=monotonic,
         sleep=sleep,
     )
     execution = {"execution_id": spec.execution_id}

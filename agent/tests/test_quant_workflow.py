@@ -249,6 +249,58 @@ class NeverReadyClient(FakeClient):
         })
 
 
+class FakeClock:
+    def __init__(self, *, sleep_overruns=None) -> None:
+        self.value = 0.0
+        self.sleep_requests = []
+        self.sleep_overruns = list(sleep_overruns or [])
+
+    def monotonic(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
+    def sleep(self, seconds):
+        self.sleep_requests.append(seconds)
+        overrun = self.sleep_overruns.pop(0) if self.sleep_overruns else 0.0
+        self.advance(seconds + overrun)
+
+
+class TimedNeverReadyClient(NeverReadyClient):
+    def __init__(self, clock, call_latencies) -> None:
+        super().__init__()
+        self.clock = clock
+        self.call_latencies = list(call_latencies)
+
+    def call_tool_sync(self, *, tool_use_id, name, arguments):
+        raw = super().call_tool_sync(
+            tool_use_id=tool_use_id,
+            name=name,
+            arguments=arguments,
+        )
+        if name.rsplit("___", 1)[-1].startswith("check_"):
+            self.clock.advance(self.call_latencies.pop(0))
+        return raw
+
+
+class TimedFakeClient(FakeClient):
+    def __init__(self, clock, call_latencies) -> None:
+        super().__init__()
+        self.clock = clock
+        self.call_latencies = list(call_latencies)
+
+    def call_tool_sync(self, *, tool_use_id, name, arguments):
+        raw = super().call_tool_sync(
+            tool_use_id=tool_use_id,
+            name=name,
+            arguments=arguments,
+        )
+        if name.rsplit("___", 1)[-1].startswith("check_"):
+            self.clock.advance(self.call_latencies.pop(0))
+        return raw
+
+
 class AdversarialClient(FakeClient):
     def __init__(self, target: str, occurrence: int, mutate) -> None:
         super().__init__()
@@ -288,6 +340,40 @@ def _spec():
         "Run the stage-safe headline demo.",
         provenance=PROVENANCE,
         execution_id="run-1",
+    )
+
+
+def _poll_runner(
+    module,
+    client,
+    clock,
+    *,
+    budget=5.0,
+    interval=2.0,
+    attempts=10,
+    gateway_timeout=90.0,
+):
+    return module.WorkflowRunner(
+        client,
+        execution_id="run-1",
+        spec_hash=SPEC_HASH,
+        max_poll_attempts=attempts,
+        poll_interval_seconds=interval,
+        poll_budget_seconds=budget,
+        gateway_call_timeout_seconds=gateway_timeout,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+
+def _baseline_poll(runner):
+    return runner.poll(
+        "check_baseline_mc",
+        execution_id="run-1",
+        task_arn="baseline-task",
+        paths_uri="s3://data/runs/run-1/baseline.pkl",
+        expected_source="parametric",
+        expected_role="baseline",
     )
 
 
@@ -401,44 +487,181 @@ def test_tool_failure_preserves_structured_error_and_aborts_immediately():
     }
 
 
-def test_poll_exhaustion_fails_final_attempt_without_extra_poll_or_sleep():
+def test_poll_attempt_exhaustion_is_distinct_from_elapsed_deadline():
     module = _load_workflow()
-    client = NeverReadyClient()
-    sleeps = []
-    generator = module.run_quantitative_workflow(
+    clock = FakeClock()
+    client = TimedNeverReadyClient(clock, [0.0, 0.0])
+    generator = _baseline_poll(_poll_runner(
+        module,
         client,
-        _spec(),
-        sleep=sleeps.append,
-        max_poll_attempts=3,
-        poll_interval_seconds=2.0,
+        clock,
+        budget=100.0,
+        attempts=2,
+    ))
+    events = []
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"check_baseline_mc failed: poll attempt limit exhausted; "
+            r"attempts=2; elapsed=2.000s; budget=100.000s"
+        ),
+    ):
+        while True:
+            events.append(next(generator))
+
+    assert len(client.calls) == 2
+    assert clock.sleep_requests == [2.0]
+    assert [event["status"] for event in events] == [
+        "running", "done", "running", "failed",
+    ]
+    assert "latest task_status=RUNNING-2" in events[-1]["result"]["message"]
+
+
+def test_poll_budget_accounts_for_call_latency_and_caps_final_sleep():
+    module = _load_workflow()
+    clock = FakeClock()
+    client = TimedNeverReadyClient(clock, [1.0, 1.0])
+    generator = _baseline_poll(
+        _poll_runner(
+            module,
+            client,
+            clock,
+            budget=5.0,
+            attempts=10,
+        )
     )
     events = []
 
     with pytest.raises(
         RuntimeError,
         match=(
-            r"check_baseline_mc failed: polling exhausted after 3 attempts "
-            r".*latest task_status=RUNNING-3.*task_arn=baseline-task"
+            r"check_baseline_mc failed: elapsed polling deadline exhausted "
+            r"before poll call; attempts=3; elapsed=5.000s; budget=5.000s"
         ),
     ):
         while True:
             events.append(next(generator))
 
-    poll_calls = [
-        arguments for name, arguments in client.calls
-        if name == "check_baseline_mc"
-    ]
-    assert len(poll_calls) == 3
-    assert sleeps == [2.0, 2.0]
-    poll_lifecycle = [
-        event for event in events
-        if event["type"] == "tool" and event["name"] == "check_baseline_mc"
-    ]
-    assert [event["status"] for event in poll_lifecycle] == [
+    assert len(client.calls) == 2
+    assert clock.sleep_requests == [2.0, 1.0]
+    assert [event["status"] for event in events] == [
         "running", "done", "running", "done", "running", "failed",
     ]
-    assert "attempts=3" in poll_lifecycle[-1]["result"]["message"]
-    assert "deadline=6.0s" in poll_lifecycle[-1]["result"]["message"]
+    assert "latest task_status=RUNNING-2" in events[-1]["result"]["message"]
+    assert "max_call_overrun=90.000s" in events[-1]["result"]["message"]
+
+
+def test_poll_budget_accounts_for_sleep_latency():
+    module = _load_workflow()
+    clock = FakeClock(sleep_overruns=[0.75])
+    client = TimedNeverReadyClient(clock, [0.5, 0.5])
+    generator = _baseline_poll(_poll_runner(
+        module,
+        client,
+        clock,
+        budget=3.5,
+        attempts=10,
+    ))
+    events = []
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"elapsed polling deadline exceeded during poll call; "
+            r"attempts=2; elapsed=3.750s; budget=3.500s"
+        ),
+    ):
+        while True:
+            events.append(next(generator))
+
+    assert len(client.calls) == 2
+    assert clock.sleep_requests == [2.0]
+    assert [event["status"] for event in events[-2:]] == ["running", "failed"]
+
+
+@pytest.mark.parametrize("call_latency", [3.0, 3.25])
+def test_poll_deadline_at_or_crossed_during_call_fails_before_done(call_latency):
+    module = _load_workflow()
+    clock = FakeClock()
+    client = TimedNeverReadyClient(clock, [call_latency])
+    generator = _baseline_poll(_poll_runner(
+        module,
+        client,
+        clock,
+        budget=3.0,
+        attempts=10,
+    ))
+    events = []
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"elapsed polling deadline exceeded during poll call; "
+            rf"attempts=1; elapsed={call_latency:.3f}s; budget=3.000s"
+        ),
+    ):
+        while True:
+            events.append(next(generator))
+
+    assert len(client.calls) == 1
+    assert clock.sleep_requests == []
+    assert [event["status"] for event in events] == ["running", "failed"]
+    assert "max_call_overrun=90.000s" in events[-1]["result"]["message"]
+
+
+def test_poll_does_not_call_or_sleep_when_budget_is_already_expired():
+    module = _load_workflow()
+    clock = FakeClock()
+    client = TimedNeverReadyClient(clock, [])
+    runner = _poll_runner(module, client, clock, budget=5.0)
+    clock.advance(5.0)
+    generator = _baseline_poll(runner)
+    events = []
+
+    with pytest.raises(RuntimeError, match="elapsed=5.000s; budget=5.000s"):
+        while True:
+            events.append(next(generator))
+
+    assert client.calls == []
+    assert clock.sleep_requests == []
+    assert [event["status"] for event in events] == ["running", "failed"]
+    assert "latest task_status=unknown" in events[-1]["result"]["message"]
+
+
+def test_two_engine_polls_share_one_wall_clock_budget():
+    module = _load_workflow()
+    clock = FakeClock()
+    client = TimedFakeClient(clock, [1.0, 1.0, 1.0])
+    generator = module.run_quantitative_workflow(
+        client,
+        _spec(),
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+        max_poll_attempts=10,
+        poll_interval_seconds=1.0,
+        poll_budget_seconds=5.0,
+        gateway_call_timeout_seconds=90.0,
+    )
+    events = []
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"check_chronos2 failed: elapsed polling deadline exhausted before "
+            r"poll call; attempts=2; elapsed=5.000s; budget=5.000s"
+        ),
+    ):
+        while True:
+            events.append(next(generator))
+
+    assert client.polls == {"check_baseline_mc": 2, "check_chronos2": 1}
+    assert clock.sleep_requests == [1.0, 1.0]
+    chronos_lifecycle = [
+        event["status"] for event in events
+        if event["type"] == "tool" and event["name"] == "check_chronos2"
+    ]
+    assert chronos_lifecycle == ["running", "done", "running", "failed"]
 
 
 def _delete(field):

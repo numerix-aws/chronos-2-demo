@@ -32,6 +32,10 @@ MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 POLL_MAX_ATTEMPTS = int(os.environ.get("POLL_MAX_ATTEMPTS", "300"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "2"))
+POLL_BUDGET_SECONDS = float(os.environ.get("POLL_BUDGET_SECONDS", "600"))
+GATEWAY_READ_TIMEOUT_SECONDS = float(
+    os.environ.get("GATEWAY_READ_TIMEOUT_SECONDS", "90")
+)
 PERSIST_CONFLICT_DELAYS = (0.05, 0.1)
 
 PROVENANCE_ENV = {
@@ -56,14 +60,15 @@ def _gateway() -> MCPClient:
     # SigV4-signed streamable-HTTP transport to the AWS_IAM Gateway, using the
     # Runtime execution-role credentials (mcp-proxy-for-aws handles signing). A
     # plain streamablehttp_client would be unsigned and the Gateway returns 403.
-    # timeout must exceed the slowest Gateway tool call (blend/price run >30s
-    # on the headline load); the default 30s ReadTimeout kills the MCP session
-    # mid-conversation and the invocation 500s.
+    # call_tool_sync is synchronous, so a poll deadline can only be observed
+    # after this bounded read returns. The configured timeout is therefore the
+    # maximum one-call deadline overrun; it also leaves headroom inside the
+    # 15-minute streaming edge for non-poll tools and interpretation.
     return MCPClient(lambda: aws_iam_streamablehttp_client(
         endpoint=GATEWAY_URL,
         aws_region=AWS_REGION,
         aws_service="bedrock-agentcore",
-        timeout=180,
+        timeout=GATEWAY_READ_TIMEOUT_SECONDS,
     ))
 
 
@@ -178,6 +183,8 @@ async def invoke(payload: dict):
                     compiled,
                     max_poll_attempts=POLL_MAX_ATTEMPTS,
                     poll_interval_seconds=POLL_INTERVAL_SECONDS,
+                    poll_budget_seconds=POLL_BUDGET_SECONDS,
+                    gateway_call_timeout_seconds=GATEWAY_READ_TIMEOUT_SECONDS,
                 )
                 while True:
                     try:

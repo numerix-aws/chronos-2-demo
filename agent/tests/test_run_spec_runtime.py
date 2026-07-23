@@ -263,7 +263,10 @@ def test_supported_run_persists_and_emits_run_spec_before_workflow_and_model(
         ),
     )
 
-    def workflow(_gateway, spec, **_kwargs):
+    workflow_options = {}
+
+    def workflow(_gateway, spec, **kwargs):
+        workflow_options.update(kwargs)
         order.append("workflow")
         yield {"type": "tool", "name": "load_data", "status": "running"}
         return {
@@ -290,6 +293,12 @@ def test_supported_run_persists_and_emits_run_spec_before_workflow_and_model(
         ),
     }
     assert order == ["persist", "gateway", "workflow", "model"]
+    assert workflow_options == {
+        "max_poll_attempts": 300,
+        "poll_interval_seconds": 2.0,
+        "poll_budget_seconds": 600.0,
+        "gateway_call_timeout_seconds": 90.0,
+    }
     assert fake_agent.instances[0].kwargs["tools"] == []
     assert "deterministic quantitative workflow completed" in (
         fake_agent.instances[0].prompt.lower()
@@ -496,6 +505,9 @@ def test_greeting_preserves_model_selected_lookup_tools_and_streaming(monkeypatc
 @pytest.mark.parametrize("prompt", [
     "Run through the use cases supported by this demo",
     "Can you run through the supported use cases?",
+    "Can you run through the market scenario capability catalog?",
+    "Walk me through the exposure forecast use cases.",
+    "What stress testing capabilities does this demo support?",
 ])
 def test_catalog_request_preserves_model_selected_lookup_path(monkeypatch, prompt):
     order: list[str] = []
@@ -511,6 +523,33 @@ def test_catalog_request_preserves_model_selected_lookup_path(monkeypatch, promp
     assert not s3.objects
     assert order == ["gateway", "model"]
     assert fake_agent.instances[0].kwargs["tools"] == ["lookup_use_case"]
+
+
+def test_gateway_transport_uses_configured_bounded_read_timeout(monkeypatch):
+    order: list[str] = []
+    monkeypatch.setenv("GATEWAY_READ_TIMEOUT_SECONDS", "90")
+    module, _ = _load_runtime(monkeypatch, order)
+    captured = {}
+
+    class CapturingMCPClient:
+        def __init__(self, transport_factory):
+            self.transport = transport_factory()
+
+    monkeypatch.setattr(module, "MCPClient", CapturingMCPClient)
+    monkeypatch.setattr(
+        module,
+        "aws_iam_streamablehttp_client",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    module._gateway()
+
+    assert captured["timeout"] == 90.0
+    assert module.GATEWAY_READ_TIMEOUT_SECONDS < module.POLL_BUDGET_SECONDS
+    assert (
+        module.POLL_BUDGET_SECONDS + module.GATEWAY_READ_TIMEOUT_SECONDS
+        < 15 * 60
+    )
 
 
 def test_failed_quantitative_workflow_never_invokes_interpretation_model(monkeypatch):

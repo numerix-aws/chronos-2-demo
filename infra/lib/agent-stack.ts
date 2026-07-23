@@ -254,6 +254,8 @@ export class AgentStack extends cdk.Stack {
         DATA_BUCKET: props.tools.dataBucket.bucketName,
         POLL_MAX_ATTEMPTS: '300',
         POLL_INTERVAL_SECONDS: '2',
+        POLL_BUDGET_SECONDS: '600',
+        GATEWAY_READ_TIMEOUT_SECONDS: '90',
         ...Object.fromEntries(
           Object.entries(PROVENANCE_ENV).map(([name, envName]) => [
             envName,
