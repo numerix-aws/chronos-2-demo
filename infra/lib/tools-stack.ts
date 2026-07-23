@@ -15,12 +15,15 @@ export interface ToolsStackProps extends cdk.StackProps {
   vpc: ec2.IVpc;
   dataBucket: s3.IBucket;
   plotsBucket: s3.IBucket;
+  baselineImageTag?: string;
+  chronosImageTag?: string;
   // Optional: the Plan A SageMaker endpoint name. Defaults so consumer-stack
   // tests can construct ToolsStack without threading it through.
   chronos2EndpointName?: string;
 }
 
 export class ToolsStack extends cdk.Stack {
+  public readonly dataBucket: s3.IBucket;
   public readonly fnLoadData: lambda.IFunction;
   public readonly fnBlendPaths: lambda.IFunction;
   public readonly fnPriceBook: lambda.IFunction;
@@ -52,6 +55,20 @@ export class ToolsStack extends cdk.Stack {
 
     const repoRoot = path.resolve(__dirname, '..', '..');
     const chronos2EndpointName = props.chronos2EndpointName ?? 'chronos2-demo-ep';
+    const testImageTag = '0000000000000000000000000000000000000000';
+    const baselineImageTag = props.baselineImageTag
+      ?? (process.env.NODE_ENV === 'test' ? testImageTag : undefined);
+    const chronosImageTag = props.chronosImageTag
+      ?? (process.env.NODE_ENV === 'test' ? testImageTag : undefined);
+    for (const [name, value] of [
+      ['baselineImageTag', baselineImageTag],
+      ['chronosImageTag', chronosImageTag],
+    ]) {
+      if (!value || !/^[0-9a-f]{7,40}$/.test(value)) {
+        throw new Error(`${name} must be an immutable git SHA`);
+      }
+    }
+    this.dataBucket = props.dataBucket;
 
     // Lambda layer with chronos2_demo source + shared helpers + the demo book.
     // The book is bundled into the layer (it resolves under /opt at runtime, so
@@ -255,6 +272,7 @@ export class ToolsStack extends cdk.Stack {
     // Fargate baseline_mc.
     const repo = new ecr.Repository(this, 'BaselineMcRepo', {
       imageScanOnPush: true,
+      imageTagMutability: ecr.TagMutability.IMMUTABLE,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
     });
@@ -271,7 +289,7 @@ export class ToolsStack extends cdk.Stack {
       memoryLimitMiB: 8192,
     });
     this.baselineMcTaskDef.addContainer('App', {
-      image: ecs.ContainerImage.fromEcrRepository(repo, 'latest'),
+      image: ecs.ContainerImage.fromEcrRepository(repo, baselineImageTag),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'baseline-mc',
         logRetention: logs.RetentionDays.ONE_WEEK,
@@ -320,6 +338,7 @@ export class ToolsStack extends cdk.Stack {
     // in a Lambda. The task role invokes the SageMaker endpoint under the hood.
     const chronos2Repo = new ecr.Repository(this, 'Chronos2Repo', {
       imageScanOnPush: true,
+      imageTagMutability: ecr.TagMutability.IMMUTABLE,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
     });
@@ -327,6 +346,7 @@ export class ToolsStack extends cdk.Stack {
     // image can be pushed before AgentStack's Runtime validates it at create time.
     this.agentRuntimeRepo = new ecr.Repository(this, 'AgentRuntimeRepo', {
       imageScanOnPush: true,
+      imageTagMutability: ecr.TagMutability.IMMUTABLE,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
     });
@@ -339,7 +359,7 @@ export class ToolsStack extends cdk.Stack {
       memoryLimitMiB: 8192,
     });
     this.chronos2TaskDef.addContainer('App', {
-      image: ecs.ContainerImage.fromEcrRepository(chronos2Repo, 'latest'),
+      image: ecs.ContainerImage.fromEcrRepository(chronos2Repo, chronosImageTag),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'chronos2',
         logRetention: logs.RetentionDays.ONE_WEEK,

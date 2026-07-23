@@ -5,6 +5,8 @@ import { NetworkStack } from '../lib/network-stack';
 import { StorageStack } from '../lib/storage-stack';
 import { ToolsStack } from '../lib/tools-stack';
 
+const IMAGE_TAG = '0123456789abcdef0123456789abcdef01234567';
+
 beforeAll(() => {
   jest.spyOn(lambda.Code, 'fromAsset').mockImplementation(
     () => lambda.Code.fromCfnParameters() as unknown as ReturnType<typeof lambda.Code.fromAsset>,
@@ -25,6 +27,8 @@ function build() {
     dataBucket: storage.dataBucket,
     plotsBucket: storage.plotsBucket,
     chronos2EndpointName: 'chronos2-demo-ep',
+    baselineImageTag: IMAGE_TAG,
+    chronosImageTag: IMAGE_TAG,
   });
   cachedTemplate = Template.fromStack(tools);
   return cachedTemplate;
@@ -61,6 +65,7 @@ test('creates three ECR repositories with image scan on push', () => {
   t.resourceCountIs('AWS::ECR::Repository', 3);
   t.hasResourceProperties('AWS::ECR::Repository', Match.objectLike({
     ImageScanningConfiguration: { ScanOnPush: true },
+    ImageTagMutability: 'IMMUTABLE',
   }));
 });
 
@@ -80,6 +85,8 @@ test('exposes lambda function references', () => {
     dataBucket: storage.dataBucket,
     plotsBucket: storage.plotsBucket,
     chronos2EndpointName: 'chronos2-demo-ep',
+    baselineImageTag: IMAGE_TAG,
+    chronosImageTag: IMAGE_TAG,
   });
   expect(tools.fnLoadData).toBeDefined();
   expect(tools.fnBlendPaths).toBeDefined();
@@ -96,6 +103,28 @@ test('exposes lambda function references', () => {
   expect(tools.baselineMcTaskDef).toBeDefined();
   expect(tools.baselineMcCluster).toBeDefined();
   expect(tools.chronos2TaskDef).toBeDefined();
+  expect(tools.dataBucket).toBe(storage.dataBucket);
+});
+
+test('uses the selected immutable tag for both quantitative images', () => {
+  const t = build();
+  const taskDefinitions = Object.values(t.findResources('AWS::ECS::TaskDefinition'));
+  const images = taskDefinitions.flatMap(
+    (resource: any) => resource.Properties.ContainerDefinitions.map(
+      (container: any) => JSON.stringify(container.Image),
+    ),
+  );
+
+  expect(images).toHaveLength(2);
+  expect(images.every((image) => image.includes(IMAGE_TAG))).toBe(true);
+  expect(JSON.stringify(t.toJSON())).not.toContain(':latest');
+});
+
+test('preserves lookup_use_case Lambda packaging', () => {
+  const t = build();
+  const lookup = resourceByPrefix(t, 'AWS::Lambda::Function', 'LookupUseCase');
+
+  expect(lookup).toBeDefined();
 });
 
 test('configures both Fargate poll Lambdas with the App container name', () => {

@@ -9,9 +9,65 @@ import { ToolsStack } from './tools-stack';
 
 export interface AgentStackProps extends cdk.StackProps {
   readonly tools: ToolsStack;
+  readonly agentImageTag?: string;
+  readonly provenance?: RuntimeProvenance;
 }
 
 const MODEL_ID = 'us.anthropic.claude-sonnet-4-6';
+const STRANDS_VERSION = '1.30.0';
+
+export interface RuntimeProvenance {
+  readonly market_snapshot_id: string;
+  readonly market_sha256: string;
+  readonly covariate_snapshot_id: string;
+  readonly covariate_sha256: string;
+  readonly chronos_endpoint: string;
+  readonly chronos_model_version: string;
+  readonly baseline_image_digest: string;
+  readonly chronos_image_digest: string;
+  readonly agent_image_digest: string;
+  readonly book_version: string;
+  readonly blend_version: string;
+  readonly pricing_version: string;
+  readonly tool_bundle_version: string;
+  readonly strands_version: string;
+}
+
+const PROVENANCE_ENV: Record<keyof RuntimeProvenance, string> = {
+  market_snapshot_id: 'MARKET_SNAPSHOT_ID',
+  market_sha256: 'MARKET_SHA256',
+  covariate_snapshot_id: 'COVARIATE_SNAPSHOT_ID',
+  covariate_sha256: 'COVARIATE_SHA256',
+  chronos_endpoint: 'CHRONOS2_ENDPOINT',
+  chronos_model_version: 'CHRONOS_MODEL_VERSION',
+  baseline_image_digest: 'BASELINE_IMAGE_DIGEST',
+  chronos_image_digest: 'CHRONOS_IMAGE_DIGEST',
+  agent_image_digest: 'AGENT_IMAGE_DIGEST',
+  book_version: 'BOOK_VERSION',
+  blend_version: 'BLEND_VERSION',
+  pricing_version: 'PRICING_VERSION',
+  tool_bundle_version: 'TOOL_BUNDLE_VERSION',
+  strands_version: 'STRANDS_VERSION',
+};
+
+function testProvenance(): RuntimeProvenance {
+  return {
+    market_snapshot_id: 'test-market',
+    market_sha256: 'a'.repeat(64),
+    covariate_snapshot_id: 'test-covariates',
+    covariate_sha256: 'b'.repeat(64),
+    chronos_endpoint: 'test-endpoint',
+    chronos_model_version: 'test-model',
+    baseline_image_digest: `sha256:${'c'.repeat(64)}`,
+    chronos_image_digest: `sha256:${'d'.repeat(64)}`,
+    agent_image_digest: `sha256:${'e'.repeat(64)}`,
+    book_version: 'test-book',
+    blend_version: 'test-blend',
+    pricing_version: 'test-pricing',
+    tool_bundle_version: 'git:0000000000000000000000000000000000000000',
+    strands_version: STRANDS_VERSION,
+  };
+}
 
 const TOOL_OPERATIONS: Array<{ name: string; opId: string; getFn: (t: ToolsStack) => lambda.IFunction }> = [
   { name: 'LoadData', opId: 'load_data', getFn: (t) => t.fnLoadData },
@@ -43,6 +99,35 @@ export class AgentStack extends cdk.Stack {
     super(scope, id, props);
 
     const repoRoot = path.resolve(__dirname, '..', '..');
+    const agentImageTag = props.agentImageTag
+      ?? (process.env.NODE_ENV === 'test'
+        ? '0000000000000000000000000000000000000000'
+        : undefined);
+    if (!agentImageTag || !/^[0-9a-f]{7,40}$/.test(agentImageTag)) {
+      throw new Error('agentImageTag must be an immutable git SHA');
+    }
+    const provenance = props.provenance
+      ?? (process.env.NODE_ENV === 'test' ? testProvenance() : undefined);
+    if (!provenance) {
+      throw new Error('AgentStack requires complete deployment provenance');
+    }
+    for (const [name, value] of Object.entries(provenance)) {
+      if (!value) {
+        throw new Error(`AgentStack provenance ${name} must be nonempty`);
+      }
+    }
+    for (const name of [
+      'baseline_image_digest',
+      'chronos_image_digest',
+      'agent_image_digest',
+    ] as const) {
+      if (!/^sha256:[0-9a-f]{64}$/.test(provenance[name])) {
+        throw new Error(`AgentStack provenance ${name} must be an image digest`);
+      }
+    }
+    if (provenance.strands_version !== STRANDS_VERSION) {
+      throw new Error(`STRANDS_VERSION must be ${STRANDS_VERSION}`);
+    }
     const openapi = JSON.parse(
       fs.readFileSync(path.join(repoRoot, 'agent', 'action_groups.json'), 'utf-8'),
     );
@@ -113,6 +198,10 @@ export class AgentStack extends cdk.Stack {
       actions: ['bedrock-agentcore:InvokeGateway', 'bedrock-agentcore:GetGateway'],
       resources: [gateway.attrGatewayArn],
     }));
+    runtimeRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject', 's3:PutObject'],
+      resources: [`${props.tools.dataBucket.bucketArn}/runs/*`],
+    }));
     // Standard AgentCore Runtime execution-role permissions (per the AgentCore
     // runtime-permissions guide). Without the workload-access-token grant the
     // runtime 500s on every invoke; without the logs grant it emits no logs.
@@ -155,9 +244,21 @@ export class AgentStack extends cdk.Stack {
       roleArn: runtimeRole.roleArn,
       networkConfiguration: { networkMode: 'PUBLIC' },
       agentRuntimeArtifact: {
-        containerConfiguration: { containerUri: `${agentRepo.repositoryUri}:latest` },
+        containerConfiguration: {
+          containerUri: `${agentRepo.repositoryUri}:${agentImageTag}`,
+        },
       },
-      environmentVariables: { GATEWAY_URL: gateway.attrGatewayUrl, MODEL_ID },
+      environmentVariables: {
+        GATEWAY_URL: gateway.attrGatewayUrl,
+        MODEL_ID,
+        DATA_BUCKET: props.tools.dataBucket.bucketName,
+        ...Object.fromEntries(
+          Object.entries(PROVENANCE_ENV).map(([name, envName]) => [
+            envName,
+            provenance[name as keyof RuntimeProvenance],
+          ]),
+        ),
+      },
     });
     runtime.addDependency(gateway);
     // The Runtime validates its ECR image at create time by assuming the
