@@ -215,6 +215,43 @@ def test_collect_events_accepts_data_field_without_space(monkeypatch):
     ]
 
 
+def test_collect_events_stops_heartbeat_stream_at_total_deadline(monkeypatch):
+    class Response:
+        closed = False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self, decode_unicode):
+            while True:
+                yield ": heartbeat"
+
+        def close(self):
+            self.closed = True
+
+    response = Response()
+    monotonic = iter((0.0, 1.0, 2.0, 3.0)).__next__
+    monkeypatch.setattr(
+        verifier.requests,
+        "get",
+        lambda *args, **kwargs: response,
+    )
+
+    with pytest.raises(
+        verifier.SseCollectionDeadlineExceeded,
+        match="SSE collection deadline exceeded after 3 seconds",
+    ):
+        verifier.collect_events(
+            "https://stream.example/",
+            "secret",
+            "run",
+            total_deadline_seconds=3,
+            monotonic=monotonic,
+        )
+
+    assert response.closed is True
+
+
 def test_swapped_event_order_passes():
     runs = recorded_runs()
     runs[1] = [*reversed(runs[1][:-1]), runs[1][-1]]
@@ -441,7 +478,14 @@ def test_cli_collects_three_runs_and_writes_raw_and_summary_files(
     runs = recorded_runs()
     calls = []
 
-    def collect_events(stream_url, api_key, prompt):
+    def collect_events(
+        stream_url,
+        api_key,
+        prompt,
+        *,
+        total_deadline_seconds,
+    ):
+        assert total_deadline_seconds == verifier.DEFAULT_COLLECTION_DEADLINE_SECONDS
         calls.append((stream_url, api_key, prompt))
         return runs[len(calls) - 1]
 
@@ -480,7 +524,8 @@ def test_failed_verification_atomically_replaces_stale_passed_output(
     runs[1][1]["terminal"]["ee"] = 100.014
     calls = []
 
-    def collect_events(*args):
+    def collect_events(*args, total_deadline_seconds):
+        assert total_deadline_seconds == verifier.DEFAULT_COLLECTION_DEADLINE_SECONDS
         calls.append(args)
         return runs[len(calls) - 1]
 
@@ -510,7 +555,8 @@ def test_failed_collection_atomically_replaces_stale_passed_output(
     monkeypatch,
     tmp_path,
 ):
-    def collect_events(*args):
+    def collect_events(*args, total_deadline_seconds):
+        assert total_deadline_seconds == verifier.DEFAULT_COLLECTION_DEADLINE_SECONDS
         raise RuntimeError("collection stopped")
 
     monkeypatch.setattr(verifier, "collect_events", collect_events)
@@ -532,6 +578,38 @@ def test_failed_collection_atomically_replaces_stale_passed_output(
     failed = json.loads(output.read_text())
     assert failed["status"] == "failed"
     assert failed["error"] == "collection stopped"
+
+
+def test_cli_deadline_failure_writes_failed_evidence(monkeypatch, tmp_path):
+    def collect_events(*args, total_deadline_seconds):
+        assert total_deadline_seconds == 3
+        raise verifier.SseCollectionDeadlineExceeded(
+            "SSE collection deadline exceeded after 3 seconds"
+        )
+
+    monkeypatch.setattr(verifier, "collect_events", collect_events)
+    output = tmp_path / "acceptance.json"
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps(_calibration_for()))
+
+    with pytest.raises(
+        verifier.SseCollectionDeadlineExceeded,
+        match="SSE collection deadline exceeded after 3 seconds",
+    ):
+        verifier.main([
+            "--stream-url", "https://stream.example/",
+            "--api-key", "secret",
+            "--runs", "3",
+            "--prompt", verifier.CANONICAL_PROMPT,
+            "--output", str(output),
+            "--calibration", str(calibration),
+            "--collection-deadline-seconds", "3",
+        ])
+
+    failed = json.loads(output.read_text())
+    assert failed["status"] == "failed"
+    assert failed["error"] == "SSE collection deadline exceeded after 3 seconds"
+    assert failed["error_type"] == "SseCollectionDeadlineExceeded"
 
 
 def test_cli_rejects_non_three_run_acceptance():
@@ -583,6 +661,7 @@ def test_runbook_agentcore_and_amplify_waiters_are_bounded_and_fail_closed():
     assert "FAILED|CANCELLED" in runbook
     assert "CALIBRATION_MAX_SECONDS=" in runbook
     assert "timeout=int(os.environ[\"CALIBRATION_MAX_SECONDS\"])" in runbook
+    assert "--collection-deadline-seconds 900" in runbook
 
 
 def test_runbook_structurally_asserts_edge_and_executes_calibration_gate():
@@ -608,7 +687,7 @@ def test_runbook_structurally_asserts_edge_and_executes_calibration_gate():
         assert required in runbook
 
 
-def test_runbook_captures_and_restores_exact_prior_runtime_and_frontend():
+def test_runbook_captures_durable_rollback_inputs_and_restores_semantics():
     runbook = _task11_runbook()
 
     for required in (
@@ -622,10 +701,26 @@ def test_runbook_captures_and_restores_exact_prior_runtime_and_frontend():
         "get-template",
         "rollback-parameters.json",
         "ROLLBACK_TEMPLATE_BUCKET",
+        "ROLLBACK_BUNDLE_URI",
+        'aws s3 cp --recursive "$ROLLBACK_ROOT" "$ROLLBACK_BUNDLE_URI"',
+        'aws s3 cp --recursive "$ROLLBACK_BUNDLE_URI" "$ROLLBACK_RESTORE_ROOT"',
+        "rollback-files.sha256",
+        "*.json *.txt *.zip > rollback-files.sha256",
         "--template-url",
         "update-stack",
-        'test "$RESTORED_BASELINE_TASK" = "$PREVIOUS_BASELINE_TASK"',
-        'test "$RESTORED_CHRONOS_TASK" = "$PREVIOUS_CHRONOS_TASK"',
+        "task_definition_semantics",
+        "verify_restored_task_definition",
+        "baseline-task.semantics.json",
+        "chronos-task.semantics.json",
+        "baseline-task.image-digests.txt",
+        "chronos-task.image-digests.txt",
+        "executionRoleArn",
+        "taskRoleArn",
+        "containerDefinitions",
+        "cpu",
+        "memory",
         "cmp --silent",
     ):
         assert required in runbook
+    assert 'test "$RESTORED_BASELINE_TASK" = "$PREVIOUS_BASELINE_TASK"' not in runbook
+    assert 'test "$RESTORED_CHRONOS_TASK" = "$PREVIOUS_CHRONOS_TASK"' not in runbook

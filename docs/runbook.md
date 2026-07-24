@@ -215,6 +215,47 @@ resolve_image_digest() {
 
 PREVIOUS_BASELINE_DIGEST=$(resolve_image_digest "$PREVIOUS_BASELINE_IMAGE")
 PREVIOUS_CHRONOS_DIGEST=$(resolve_image_digest "$PREVIOUS_CHRONOS_IMAGE")
+
+task_definition_semantics() {
+  jq -S '.taskDefinition | {
+    family,
+    taskRoleArn,
+    executionRoleArn,
+    networkMode,
+    containerDefinitions,
+    volumes,
+    placementConstraints,
+    requiresCompatibilities,
+    cpu,
+    memory,
+    pidMode,
+    ipcMode,
+    proxyConfiguration,
+    inferenceAccelerators,
+    ephemeralStorage,
+    runtimePlatform
+  }' "$1"
+}
+
+task_definition_image_digests() {
+  aws ecs describe-task-definition --task-definition "$1" --output json \
+    | jq -r '.taskDefinition.containerDefinitions[].image' \
+    | while IFS= read -r image; do
+        resolve_image_digest "$image"
+      done \
+    | sort
+}
+
+task_definition_semantics "$ROLLBACK_ROOT/baseline-task.json" \
+  > "$ROLLBACK_ROOT/baseline-task.semantics.json"
+task_definition_semantics "$ROLLBACK_ROOT/chronos-task.json" \
+  > "$ROLLBACK_ROOT/chronos-task.semantics.json"
+task_definition_image_digests "$PREVIOUS_BASELINE_TASK" \
+  > "$ROLLBACK_ROOT/baseline-task.image-digests.txt"
+task_definition_image_digests "$PREVIOUS_CHRONOS_TASK" \
+  > "$ROLLBACK_ROOT/chronos-task.image-digests.txt"
+test -s "$ROLLBACK_ROOT/baseline-task.image-digests.txt"
+test -s "$ROLLBACK_ROOT/chronos-task.image-digests.txt"
 ```
 
 Capture the exact AgentCore version serving `live`, including its container,
@@ -278,12 +319,25 @@ jq -n \
   '{captured_at:$captured_at,baseline:{task_definition:$baseline_task,image:$baseline_image,digest:$baseline_digest},chronos:{task_definition:$chronos_task,image:$chronos_image,digest:$chronos_digest},agent:{live_version:$agent_live_version,image:$agent_image,digest:$agent_digest},amplify:{job_id:$amplify_job_id,sha256:$frontend_sha256}}' \
   > "$ROLLBACK_ROOT/rollback.json"
 (cd "$ROLLBACK_ROOT" && shasum -a 256 \
-  *.json *.zip > rollback-files.sha256)
+  *.json *.txt *.zip > rollback-files.sha256)
+
+export ROLLBACK_BUNDLE_PREFIX="task11-rollback/$GIT_SHA/$(date -u +%Y%m%dT%H%M%SZ)"
+export ROLLBACK_BUNDLE_URI="s3://$ROLLBACK_TEMPLATE_BUCKET/$ROLLBACK_BUNDLE_PREFIX"
+ROLLBACK_PUBLIC_ACCESS=$(aws s3api get-public-access-block \
+  --bucket "$ROLLBACK_TEMPLATE_BUCKET" --output json)
+test "$(jq -r '[.PublicAccessBlockConfiguration[]] | all' \
+  <<<"$ROLLBACK_PUBLIC_ACCESS")" = "true"
+aws s3 cp --recursive "$ROLLBACK_ROOT" "$ROLLBACK_BUNDLE_URI"
+ROLLBACK_VERIFY_ROOT=$(mktemp -d /tmp/chronos2-task11-rollback-verify.XXXXXX)
+aws s3 cp --recursive "$ROLLBACK_BUNDLE_URI" "$ROLLBACK_VERIFY_ROOT"
+(cd "$ROLLBACK_VERIFY_ROOT" && shasum -a 256 -c rollback-files.sha256)
 ```
 
 If a stack resource query returns `None`, resolve the physical ID from the full
 `describe-stack-resources` output before continuing. If any digest, runtime
-version, template, parameter set, or Amplify artifact is empty, stop.
+version, template, parameter set, or Amplify artifact is empty, stop. The
+durable rollback bundle must remain private, hash-verified, and retrievable
+before the first deployment mutation.
 
 ### 0b. Build, push, and resolve immutable images
 
@@ -644,6 +698,7 @@ PY
     --runs 3 \
     --prompt "Run the stage-safe headline demo for September 30, 2022. Use five years of trading history, project one trading year into the future, and generate 500 scenarios with each engine. Apply a 53.05% stress weight. Show the market regime and compare baseline exposure with Chronos-2-augmented exposure. Report the final EE, 97.5% PFE, 97.5% ES, and the PFE change." \
     --calibration docs/results/headline_calibration.json \
+    --collection-deadline-seconds 900 \
     --output "$ACCEPTANCE_ROOT/live_reproducibility.json"
 )
 test "$(jq -r .status "$ACCEPTANCE_ROOT/live_reproducibility.json")" = "passed"
@@ -658,16 +713,25 @@ attempt logs from `BUILD_ROOT`/`ACCEPTANCE_ROOT` into `docs/results`.
 
 ### 0f. Rollback
 
-Rollback uses only the files in `ROLLBACK_ROOT`; do not move `latest` or rebuild
-an approximation. Restore the exact prior templates and parameter values in
-Tools, Agent, Frontend, Api order. After Agent is restored, explicitly route
-`live` back to its captured version. After Frontend is restored, re-upload the
-captured Amplify artifact before restoring Api.
+Rollback begins by retrieving the durable, hash-verified bundle; do not move
+`latest` or rebuild an approximation. Restore the exact prior templates and
+parameter values in Tools, Agent, Frontend, Api order. CloudFormation restores
+the previous ECS configuration by registering replacement task-definition
+revisions: never attempt to launch an inactive captured revision or require the
+old ARN. Instead, require each launcher to reference an active restored revision
+whose captured semantic configuration and image digests match. After Agent is
+restored, explicitly route `live` back to its captured version. After Frontend
+is restored, re-upload the captured Amplify artifact before restoring Api.
 
 ```bash
+ROLLBACK_RESTORE_ROOT=$(mktemp -d /tmp/chronos2-task11-rollback-restore.XXXXXX)
+aws s3 cp --recursive "$ROLLBACK_BUNDLE_URI" "$ROLLBACK_RESTORE_ROOT"
+(cd "$ROLLBACK_RESTORE_ROOT" && shasum -a 256 -c rollback-files.sha256)
+ROLLBACK_ROOT=$ROLLBACK_RESTORE_ROOT
+
 restore_stack() {
   local stack=$1
-  local template_key="task11-rollback/$GIT_SHA/$stack.template.json"
+  local template_key="$ROLLBACK_BUNDLE_PREFIX/templates/$stack.template.json"
   aws s3 cp "$ROLLBACK_ROOT/$stack.template.json" \
     "s3://$ROLLBACK_TEMPLATE_BUCKET/$template_key"
   aws cloudformation update-stack \
@@ -681,6 +745,24 @@ restore_stack() {
     --query 'Stacks[0].StackStatus' --output text)" = "UPDATE_COMPLETE"
 }
 
+verify_restored_task_definition() {
+  local name=$1
+  local restored_task=$2
+  local previous_semantics=$3
+  local previous_digests=$4
+  local restored_json="$ROLLBACK_ROOT/restored-$name-task.json"
+  local restored_semantics="$ROLLBACK_ROOT/restored-$name-task.semantics.json"
+  local restored_digests="$ROLLBACK_ROOT/restored-$name-task.image-digests.txt"
+
+  aws ecs describe-task-definition --task-definition "$restored_task" --output json \
+    > "$restored_json"
+  test "$(jq -r '.taskDefinition.status' "$restored_json")" = "ACTIVE"
+  task_definition_semantics "$restored_json" > "$restored_semantics"
+  task_definition_image_digests "$restored_task" > "$restored_digests"
+  cmp --silent "$previous_semantics" "$restored_semantics"
+  cmp --silent "$previous_digests" "$restored_digests"
+}
+
 restore_stack Chronos2DemoTools
 RESTORED_BASELINE_TASK=$(aws lambda get-function-configuration \
   --function-name "$BASELINE_LAUNCHER" \
@@ -688,16 +770,12 @@ RESTORED_BASELINE_TASK=$(aws lambda get-function-configuration \
 RESTORED_CHRONOS_TASK=$(aws lambda get-function-configuration \
   --function-name "$CHRONOS_LAUNCHER" \
   --query 'Environment.Variables.TASK_DEFINITION_ARN' --output text)
-test "$RESTORED_BASELINE_TASK" = "$PREVIOUS_BASELINE_TASK"
-test "$RESTORED_CHRONOS_TASK" = "$PREVIOUS_CHRONOS_TASK"
-test "$(resolve_image_digest "$(aws ecs describe-task-definition \
-  --task-definition "$RESTORED_BASELINE_TASK" \
-  --query 'taskDefinition.containerDefinitions[0].image' --output text)")" \
-  = "$PREVIOUS_BASELINE_DIGEST"
-test "$(resolve_image_digest "$(aws ecs describe-task-definition \
-  --task-definition "$RESTORED_CHRONOS_TASK" \
-  --query 'taskDefinition.containerDefinitions[0].image' --output text)")" \
-  = "$PREVIOUS_CHRONOS_DIGEST"
+verify_restored_task_definition baseline "$RESTORED_BASELINE_TASK" \
+  "$ROLLBACK_ROOT/baseline-task.semantics.json" \
+  "$ROLLBACK_ROOT/baseline-task.image-digests.txt"
+verify_restored_task_definition chronos "$RESTORED_CHRONOS_TASK" \
+  "$ROLLBACK_ROOT/chronos-task.semantics.json" \
+  "$ROLLBACK_ROOT/chronos-task.image-digests.txt"
 
 restore_stack Chronos2DemoAgent
 aws bedrock-agentcore-control update-agent-runtime-endpoint \

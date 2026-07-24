@@ -6,6 +6,7 @@ from decimal import Decimal
 import json
 from pathlib import Path
 import re
+import time
 from urllib.parse import urlsplit
 import uuid
 
@@ -28,6 +29,7 @@ ROLE_SOURCES = {
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 GIT_VERSION_RE = re.compile(r"^git:[0-9a-f]{7,40}$")
+DEFAULT_COLLECTION_DEADLINE_SECONDS = 900
 PROVENANCE_KEYS = {
     "market_snapshot_id",
     "market_sha256",
@@ -77,11 +79,21 @@ LOCAL_PROVENANCE = {
 }
 
 
+class SseCollectionDeadlineExceeded(TimeoutError):
+    """Raised when an SSE stream exceeds its total collection deadline."""
+
+
 def collect_events(
     stream_url: str,
     api_key: str,
     prompt: str,
+    *,
+    total_deadline_seconds: int = DEFAULT_COLLECTION_DEADLINE_SECONDS,
+    monotonic=time.monotonic,
 ) -> list[dict[str, object]]:
+    if total_deadline_seconds <= 0:
+        raise ValueError("SSE collection deadline must be positive")
+    started_at = monotonic()
     response = requests.get(
         stream_url,
         params={"session_id": str(uuid.uuid4()), "prompt": prompt},
@@ -89,25 +101,41 @@ def collect_events(
         stream=True,
         timeout=(10, 900),
     )
-    response.raise_for_status()
-    events: list[dict[str, object]] = []
-    data_lines: list[str] = []
-    for line in response.iter_lines(decode_unicode=True):
-        if line == "":
-            if data_lines:
-                events.append(json.loads("\n".join(data_lines)))
-                data_lines = []
-            continue
-        if line.startswith(":"):
-            continue
-        field, separator, value = line.partition(":")
-        if field == "data":
-            if separator and value.startswith(" "):
-                value = value[1:]
-            data_lines.append(value)
-    if data_lines:
-        events.append(json.loads("\n".join(data_lines)))
-    return events
+    try:
+        response.raise_for_status()
+        events: list[dict[str, object]] = []
+        data_lines: list[str] = []
+        for line in response.iter_lines(decode_unicode=True):
+            elapsed_seconds = monotonic() - started_at
+            if elapsed_seconds >= total_deadline_seconds:
+                raise SseCollectionDeadlineExceeded(
+                    "SSE collection deadline exceeded after "
+                    f"{total_deadline_seconds} seconds"
+                )
+            if line == "":
+                if data_lines:
+                    events.append(json.loads("\n".join(data_lines)))
+                    data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+            field, separator, value = line.partition(":")
+            if field == "data":
+                if separator and value.startswith(" "):
+                    value = value[1:]
+                data_lines.append(value)
+        if monotonic() - started_at >= total_deadline_seconds:
+            raise SseCollectionDeadlineExceeded(
+                "SSE collection deadline exceeded after "
+                f"{total_deadline_seconds} seconds"
+            )
+        if data_lines:
+            events.append(json.loads("\n".join(data_lines)))
+        return events
+    finally:
+        close = getattr(response, "close", None)
+        if close is not None:
+            close()
 
 
 def _cent(value: object) -> Decimal:
@@ -475,6 +503,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--calibration", required=True, type=Path)
+    parser.add_argument(
+        "--collection-deadline-seconds",
+        type=int,
+        default=DEFAULT_COLLECTION_DEADLINE_SECONDS,
+    )
     args = parser.parse_args(argv)
     if args.runs != 3:
         raise SystemExit("--runs must be 3")
@@ -495,7 +528,12 @@ def main(argv: list[str] | None = None) -> int:
         local_spec_hash = verify_local_wording_variants(args.prompt)
         calibration = json.loads(args.calibration.read_text())
         for index in range(1, args.runs + 1):
-            events = collect_events(args.stream_url, args.api_key, args.prompt)
+            events = collect_events(
+                args.stream_url,
+                args.api_key,
+                args.prompt,
+                total_deadline_seconds=args.collection_deadline_seconds,
+            )
             event_runs.append(events)
             _write_json(attempt_dir / f"run-{index}.events.json", events)
         summaries = verify_runs(event_runs)
