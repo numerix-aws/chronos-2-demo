@@ -91,6 +91,24 @@ def test_rate_what_if_normalizes_to_existing_conditioning_contract():
     assert spec.w_stress == 1.0
 
 
+def test_frontend_what_if_clause_compiles_to_the_expected_profile_values():
+    prompt = (
+        "Re-run the stage-safe setup as of 2022-09-30. Look back 1260 trading days, "
+        "project 252 trading days into the future, generate 500 scenarios with each engine, "
+        "and apply a stress weight of 0.5305. Use series shifts: EUR_2Y=-0.5; anchor 30 days. "
+        "Compare baseline, Chronos-only, and augmented EE, PFE 97.5%, and ES 97.5%."
+    )
+    spec = compile_run_spec(prompt, provenance=PROVENANCE, execution_id="run-frontend-what-if")
+    assert not isinstance(spec, Clarification)
+    assert (spec.as_of_date, spec.lookback_days, spec.horizon, spec.n_paths, spec.w_stress) == (
+        "2022-09-30", 1260, 252, 500, pytest.approx(0.5305)
+    )
+    assert spec.conditioning == {
+        "series_shifts": {"EUR_2Y": -0.5},
+        "n_anchor_days": 30,
+    }
+
+
 def test_run_spec_nested_mappings_cannot_mutate_payload_or_hash():
     provenance = dict(PROVENANCE)
     spec = compile_run_spec(

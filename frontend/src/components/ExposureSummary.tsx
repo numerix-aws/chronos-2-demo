@@ -1,7 +1,12 @@
 import { Box } from '@cloudscape-design/components';
 import type { Message } from '../api/client';
+import type { ExposureResultEvent, ScenarioRole } from '../api/stream';
 
-interface ExposureRow {
+export interface ExposureRow {
+  executionId?: string;
+  specHash?: string;
+  scenarioRole?: ScenarioRole;
+  metricsSha256?: string;
   label: string;
   date?: string;
   ee: number | null;
@@ -9,8 +14,15 @@ interface ExposureRow {
   es975: number | null;
 }
 
+export const ROLE_LABELS: Record<ScenarioRole, string> = {
+  baseline: 'Baseline',
+  chronos_only: 'Chronos-only',
+  augmented: 'Augmented',
+};
+
 interface ExposureSummaryProps {
-  messages: Message[];
+  messages?: Message[];
+  rows?: ExposureRow[];
 }
 
 const JSON_BLOCK_RE = /```[^\n\r]*(?:\r?\n)([\s\S]*?)```/gi;
@@ -91,6 +103,26 @@ function rowsFromObject(value: unknown): ExposureRow[] {
   return latestRow ? [latestRow] : [];
 }
 
+export function exposureRowFromToolResult(label: string, value: unknown): ExposureRow | null {
+  const root = asRecord(value);
+  const result = asRecord(root?.result) ?? root;
+  return rowFromRecord(label, result);
+}
+
+export function exposureRowFromEvent(event: ExposureResultEvent): ExposureRow {
+  return {
+    executionId: event.executionId,
+    specHash: event.specHash,
+    scenarioRole: event.scenarioRole,
+    metricsSha256: event.metricsSha256,
+    label: ROLE_LABELS[event.scenarioRole],
+    date: event.terminal.date,
+    ee: event.terminal.ee,
+    pfe975: event.terminal.pfe_975,
+    es975: event.terminal.es_975,
+  };
+}
+
 function contentVariants(content: string): string[] {
   const variants = [content];
   const trimmed = content.trim();
@@ -149,8 +181,8 @@ function formatUsd(value: number | null): string {
   return `${sign}$${abs.toFixed(0)}`;
 }
 
-export function ExposureSummary({ messages }: ExposureSummaryProps) {
-  const rows = extractExposureRows(messages);
+export function ExposureSummary({ messages = [], rows: directRows }: ExposureSummaryProps) {
+  const rows = directRows ?? extractExposureRows(messages);
 
   if (rows.length === 0) {
     return <Box color="text-body-secondary">No exposure summary yet.</Box>;
@@ -196,7 +228,7 @@ export function ExposureSummary({ messages }: ExposureSummaryProps) {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={`${row.label}-${row.date ?? 'no-date'}`}>
+            <tr key={row.executionId && row.scenarioRole ? `${row.executionId}:${row.scenarioRole}` : `${row.label}-${row.date ?? 'no-date'}`}>
               <td style={{ padding: '10px 12px', borderBottom: '1px solid #eaeded' }}>
                 {row.label}
               </td>
@@ -234,6 +266,19 @@ export function ExposureSummary({ messages }: ExposureSummaryProps) {
           ))}
         </tbody>
       </table>
+      {(() => {
+        const baseline = rows.find((row) => row.scenarioRole === 'baseline' || row.label === 'Baseline');
+        const augmented = rows.find((row) => row.scenarioRole === 'augmented' || row.label === 'Augmented');
+        if (!baseline || !augmented || baseline.pfe975 === null || augmented.pfe975 === null) return null;
+        const delta = augmented.pfe975 - baseline.pfe975;
+        const percent = baseline.pfe975 === 0 ? null : (delta / baseline.pfe975) * 100;
+        return (
+          <Box padding={{ vertical: 's', horizontal: 'm' }}>
+            PFE delta: {delta >= 0 ? '+' : ''}{formatUsd(delta)}
+            {percent === null ? '' : ` (${percent.toFixed(2)}%)`}
+          </Box>
+        );
+      })()}
     </div>
   );
 }

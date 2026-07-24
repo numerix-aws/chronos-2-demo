@@ -20,7 +20,7 @@ const STATUS_COLOR: Record<ToolTraceStatus, string> = {
 };
 
 function displayName(item: ToolTraceItem): string {
-  return item.label ?? item.name;
+  return item.label ?? item.name.replace(/_/g, ' ').replace(/^./, (char) => char.toUpperCase());
 }
 
 export function ToolTracePanel({ items }: ToolTracePanelProps) {
@@ -32,7 +32,7 @@ export function ToolTracePanel({ items }: ToolTracePanelProps) {
     <SpaceBetween size="xs">
       {items.map((item) => (
         <div
-          key={item.name}
+          key={item.id ?? item.name}
           style={{
             display: 'grid',
             gridTemplateColumns: '10px minmax(0, 1fr) auto',

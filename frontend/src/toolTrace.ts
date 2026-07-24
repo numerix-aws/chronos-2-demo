@@ -1,6 +1,7 @@
 export type ToolTraceStatus = 'queued' | 'running' | 'done' | 'failed';
 
 export interface ToolTraceEvent {
+  id?: string;
   name: string;
   status: ToolTraceStatus;
   label?: string;
@@ -45,14 +46,16 @@ export function stripToolTraceMarkers(text: string): string {
 }
 
 export function reduceToolTraceEvents(events: ToolTraceEvent[]): ToolTraceItem[] {
-  const byName = new Map<string, ToolTraceItem>();
+  const byId = new Map<string, ToolTraceItem>();
   for (const event of events) {
-    const previous = byName.get(event.name);
-    byName.set(event.name, {
+    const id = event.id ?? event.name;
+    const previous = byId.get(id);
+    byId.set(id, {
+      ...(event.id ? { id: event.id } : {}),
       name: event.name,
       status: event.status,
       label: event.label ?? previous?.label,
     });
   }
-  return [...byName.values()];
+  return [...byId.values()];
 }

@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, FormEvent } from 'react';
 import { Box, Button, SpaceBetween, Textarea } from '@cloudscape-design/components';
+import Markdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ImageViewer } from './ImageViewer';
 import type { Message } from '../api/client';
 
@@ -7,33 +9,100 @@ interface ChatPanelProps {
   messages: Message[];
   onSend: (text: string) => void;
   streaming: boolean;
+  images?: PlotArtifact[];
 }
 
-const IMAGE_RE = /!\[([^\]]*)\]\((https?:[^)]+)\)/g;
-
-function renderContent(content: string): JSX.Element[] {
-  const parts: JSX.Element[] = [];
-  let last = 0;
-  let key = 0;
-  for (const m of content.matchAll(IMAGE_RE)) {
-    if (m.index === undefined) continue;
-    if (m.index > last) {
-      parts.push(<span key={key++}>{content.slice(last, m.index)}</span>);
-    }
-    parts.push(<ImageViewer key={key++} alt={m[1]} src={m[2]} />);
-    last = m.index + m[0].length;
-  }
-  if (last < content.length) parts.push(<span key={key++}>{content.slice(last)}</span>);
-  return parts;
+export interface PlotArtifact {
+  src: string;
+  alt: string;
 }
 
-export function ChatPanel({ messages, onSend, streaming }: ChatPanelProps) {
+const markdownComponents: Components = {
+  h1: ({ children }) => (
+    <h3 style={{ fontSize: 18, lineHeight: '24px', margin: '0 0 8px' }}>{children}</h3>
+  ),
+  h2: ({ children }) => (
+    <h4 style={{ fontSize: 16, lineHeight: '22px', margin: '12px 0 6px' }}>{children}</h4>
+  ),
+  h3: ({ children }) => (
+    <h5 style={{ fontSize: 15, lineHeight: '20px', margin: '12px 0 6px' }}>{children}</h5>
+  ),
+  p: ({ children }) => <div style={{ margin: '0 0 8px' }}>{children}</div>,
+  ul: ({ children }) => <ul style={{ margin: '4px 0 10px', paddingLeft: 22 }}>{children}</ul>,
+  ol: ({ children }) => <ol style={{ margin: '4px 0 10px', paddingLeft: 22 }}>{children}</ol>,
+  li: ({ children }) => <li style={{ marginBottom: 3 }}>{children}</li>,
+  table: ({ children }) => (
+    <div style={{ overflowX: 'auto', margin: '8px 0 12px' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th
+      style={{
+        border: '1px solid #c6cbd4',
+        background: '#f2f3f3',
+        padding: '6px 8px',
+        textAlign: 'left',
+      }}
+    >
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td style={{ border: '1px solid #d5d9d9', padding: '6px 8px', verticalAlign: 'top' }}>
+      {children}
+    </td>
+  ),
+  code: ({ children }) => (
+    <code
+      style={{
+        background: '#f2f3f3',
+        borderRadius: 3,
+        fontSize: '0.92em',
+        padding: '1px 4px',
+      }}
+    >
+      {children}
+    </code>
+  ),
+  pre: ({ children }) => (
+    <pre style={{ overflowX: 'auto', margin: '8px 0', padding: 10, background: '#f2f3f3' }}>
+      {children}
+    </pre>
+  ),
+  a: ({ children, href }) => (
+    <a href={href} target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  ),
+  img: ({ alt, src }) => (src ? <ImageViewer alt={alt ?? ''} src={src} /> : null),
+  hr: () => <hr style={{ border: 0, borderTop: '1px solid #d5d9d9', margin: '12px 0' }} />,
+};
+
+function renderContent(message: Message, directImageUris: Set<string>): JSX.Element | string {
+  if (message.role !== 'assistant') return message.content;
+  return (
+    <Markdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        ...markdownComponents,
+        img: ({ alt, src }) =>
+          src && !directImageUris.has(src) ? <ImageViewer alt={alt ?? ''} src={src} /> : null,
+      }}
+    >
+      {message.content}
+    </Markdown>
+  );
+}
+
+export function ChatPanel({ messages, onSend, streaming, images = [] }: ChatPanelProps) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const directImageUris = new Set(images.map((item) => item.src));
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, images]);
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
@@ -62,8 +131,13 @@ export function ChatPanel({ messages, onSend, streaming }: ChatPanelProps) {
             }}
           >
             <Box variant="awsui-key-label">{m.role.toUpperCase()}</Box>
-            <div style={{ whiteSpace: 'pre-wrap' }}>{renderContent(m.content)}</div>
+            <div style={{ whiteSpace: m.role === 'assistant' ? 'normal' : 'pre-wrap' }}>
+              {renderContent(m, directImageUris)}
+            </div>
           </div>
+        ))}
+        {images.map((item) => (
+          <ImageViewer key={item.src} alt={item.alt} src={item.src} />
         ))}
       </div>
       <form onSubmit={submit}>

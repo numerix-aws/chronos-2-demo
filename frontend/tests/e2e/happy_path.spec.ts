@@ -6,34 +6,10 @@ const API_URL = process.env.API_URL ?? '';
 const STREAM_URL = process.env.STREAM_URL ?? '';
 const API_KEY = process.env.API_KEY ?? '';
 const HEADLINE_PROMPT =
-  'Run a stage-safe headline demo at as_of_date=2022-09-30, lookback_days=1260, ' +
-  'horizon=252, n_paths=500, w_stress=0.5305. Use the full workflow: load_data, ' +
-  'and emit tool-trace markers before and after each tool call so the Tool trace ' +
-  'panel shows the sequence; then call plot with spec=regime_ribbon using the returned regimes_uri and ' +
-  'threshold=0.7; run_baseline_mc with n_components=5 and seed=0 and poll until ' +
-  'ready; run_chronos2 and poll until ready; blend_paths; price_book on the ' +
-  'baseline paths and blended paths; then call plot with spec=pfe_overlay using ' +
-  'the two metrics_uri values. In the final answer, report the final-date baseline and ' +
-  'augmented EE, PFE 97.5%, and ES 97.5%; the absolute PFE delta; and the ' +
-  'percent PFE delta only if the baseline is non-zero. End with a fenced json ' +
-  'block named exposure_summary using raw numeric dollar values, with baseline ' +
-  'and augmented objects containing date, ee, pfe_975, and es_975. Include both ' +
-  'returned image_uri values: one for the regime ribbon and one for the PFE overlay, ' +
-  'with markdown image links.';
+  `Run the stage-safe headline demo for September 30, 2022. Use five years of trading history, project one trading year into the future, and generate 500 scenarios with each engine. Apply a 53.05% stress weight. Show the market regime and compare baseline exposure with Chronos-2-augmented exposure. Report the final EE, 97.5% PFE, 97.5% ES, and the PFE change.`;
 
 const WHAT_IF_PROMPT =
-  'What happens to exposure if EUR rates fall 50 basis points over the first 30 ' +
-  'business days? Use the same stage-safe setup as before: as_of_date=2022-09-30, ' +
-  'lookback_days=1260, horizon=252, n_paths=500. Translate the 50 bp move as ' +
-  'conditioning shifts of -0.50 on EUR_2Y, EUR_5Y, and EUR_10Y, with n_anchor_days=30. ' +
-  'Emit tool-trace markers before and after each tool call so the Tool trace panel ' +
-  'shows the sequence. Run the tool sequence visibly: load_data, run_baseline_mc with n_components=5 ' +
-  'and seed=0 and poll until ready, run_chronos2 with that conditioning and poll ' +
-  'until ready, blend_paths with w_stress=1 for the conditional stress view, ' +
-  'price_book on the baseline and conditional blended paths, then plot spec=pfe_overlay ' +
-  'using the two metrics_uri values. Report final-date EE, PFE 97.5%, and ES 97.5% ' +
-  'for baseline versus conditional augmented, and include the returned image_uri ' +
-  'with a markdown image link.';
+  `What happens to exposure if EUR rates fall 50 basis points across the two-, five-, and ten-year tenors for the first 30 business days? Use the same stage-safe setup as the headline demo, compare baseline exposure with the conditional Chronos-2 augmentation, and show the resulting exposure profile and final EE, 97.5% PFE, and 97.5% ES.`;
 
 test.skip(!RUN, 'Set RUN_E2E=1 + APP_URL/API_URL/STREAM_URL/API_KEY to run.');
 
@@ -78,16 +54,30 @@ test.describe('Numerix × Chronos-2 demo happy path', () => {
     await expect(transcript).toContainText(/PFE|delta/i, {
       timeout: 6 * 60 * 1000,
     });
-    await expect(page.getByRole('region', { name: /exposure summary/i })).toContainText(
+    const toolTrace = page.getByRole('region', { name: /tool trace/i });
+    await expect(toolTrace).toContainText(/Load data/i, { timeout: 6 * 60 * 1000 });
+    await expect(toolTrace).toContainText(/Price book/i, { timeout: 6 * 60 * 1000 });
+
+    const exposureSummary = page.getByRole('region', { name: /exposure summary/i });
+    await expect(exposureSummary).toContainText(/Baseline/, { timeout: 6 * 60 * 1000 });
+    await expect(exposureSummary).toContainText(/Augmented/, { timeout: 6 * 60 * 1000 });
+    await expect(exposureSummary).toContainText(
       /EE|PFE 97\.5%|ES 97\.5%/,
       { timeout: 6 * 60 * 1000 },
     );
 
-    // The plot image must point at our plots bucket via a presigned URL.
-    const plot = transcript.locator('img').first();
-    await expect(plot).toBeVisible({ timeout: 6 * 60 * 1000 });
-    const src = await plot.getAttribute('src');
-    expect(src).toMatch(/X-Amz-Signature=|Signature=|AWSAccessKeyId=/);
+    // The regime ribbon and PFE overlay must both load, not merely have an src.
+    const plots = transcript.locator('img');
+    await expect.poll(() => plots.count(), { timeout: 6 * 60 * 1000 }).toBeGreaterThanOrEqual(2);
+    for (let i = 0; i < 2; i += 1) {
+      const plot = plots.nth(i);
+      await expect(plot).toBeVisible();
+      const src = await plot.getAttribute('src');
+      expect(src).toMatch(/X-Amz-Signature=|Signature=|AWSAccessKeyId=/);
+      await expect.poll(
+        () => plot.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0),
+      ).toBe(true);
+    }
   });
 
   test('natural-language what-if re-runs and updates the chart', async ({ page }) => {
