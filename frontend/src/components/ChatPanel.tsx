@@ -13,6 +13,10 @@ interface ChatPanelProps {
 }
 
 export interface PlotArtifact {
+  executionId: string;
+  specHash: string;
+  plotRole: string;
+  imageSha256: string;
   src: string;
   alt: string;
 }

@@ -32,16 +32,35 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+interface ArtifactIdentity {
+  executionId: string;
+  specHash: string;
+}
+
 function plotArtifactFromToolResult(value: unknown): PlotArtifact | null {
   const envelope = asRecord(value);
   const result = asRecord(envelope?.result) ?? envelope;
-  if (!result || typeof result.image_uri !== 'string' || !result.image_uri.startsWith('https://')) return null;
+  if (
+    !result ||
+    typeof result.execution_id !== 'string' ||
+    typeof result.spec_hash !== 'string' ||
+    typeof result.plot_role !== 'string' ||
+    typeof result.image_uri !== 'string' ||
+    !result.image_uri.startsWith('https://') ||
+    typeof result.image_sha256 !== 'string'
+  ) return null;
   const labels: Record<string, string> = {
     regime_ribbon: 'Market regime ribbon',
     pfe_overlay: 'PFE overlay',
   };
-  const role = typeof result.plot_role === 'string' ? result.plot_role : 'plot';
-  return { src: result.image_uri, alt: labels[role] ?? 'Generated chart' };
+  return {
+    executionId: result.execution_id,
+    specHash: result.spec_hash,
+    plotRole: result.plot_role,
+    imageSha256: result.image_sha256,
+    src: result.image_uri,
+    alt: labels[result.plot_role] ?? 'Generated chart',
+  };
 }
 
 export function App() {
@@ -49,8 +68,10 @@ export function App() {
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [toolTraceEvents, setToolTraceEvents] = useState<ToolTraceEvent[]>([]);
+  const [activeIdentity, setActiveIdentity] = useState<ArtifactIdentity | null>(null);
   const [runSpec, setRunSpec] = useState<RunSpecEvent | null>(null);
   const [exposureByIdentity, setExposureByIdentity] = useState<Record<string, ExposureRow>>({});
+  const [hasStructuredExposure, setHasStructuredExposure] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsEvent | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [plotArtifacts, setPlotArtifacts] = useState<PlotArtifact[]>([]);
@@ -60,19 +81,6 @@ export function App() {
   const streamBase = import.meta.env.VITE_STREAM_URL as string;
   const configuredApiKey = (import.meta.env.VITE_API_KEY as string | undefined)?.trim();
   const client = session ? new ApiClient(apiBase, session.apiKey) : null;
-
-  const acceptExposure = (event: ExposureResultEvent) => {
-    const key = `${event.executionId}:${event.scenarioRole}`;
-    const incoming = exposureRowFromEvent(event);
-    setExposureByIdentity((previous) => {
-      const existing = previous[key];
-      if (existing && existing.metricsSha256 !== incoming.metricsSha256) {
-        setIdentityError(`Conflicting ${incoming.label} result for execution ${event.executionId}.`);
-        return previous;
-      }
-      return existing ? previous : { ...previous, [key]: incoming };
-    });
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -128,8 +136,29 @@ export function App() {
     setStreaming(true);
     const priorTraceEvents = toolTraceEvents;
     const structuredTraceEvents: ToolTraceEvent[] = [];
+    let boundIdentity: ArtifactIdentity | null = null;
+    const admitIdentity = (identity: ArtifactIdentity, artifactName: string) => {
+      if (!boundIdentity) {
+        boundIdentity = identity;
+        setActiveIdentity(identity);
+        return true;
+      }
+      if (
+        boundIdentity.executionId !== identity.executionId ||
+        boundIdentity.specHash !== identity.specHash
+      ) {
+        setIdentityError(
+          `Rejected ${artifactName}: execution/spec identity does not match the active run.`,
+        );
+        return false;
+      }
+      return true;
+    };
+
+    setActiveIdentity(null);
     setRunSpec(null);
     setExposureByIdentity({});
+    setHasStructuredExposure(false);
     setDiagnostics(null);
     setIdentityError(null);
     setPlotArtifacts([]);
@@ -144,11 +173,33 @@ export function App() {
     ]);
     for await (const ev of streamAgent(streamBase, session.apiKey, session.sessionId, text)) {
       if (ev.type === 'run_spec') {
-        setRunSpec(ev);
+        if (admitIdentity(ev, 'run specification')) {
+          setRunSpec((previous) => previous ?? ev);
+        }
       } else if (ev.type === 'exposure_result') {
-        acceptExposure(ev);
+        setHasStructuredExposure(true);
+        if (admitIdentity(ev, 'exposure result')) {
+          const key = `${ev.executionId}:${ev.scenarioRole}`;
+          const incoming = exposureRowFromEvent(ev);
+          setExposureByIdentity((previous) => {
+            const existing = previous[key];
+            if (existing && existing.metricsSha256 !== incoming.metricsSha256) {
+              setIdentityError(`Conflicting ${incoming.label} result for the active run.`);
+              return previous;
+            }
+            return existing ? previous : { ...previous, [key]: incoming };
+          });
+        }
       } else if (ev.type === 'diagnostics') {
-        setDiagnostics(ev);
+        if (admitIdentity(ev, 'diagnostics')) {
+          setDiagnostics((previous) => {
+            if (previous && previous.diagnosticsSha256 !== ev.diagnosticsSha256) {
+              setIdentityError('Conflicting diagnostics result for the active run.');
+              return previous;
+            }
+            return previous ?? ev;
+          });
+        }
       } else if (ev.type === 'chunk') {
         rawAcc += ev.text;
         setToolTraceEvents([
@@ -175,10 +226,15 @@ export function App() {
         ]);
         if (ev.status === 'done' && ev.name === 'plot') {
           const artifact = plotArtifactFromToolResult(ev.result);
-          if (artifact) {
-            setPlotArtifacts((prev) =>
-              prev.some((item) => item.src === artifact.src) ? prev : [...prev, artifact],
-            );
+          if (artifact && admitIdentity(artifact, 'plot')) {
+            setPlotArtifacts((previous) => {
+              const existing = previous.find((item) => item.plotRole === artifact.plotRole);
+              if (existing && existing.imageSha256 !== artifact.imageSha256) {
+                setIdentityError(`Conflicting ${artifact.alt} plot for the active run.`);
+                return previous;
+              }
+              return existing ? previous : [...previous, artifact];
+            });
           }
         }
       } else if (ev.type === 'error') {
@@ -208,12 +264,30 @@ export function App() {
     void handleSend(prompt);
   };
 
-  const exposureRows = runSpec
+  const exposureRows = hasStructuredExposure
     ? Object.values(exposureByIdentity)
-      .filter((row) => row.executionId === runSpec.executionId)
+      .filter(
+        (row) =>
+          row.executionId === activeIdentity?.executionId &&
+          row.specHash === activeIdentity?.specHash,
+      )
       .sort((left, right) => ({ baseline: 0, chronos_only: 1, augmented: 2 }[left.scenarioRole ?? 'baseline'] - ({ baseline: 0, chronos_only: 1, augmented: 2 }[right.scenarioRole ?? 'baseline'])))
     : undefined;
-  const currentDiagnostics = diagnostics?.executionId === runSpec?.executionId ? diagnostics : null;
+  const currentRunSpec =
+    runSpec?.executionId === activeIdentity?.executionId &&
+    runSpec?.specHash === activeIdentity?.specHash
+      ? runSpec
+      : null;
+  const currentDiagnostics =
+    diagnostics?.executionId === activeIdentity?.executionId &&
+    diagnostics?.specHash === activeIdentity?.specHash
+      ? diagnostics
+      : null;
+  const currentPlots = plotArtifacts.filter(
+    (artifact) =>
+      artifact.executionId === activeIdentity?.executionId &&
+      artifact.specHash === activeIdentity?.specHash,
+  );
 
   return (
     <AppLayout
@@ -242,7 +316,7 @@ export function App() {
                 messages={messages}
                 onSend={handleSend}
                 streaming={streaming || !session}
-                images={plotArtifacts}
+                images={currentPlots}
               />
             </section>
             <section aria-label="Tool trace" role="region">
@@ -256,7 +330,7 @@ export function App() {
             </section>
             <section aria-label="Run details" role="region">
               <Header variant="h2">Run details</Header>
-              <RunDetails runSpec={runSpec} />
+              <RunDetails runSpec={currentRunSpec} />
             </section>
             <section aria-label="Diagnostics" role="region">
               <Header variant="h2">Diagnostics</Header>

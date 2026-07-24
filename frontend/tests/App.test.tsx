@@ -218,7 +218,10 @@ describe('App', () => {
         result: {
           status: 'ok',
           result: {
+            execution_id: 'run-1',
+            spec_hash: 'hash-1',
             image_uri: 'https://example.com/pfe.png?X-Amz-Signature=test',
+            image_sha256: 'image-pfe',
             plot_role: 'pfe_overlay',
           },
         },
@@ -231,7 +234,10 @@ describe('App', () => {
         result: {
           status: 'ok',
           result: {
+            execution_id: 'run-1',
+            spec_hash: 'hash-1',
             image_uri: 'http://example.com/insecure.png',
+            image_sha256: 'image-regime',
             plot_role: 'regime_ribbon',
           },
         },
@@ -264,11 +270,16 @@ describe('App', () => {
     expect(screen.getByRole('region', { name: /^chat$/i })).toHaveTextContent('Analysis complete');
   });
 
-  it('isolates executions, treats identical identities as idempotent, and surfaces conflicts', async () => {
-    const exposure = (executionId: string, pfe: number, metricsSha256: string) => ({
+  it('binds to a RunSpec first and rejects every mismatched artifact without replacing active state', async () => {
+    const exposure = (
+      executionId: string,
+      specHash: string,
+      pfe: number,
+      metricsSha256: string,
+    ) => ({
       type: 'exposure_result' as const,
       executionId,
-      specHash: `${executionId}-hash`,
+      specHash,
       scenarioRole: 'baseline' as const,
       source: 'parametric',
       metricsUri: `s3://metrics/${executionId}.json`,
@@ -276,22 +287,48 @@ describe('App', () => {
       terminal: { date: '2023-09-19', ee: pfe, pfe_975: pfe, es_975: pfe },
     });
     async function* structuredStream() {
-      yield { type: 'run_spec' as const, executionId: 'run-one', specHash: 'run-one-hash', runSpec: {} };
-      yield exposure('run-one', 10, 'same');
-      yield exposure('run-one', 10, 'same');
-      yield exposure('run-one', 99, 'conflict');
-      yield { type: 'run_spec' as const, executionId: 'run-two', specHash: 'run-two-hash', runSpec: {} };
-      yield exposure('run-one', 200, 'late-run-one');
-      yield exposure('run-two', 30, 'run-two-baseline');
       yield {
-        type: 'exposure_result' as const,
+        type: 'run_spec' as const,
+        executionId: 'run-one',
+        specHash: 'hash-one',
+        runSpec: { profile: 'accepted-profile' },
+      };
+      yield exposure('run-one', 'hash-one', 10, 'same');
+      yield exposure('run-one', 'hash-one', 10, 'same');
+      yield exposure('run-one', 'hash-two', 99, 'same');
+      yield {
+        type: 'diagnostics' as const,
+        executionId: 'run-two',
+        specHash: 'hash-two',
+        diagnosticsUri: 's3://diagnostics/rejected.json',
+        diagnosticsSha256: 'diagnostics-rejected',
+        diagnostics: {
+          attribution: {
+            uniform_chronos: { scenario_role: 'chronos_only', delta_pfe_975: 99 },
+          },
+        },
+      };
+      yield {
+        type: 'tool' as const,
+        toolUseId: 'plot-rejected',
+        name: 'plot',
+        status: 'done' as const,
+        result: {
+          status: 'ok',
+          result: {
+            execution_id: 'run-two',
+            spec_hash: 'hash-two',
+            image_uri: 'https://example.com/rejected.png',
+            image_sha256: 'image-rejected',
+            plot_role: 'pfe_overlay',
+          },
+        },
+      };
+      yield {
+        type: 'run_spec' as const,
         executionId: 'run-two',
         specHash: 'run-two-hash',
-        scenarioRole: 'augmented' as const,
-        source: 'blended',
-        metricsUri: 's3://metrics/run-two-augmented.json',
-        metricsSha256: 'run-two-augmented',
-        terminal: { date: '2023-09-19', ee: 50, pfe_975: 50, es_975: 50 },
+        runSpec: { profile: 'rejected-profile' },
       };
     }
     streamAgentMock.mockReturnValue(structuredStream());
@@ -300,11 +337,207 @@ describe('App', () => {
     await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
     await userEvent.click(screen.getByRole('button', { name: /send/i }));
 
-    expect(await screen.findByText(/Conflicting Baseline result for execution run-one/)).toBeInTheDocument();
-    expect(screen.getAllByText('$30').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('$50').length).toBeGreaterThan(0);
-    expect(screen.queryByText('$10')).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(/Rejected run specification: execution\/spec identity does not match the active run/i),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('$10').length).toBeGreaterThan(0);
     expect(screen.queryByText('$99')).not.toBeInTheDocument();
+    expect(screen.getByText('accepted-profile')).toBeInTheDocument();
+    expect(screen.queryByText('rejected-profile')).not.toBeInTheDocument();
+    expect(screen.queryByText('Uniform Chronos')).not.toBeInTheDocument();
+    expect(screen.queryByAltText('PFE overlay')).not.toBeInTheDocument();
+  });
+
+  it('binds to exposure before RunSpec and rejects a same-role same-hash result with another spec hash', async () => {
+    async function* structuredStream() {
+      yield {
+        type: 'exposure_result' as const,
+        executionId: 'run-exposure',
+        specHash: 'hash-exposure',
+        scenarioRole: 'baseline' as const,
+        source: 'parametric',
+        metricsUri: 's3://metrics/accepted.json',
+        metricsSha256: 'same-metrics',
+        terminal: { date: '2023-09-19', ee: 10, pfe_975: 10, es_975: 10 },
+      };
+      yield {
+        type: 'run_spec' as const,
+        executionId: 'run-exposure',
+        specHash: 'hash-exposure',
+        runSpec: { profile: 'exposure-first-profile' },
+      };
+      yield {
+        type: 'exposure_result' as const,
+        executionId: 'run-exposure',
+        specHash: 'other-hash',
+        scenarioRole: 'baseline' as const,
+        source: 'parametric',
+        metricsUri: 's3://metrics/rejected.json',
+        metricsSha256: 'same-metrics',
+        terminal: { date: '2023-09-19', ee: 99, pfe_975: 99, es_975: 99 },
+      };
+      yield {
+        type: 'run_spec' as const,
+        executionId: 'run-other',
+        specHash: 'other-hash',
+        runSpec: { profile: 'rejected-profile' },
+      };
+    }
+    streamAgentMock.mockReturnValue(structuredStream());
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    expect(await screen.findByText('exposure-first-profile')).toBeInTheDocument();
+    expect(screen.getAllByText('$10').length).toBeGreaterThan(0);
+    expect(screen.queryByText('$99')).not.toBeInTheDocument();
+    expect(screen.queryByText('rejected-profile')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Rejected run specification: execution\/spec identity does not match the active run/i),
+    ).toBeInTheDocument();
+  });
+
+  it('binds to diagnostics before RunSpec and keeps the first matching diagnostics document', async () => {
+    async function* structuredStream() {
+      yield {
+        type: 'diagnostics' as const,
+        executionId: 'run-diagnostics',
+        specHash: 'hash-diagnostics',
+        diagnosticsUri: 's3://diagnostics/accepted.json',
+        diagnosticsSha256: 'diagnostics-accepted',
+        diagnostics: {
+          attribution: {
+            final_blend: { scenario_role: 'augmented', delta_pfe_975: 5 },
+          },
+        },
+      };
+      yield {
+        type: 'run_spec' as const,
+        executionId: 'run-diagnostics',
+        specHash: 'hash-diagnostics',
+        runSpec: { profile: 'diagnostics-first-profile' },
+      };
+      yield {
+        type: 'diagnostics' as const,
+        executionId: 'run-diagnostics',
+        specHash: 'hash-diagnostics',
+        diagnosticsUri: 's3://diagnostics/conflict.json',
+        diagnosticsSha256: 'diagnostics-conflict',
+        diagnostics: {
+          attribution: {
+            uniform_chronos: { scenario_role: 'chronos_only', delta_pfe_975: 99 },
+          },
+        },
+      };
+    }
+    streamAgentMock.mockReturnValue(structuredStream());
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    expect(await screen.findByText('diagnostics-first-profile')).toBeInTheDocument();
+    expect(screen.getByText('Final Blend')).toBeInTheDocument();
+    expect(screen.queryByText('Uniform Chronos')).not.toBeInTheDocument();
+    expect(screen.getByText(/Conflicting diagnostics result for the active run/i)).toBeInTheDocument();
+  });
+
+  it('binds to a plot before RunSpec and rejects a conflicting plot without a broken mixed gallery', async () => {
+    async function* structuredStream() {
+      yield {
+        type: 'tool' as const,
+        toolUseId: 'plot-accepted',
+        name: 'plot',
+        status: 'done' as const,
+        result: {
+          status: 'ok',
+          result: {
+            execution_id: 'run-plot',
+            spec_hash: 'hash-plot',
+            image_uri: 'https://example.com/accepted.png',
+            image_sha256: 'image-accepted',
+            plot_role: 'pfe_overlay',
+          },
+        },
+      };
+      yield {
+        type: 'run_spec' as const,
+        executionId: 'run-plot',
+        specHash: 'hash-plot',
+        runSpec: { profile: 'plot-first-profile' },
+      };
+      yield {
+        type: 'tool' as const,
+        toolUseId: 'plot-rejected',
+        name: 'plot',
+        status: 'done' as const,
+        result: {
+          status: 'ok',
+          result: {
+            execution_id: 'run-plot',
+            spec_hash: 'hash-plot',
+            image_uri: 'https://example.com/rejected.png',
+            image_sha256: 'image-rejected',
+            plot_role: 'pfe_overlay',
+          },
+        },
+      };
+    }
+    streamAgentMock.mockReturnValue(structuredStream());
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    expect(await screen.findByText('plot-first-profile')).toBeInTheDocument();
+    expect(screen.getByAltText('PFE overlay')).toHaveAttribute(
+      'src',
+      'https://example.com/accepted.png',
+    );
+    expect(screen.queryByRole('img', { name: 'PFE overlay' })).toBeInTheDocument();
+    expect(screen.getAllByRole('img')).toHaveLength(1);
+    expect(screen.getByText(/Conflicting PFE overlay plot for the active run/i)).toBeInTheDocument();
+  });
+
+  it('disables legacy assistant JSON as soon as exposure arrives before RunSpec', async () => {
+    listedMessages = [
+      {
+        role: 'assistant',
+        turn_id: 'legacy',
+        content: JSON.stringify({
+          exposure_summary: {
+            baseline: {
+              date: '2023-09-19',
+              ee: 9999,
+              pfe_975: 9999,
+              es_975: 9999,
+            },
+          },
+        }),
+      },
+    ];
+    async function* structuredStream() {
+      yield {
+        type: 'exposure_result' as const,
+        executionId: 'run-structured',
+        specHash: 'hash-structured',
+        scenarioRole: 'baseline' as const,
+        source: 'parametric',
+        metricsUri: 's3://metrics/structured.json',
+        metricsSha256: 'metrics-structured',
+        terminal: { date: '2023-09-19', ee: 111, pfe_975: 111, es_975: 111 },
+      };
+    }
+    streamAgentMock.mockReturnValue(structuredStream());
+
+    render(<App />);
+    expect(await screen.findAllByText('$10.0K')).toHaveLength(3);
+    await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    expect(await screen.findAllByText('$111')).toHaveLength(3);
+    expect(screen.queryByText('$10.0K')).not.toBeInTheDocument();
   });
 
   it('shows a raw dollar delta without a percentage when the structured baseline is zero', async () => {

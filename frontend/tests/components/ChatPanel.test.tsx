@@ -78,7 +78,14 @@ describe('ChatPanel', () => {
     render(
       <ChatPanel
         messages={[]}
-        images={[{ alt: 'PFE overlay', src: 'https://example.com/pfe.png' }]}
+        images={[{
+          executionId: 'run-1',
+          specHash: 'hash-1',
+          plotRole: 'pfe_overlay',
+          imageSha256: 'image-1',
+          alt: 'PFE overlay',
+          src: 'https://example.com/pfe.png',
+        }]}
         onSend={vi.fn()}
         streaming={false}
       />,

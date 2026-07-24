@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 const RUN = process.env.RUN_E2E === '1';
 const APP_URL = process.env.APP_URL ?? '';
@@ -11,9 +12,149 @@ const HEADLINE_PROMPT =
 const WHAT_IF_PROMPT =
   `What happens to exposure if EUR rates fall 50 basis points across the two-, five-, and ten-year tenors for the first 30 business days? Use the same stage-safe setup as the headline demo, compare baseline exposure with the conditional Chronos-2 augmentation, and show the resulting exposure profile and final EE, 97.5% PFE, and 97.5% ES.`;
 
-test.skip(!RUN, 'Set RUN_E2E=1 + APP_URL/API_URL/STREAM_URL/API_KEY to run.');
+const LOCAL_APP_URL = process.env.LOCAL_APP_URL ?? 'http://127.0.0.1:4175';
+const LOCAL_API_URL = 'https://api.local.test';
+const LOCAL_STREAM_URL = 'https://stream.local.test';
+const PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
 
-test.describe('Numerix × Chronos-2 demo happy path', () => {
+async function appIsReady(): Promise<boolean> {
+  try {
+    return (await fetch(LOCAL_APP_URL)).ok;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForLocalApp(): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (await appIsReady()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Local built app did not start at ${LOCAL_APP_URL}.`);
+}
+
+function plotEvent(
+  toolUseId: string,
+  plotRole: 'regime_ribbon' | 'pfe_overlay',
+  imageUri: string,
+): string {
+  return JSON.stringify({
+    type: 'tool',
+    tool_use_id: toolUseId,
+    name: 'plot',
+    status: 'done',
+    result: {
+      status: 'ok',
+      result: {
+        execution_id: 'run-local',
+        spec_hash: 'hash-local',
+        plot_role: plotRole,
+        image_uri: imageUri,
+        image_sha256: `sha-${plotRole}`,
+      },
+    },
+  });
+}
+
+async function mockLocalNetwork(page: Page) {
+  await page.route('https://**/*', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin === LOCAL_API_URL && url.pathname === '/sessions' && request.method() === 'POST') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"session_id":"local-session"}' });
+      return;
+    }
+    if (
+      url.origin === LOCAL_API_URL &&
+      url.pathname === '/sessions/local-session/messages' &&
+      request.method() === 'GET'
+    ) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"messages":[]}' });
+      return;
+    }
+    if (url.origin === LOCAL_STREAM_URL) {
+      const prompt = url.searchParams.get('prompt') ?? '';
+      const events = prompt.includes('failed plot')
+        ? [plotEvent('plot-failed', 'pfe_overlay', 'https://plots.local.test/failed.png')]
+        : [
+            plotEvent('plot-regime', 'regime_ribbon', 'https://plots.local.test/regime_ribbon.png'),
+            plotEvent('plot-pfe', 'pfe_overlay', 'https://plots.local.test/pfe_overlay.png'),
+          ];
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: `${events.map((event) => `data: ${event}\n\n`).join('')}data: [DONE]\n\n`,
+      });
+      return;
+    }
+    if (url.origin === 'https://plots.local.test' && url.pathname === '/failed.png') {
+      await route.fulfill({ status: 500, body: 'plot unavailable' });
+      return;
+    }
+    if (url.origin === 'https://plots.local.test') {
+      await route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
+      return;
+    }
+    await route.abort();
+  });
+}
+
+test.describe('local structured plot gate', () => {
+  let preview: ChildProcess | null = null;
+
+  test.beforeAll(async () => {
+    if (!(await appIsReady())) {
+      preview = spawn(
+        process.execPath,
+        ['./node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4175', '--strictPort'],
+        { cwd: process.cwd(), stdio: 'ignore' },
+      );
+    }
+    await waitForLocalApp();
+  });
+
+  test.afterAll(() => {
+    preview?.kill('SIGTERM');
+  });
+
+  test.beforeEach(async ({ page }) => {
+    await mockLocalNetwork(page);
+  });
+
+  test('loads both canonical direct structured plots from mocked HTTPS responses', async ({ page }) => {
+    await page.goto(LOCAL_APP_URL);
+    const message = page.getByLabel('message');
+    await expect(message).toBeEnabled();
+    await message.fill('load valid plots');
+    await page.getByRole('button', { name: /^send$/i }).click();
+
+    const plots = page.getByRole('region', { name: /chat/i }).locator('img');
+    await expect(plots).toHaveCount(2);
+    for (let index = 0; index < 2; index += 1) {
+      await expect.poll(
+        () => plots.nth(index).evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0),
+      ).toBe(true);
+    }
+  });
+
+  test('replaces a failed direct plot with a concise alert and no broken image', async ({ page }) => {
+    await page.goto(LOCAL_APP_URL);
+    const message = page.getByLabel('message');
+    await expect(message).toBeEnabled();
+    await message.fill('load failed plot');
+    await page.getByRole('button', { name: /^send$/i }).click();
+
+    await expect(page.getByText('PFE overlay could not be loaded.')).toBeVisible();
+    await expect(page.getByRole('region', { name: /chat/i }).locator('img')).toHaveCount(0);
+  });
+});
+
+test.describe('Numerix × Chronos-2 demo live happy path', () => {
+  test.skip(!RUN, 'Set RUN_E2E=1 + APP_URL/API_URL/STREAM_URL/API_KEY to run.');
+
   test.beforeEach(async ({ page }) => {
     // Seed localStorage so the SPA picks up an existing session and the API key
     // without a login flow (the demo has none).
