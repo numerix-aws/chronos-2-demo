@@ -27,8 +27,14 @@ PROFILE = {
 }
 REQUIRED_FIELDS = tuple(k for k in PROFILE if k not in {"schema_version", "profile", "conditioning"})
 PROFILE_RE = re.compile(
-    r"\b(stage[ -]safe|headline demo|same stage[ -]safe setup"
-    r"|baseline and chronos-2-augmented exposure)\b",
+    r"\b(stage[ -]safe|headline demo|same stage[ -]safe setup)\b",
+    re.I,
+)
+EXPLICIT_PROFILE_RE = re.compile(
+    r"as of 2022-09-30,\s*use 1,?260 trading days of history,\s*"
+    r"simulate 252 trading days ahead with 500 paths per engine,\s*"
+    r"and use a 0\.5305 stress weight\.\s*compare baseline and "
+    r"chronos-2-augmented exposure\.",
     re.I,
 )
 IMPERATIVE_ACTION_RE = re.compile(
@@ -267,7 +273,10 @@ def compile_run_spec(
     if not direct_execution and not stress_request:
         return Clarification(False, (), "This request does not require quantitative tools.")
 
-    values: dict[str, object] = dict(PROFILE) if PROFILE_RE.search(prompt) else {
+    profile_selected = bool(
+        PROFILE_RE.search(prompt) or EXPLICIT_PROFILE_RE.fullmatch(prompt.strip())
+    )
+    values: dict[str, object] = dict(PROFILE) if profile_selected else {
         "schema_version": "1", "profile": None, "conditioning": None
     }
     dates, invalid_date = _dates(prompt)

@@ -70,6 +70,32 @@ def test_task11_wording_variants_match_canonical_headline_spec_hash():
     assert {spec.spec_hash for spec in specs} == {EXPECTED_SPEC_HASH}
 
 
+@pytest.mark.parametrize("prompt", [
+    "Compare baseline and Chronos-2-augmented exposure.",
+    "As of 2024-01-31, compare baseline and Chronos-2-augmented exposure.",
+    (
+        "As of 2024-01-31, use 1,260 trading days of history, simulate 252 trading "
+        "days ahead with 500 paths per engine, and use a 0.5305 stress weight. "
+        "Compare baseline and Chronos-2-augmented exposure."
+    ),
+    (
+        "As of 2022-09-30, use 1,260 trading days of history, simulate 252 trading "
+        "days ahead with 501 paths per engine, and use a 0.5305 stress weight. "
+        "Compare baseline and Chronos-2-augmented exposure."
+    ),
+    (
+        "As of 2022-09-30, use 1,260 trading days of history, simulate 252 trading "
+        "days ahead with 500 paths per engine, and use a 0.5305 stress weight. "
+        "Compare baseline and Chronos-2-augmented exposure for a different book."
+    ),
+])
+def test_task11_neighboring_comparisons_fail_closed(prompt):
+    result = compile_run_spec(prompt, provenance=PROVENANCE)
+
+    assert isinstance(result, Clarification)
+    assert result.is_quantitative is True
+
+
 def test_independent_executions_share_spec_hash_but_not_execution_id():
     first = compile_run_spec(HEADLINE_PROMPT, provenance=PROVENANCE, execution_id="run-a")
     second = compile_run_spec(HEADLINE_PROMPT, provenance=PROVENANCE, execution_id="run-b")

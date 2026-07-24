@@ -6,15 +6,25 @@ from decimal import Decimal
 import json
 from pathlib import Path
 import re
+from urllib.parse import urlsplit
 import uuid
 
 import requests
 
-from chronos2_demo.run_spec import Clarification, compile_run_spec
+from chronos2_demo.run_spec import (
+    Clarification,
+    compile_run_spec,
+    compute_spec_hash,
+)
 
 
 ROLES = ("baseline", "chronos_only", "augmented")
 METRICS = ("ee", "pfe_975", "es_975")
+ROLE_SOURCES = {
+    "baseline": "parametric",
+    "chronos_only": "chronos2",
+    "augmented": "blended",
+}
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 GIT_VERSION_RE = re.compile(r"^git:[0-9a-f]{7,40}$")
@@ -90,8 +100,11 @@ def collect_events(
             continue
         if line.startswith(":"):
             continue
-        if line.startswith("data: "):
-            data_lines.append(line[6:])
+        field, separator, value = line.partition(":")
+        if field == "data":
+            if separator and value.startswith(" "):
+                value = value[1:]
+            data_lines.append(value)
     if data_lines:
         events.append(json.loads("\n".join(data_lines)))
     return events
@@ -103,6 +116,17 @@ def _cent(value: object) -> Decimal:
 
 def _is_hash(value: object) -> bool:
     return bool(HASH_RE.fullmatch(str(value)))
+
+
+def _is_s3_uri(value: object) -> bool:
+    parsed = urlsplit(str(value))
+    return bool(
+        parsed.scheme == "s3"
+        and parsed.netloc
+        and parsed.path not in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def _tool_result(event: dict[str, object]) -> dict[str, object] | None:
@@ -144,7 +168,7 @@ def _validate_artifact(
     hash_name: str,
     label: str,
 ) -> None:
-    if not str(event.get(uri_name, "")).startswith("s3://"):
+    if not _is_s3_uri(event.get(uri_name)):
         raise AssertionError(f"{role} {label} URI is invalid")
     if not _is_hash(event.get(hash_name)):
         raise AssertionError(f"{role} {label} hash is invalid")
@@ -154,6 +178,15 @@ def summarize_run(events: list[dict[str, object]]) -> dict[str, object]:
     stream_errors = [event for event in events if event.get("type") == "error"]
     if stream_errors:
         raise AssertionError(f"stream errors: {stream_errors}")
+    done_indices = [
+        index for index, event in enumerate(events) if event.get("type") == "done"
+    ]
+    if len(done_indices) != 1:
+        raise AssertionError(
+            f"expected one terminal done event, got {len(done_indices)}"
+        )
+    if done_indices[0] != len(events) - 1:
+        raise AssertionError("events appear after terminal done")
     failures = [
         event
         for event in events
@@ -179,6 +212,8 @@ def summarize_run(events: list[dict[str, object]]) -> dict[str, object]:
     ):
         raise AssertionError("run_spec identity is invalid")
     _validate_provenance(run_spec.get("provenance"))
+    if compute_spec_hash(run_spec) != spec_hash:
+        raise AssertionError("spec_hash does not match canonical run_spec")
 
     exposure_events = [
         event for event in events if event.get("type") == "exposure_result"
@@ -203,6 +238,11 @@ def summarize_run(events: list[dict[str, object]]) -> dict[str, object]:
             or event.get("spec_hash") != spec_hash
         ):
             raise AssertionError(f"{role} exposure identity is invalid")
+        expected_source = ROLE_SOURCES[role]
+        if role == "chronos_only" and run_spec.get("conditioning") is not None:
+            expected_source = "chronos2_conditional"
+        if event.get("source") != expected_source:
+            raise AssertionError(f"{role} source is invalid")
         _validate_artifact(
             event,
             role=role,
@@ -297,7 +337,7 @@ def summarize_run(events: list[dict[str, object]]) -> dict[str, object]:
             raise AssertionError(f"{role} plot identity is invalid")
         if not _is_hash(result.get("image_sha256")):
             raise AssertionError(f"{role} image hash is invalid")
-        if not str(result.get("image_s3_uri", "")).startswith("s3://"):
+        if not _is_s3_uri(result.get("image_s3_uri")):
             raise AssertionError(f"{role} stable image URI is invalid")
         if not str(result.get("image_uri", "")).startswith("https://"):
             raise AssertionError(f"{role} browser image URI is not HTTPS")
@@ -330,12 +370,12 @@ def verify_runs(
     execution_ids = {str(item["execution_id"]) for item in summaries}
     if len(execution_ids) != 3:
         raise AssertionError("execution_id values are not distinct")
-    spec_hashes = {str(item["spec_hash"]) for item in summaries}
-    if len(spec_hashes) != 1:
-        raise AssertionError("spec_hash values differ")
     provenance = [item["run_spec"]["provenance"] for item in summaries]
     if provenance[1:] != provenance[:-1]:
         raise AssertionError("run provenance differs")
+    spec_hashes = {str(item["spec_hash"]) for item in summaries}
+    if len(spec_hashes) != 1:
+        raise AssertionError("spec_hash values differ")
     canonical_specs = []
     for item in summaries:
         canonical = dict(item["run_spec"])
@@ -356,6 +396,46 @@ def verify_runs(
                         f"{actual} != {expected}"
                     )
     return summaries
+
+
+def compare_calibration(
+    live_summary: dict[str, object],
+    calibration: dict[str, object],
+) -> dict[str, object]:
+    calibration_spec = calibration.get("run_spec")
+    if not isinstance(calibration_spec, dict):
+        raise AssertionError("calibration run_spec is invalid")
+    calibration_hash = str(calibration_spec.get("spec_hash", ""))
+    if compute_spec_hash(calibration_spec) != calibration_hash:
+        raise AssertionError("calibration spec_hash does not match run_spec")
+    if calibration_hash != live_summary["spec_hash"]:
+        raise AssertionError("calibration spec_hash differs from live run")
+    live_spec = dict(live_summary["run_spec"])
+    for value in (calibration_spec, live_spec):
+        value.pop("execution_id", None)
+        value.pop("spec_hash", None)
+    if calibration_spec != live_spec:
+        raise AssertionError("calibration canonical RunSpec differs from live run")
+    terminal = calibration.get("terminal_metrics")
+    if not isinstance(terminal, dict) or set(terminal) != set(ROLES):
+        raise AssertionError("calibration exposure roles differ")
+    live_terminal = live_summary["terminal"]
+    for role in ROLES:
+        if not isinstance(terminal[role], dict):
+            raise AssertionError(f"calibration {role} terminal metrics are invalid")
+        for metric in METRICS:
+            actual = _cent(terminal[role][metric])
+            expected = _cent(live_terminal[role][metric])
+            if actual != expected:
+                raise AssertionError(
+                    f"calibration {role}.{metric} differs: "
+                    f"{actual} != {expected}"
+                )
+    return {
+        "status": "matched",
+        "spec_hash": calibration_hash,
+        "terminal": terminal,
+    }
 
 
 def verify_local_wording_variants(prompt: str) -> str:
@@ -379,6 +459,14 @@ def _raw_path(output: Path, index: int) -> Path:
     return output.with_name(f"{output.stem}-run-{index}.events.json")
 
 
+def _write_json(path: Path, value: object) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(
+        json.dumps(value, allow_nan=False, indent=2, sort_keys=True) + "\n"
+    )
+    temporary.replace(path)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stream-url", required=True)
@@ -386,33 +474,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runs", required=True, type=int)
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--calibration", required=True, type=Path)
     args = parser.parse_args(argv)
     if args.runs != 3:
         raise SystemExit("--runs must be 3")
 
-    local_spec_hash = verify_local_wording_variants(args.prompt)
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    attempt_root = args.output.parent / f"{args.output.stem}-attempts"
+    attempt_dir = attempt_root / uuid.uuid4().hex
+    attempt_dir.mkdir(parents=True)
+    attempt_name = str(attempt_dir.relative_to(args.output.parent))
+    failure = {
+        "status": "failed",
+        "error": "acceptance attempt has not passed",
+        "attempt_dir": attempt_name,
+    }
+    _write_json(args.output, failure)
     event_runs = []
-    for index in range(1, args.runs + 1):
-        events = collect_events(args.stream_url, args.api_key, args.prompt)
-        event_runs.append(events)
-        _raw_path(args.output, index).write_text(
-            json.dumps(events, allow_nan=False, indent=2, sort_keys=True) + "\n"
-        )
-    summaries = verify_runs(event_runs)
-    args.output.write_text(
-        json.dumps(
-            {
-                "status": "passed",
-                "local_wording_spec_hash": local_spec_hash,
-                "runs": summaries,
-            },
-            allow_nan=False,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    )
+    try:
+        local_spec_hash = verify_local_wording_variants(args.prompt)
+        calibration = json.loads(args.calibration.read_text())
+        for index in range(1, args.runs + 1):
+            events = collect_events(args.stream_url, args.api_key, args.prompt)
+            event_runs.append(events)
+            _write_json(attempt_dir / f"run-{index}.events.json", events)
+        summaries = verify_runs(event_runs)
+        calibration_result = compare_calibration(summaries[0], calibration)
+        for index, events in enumerate(event_runs, start=1):
+            _write_json(_raw_path(args.output, index), events)
+        _write_json(args.output, {
+            "status": "passed",
+            "attempt_dir": attempt_name,
+            "local_wording_spec_hash": local_spec_hash,
+            "calibration": calibration_result,
+            "runs": summaries,
+        })
+    except Exception as exc:
+        _write_json(args.output, {
+            "status": "failed",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "attempt_dir": attempt_name,
+        })
+        raise
     return 0
 
 

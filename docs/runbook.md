@@ -45,40 +45,71 @@ deployment shell open so every command uses the same variables. Stop on a failed
 local suite, image push, CloudFormation resource, unhealthy AgentCore endpoint,
 failed ECS task, relay 4xx/5xx, or frontend smoke check.
 
+> **Deployment blocked pending frontend-auth decision (2026-07-24).** The SPA
+> currently embeds `VITE_API_KEY` at build time. Do not build images, push,
+> deploy, fetch the key, or run any mutating command in this section until the
+> replacement authentication design is approved and this block is removed.
+
 ### 0a. Local gates and rollback capture
 
-Run every suite before creating deployment artifacts:
+Pin the commit, reject tracked deployment-input changes outside that commit,
+and export a fresh build tree. Untracked files and unrelated working-tree
+artifacts are never copied into this tree.
 
 ```bash
-pytest -q
-pytest tools/tests agent/tests -q
-node --test tools/lambda/sse_relay/protocol.test.mjs
+set -euo pipefail
+export REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+export GIT_SHA=$(git rev-parse HEAD)
+DEPLOY_INPUTS=(src tools agent infra frontend pyproject.toml)
+git diff --quiet "$GIT_SHA" -- "${DEPLOY_INPUTS[@]}"
+git diff --cached --quiet "$GIT_SHA" -- "${DEPLOY_INPUTS[@]}"
+git cat-file -e "$GIT_SHA^{commit}"
+export BUILD_ROOT=$(mktemp -d /tmp/chronos2-task11-build.XXXXXX)
+git archive "$GIT_SHA" | tar -x -C "$BUILD_ROOT"
+export BUILD_ARCHIVE_SHA256=$(git archive "$GIT_SHA" | shasum -a 256 | awk '{print $1}')
+test -n "$BUILD_ARCHIVE_SHA256"
 
-cd infra
-npm test -- --runInBand
-npm run build
-
-cd ../frontend
-npm test -- --run
-npm run build
-cd ..
-```
-
-Set the target and resolve the existing resources. Do not print `API_KEY`.
-
-```bash
 export AWS_PROFILE=chronos2-demo
 export AWS_REGION=us-east-1
 export CDK_DOCKER=finch
-export GIT_SHA=$(git rev-parse HEAD)
 export IMAGE_TAG=$GIT_SHA
 export ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 test "$ACCOUNT" = "654654592675"
 export ECR=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
+```
+
+Run the complete matrix against the exported commit. A failure stops the
+deployment before any image is built or pushed.
+
+```bash
+(
+  cd "$BUILD_ROOT"
+  PYTHONPATH="$BUILD_ROOT/src" "$REPO_ROOT/.venv/bin/pytest" -q
+  PYTHONPATH="$BUILD_ROOT/src" "$REPO_ROOT/.venv/bin/pytest" tools/tests agent/tests -q
+  node --test tools/lambda/sse_relay/protocol.test.mjs
+)
+(
+  cd "$BUILD_ROOT/infra"
+  npm ci
+  CDK_DOCKER=finch npm test -- --runInBand
+  npm run build
+)
+(
+  cd "$BUILD_ROOT/frontend"
+  npm ci
+  npm test -- --run
+  npm run build
+)
+```
+
+Resolve the existing resources. Do not enable shell tracing and do not print
+`API_KEY`.
+
+```bash
 export CHRONOS2_ENDPOINT_NAME=$(aws sagemaker list-endpoints \
   --query 'Endpoints[?starts_with(EndpointName,`chronos2`)].EndpointName | [0]' \
   --output text)
-
 export BASELINE_REPO=$(aws ecr describe-repositories \
   --query "repositories[?contains(repositoryName,'baselinemcrepo')].repositoryName | [0]" \
   --output text)
@@ -88,11 +119,46 @@ export CHRONOS2_REPO=$(aws ecr describe-repositories \
 export AGENT_REPO=$(aws ecr describe-repositories \
   --query "repositories[?contains(repositoryName,'agentruntimerepo')].repositoryName | [0]" \
   --output text)
+export AMPLIFY_APP_ID=$(aws cloudformation describe-stacks \
+  --stack-name Chronos2DemoFrontend \
+  --query "Stacks[0].Outputs[?OutputKey=='AmplifyAppIdOut'].OutputValue | [0]" \
+  --output text)
+export ROLLBACK_ROOT=$(mktemp -d /tmp/chronos2-task11-rollback.XXXXXX)
+export ROLLBACK_TEMPLATE_BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name CDKToolkit \
+  --query "Stacks[0].Outputs[?OutputKey=='BucketName'].OutputValue | [0]" \
+  --output text)
+test -n "$ROLLBACK_TEMPLATE_BUCKET"
 ```
 
-Before updating anything, record the deployed image identities, Lambda-owned
-task-definition ARNs/revisions, AgentCore runtime identity, stack states, and
-Amplify job. Store the JSON outside the repository:
+Before any image push or AWS mutation, capture each prior CloudFormation
+template and parameter value. These files are the exact stack rollback inputs,
+not a reconstruction from the new checkout.
+
+```bash
+for STACK in \
+  Chronos2DemoTools \
+  Chronos2DemoAgent \
+  Chronos2DemoFrontend \
+  Chronos2DemoApi
+do
+  aws cloudformation get-template \
+    --stack-name "$STACK" --template-stage Original \
+    --query TemplateBody --output json \
+    > "$ROLLBACK_ROOT/$STACK.template.json"
+  aws cloudformation describe-stacks --stack-name "$STACK" --output json \
+    > "$ROLLBACK_ROOT/$STACK.stack.json"
+  jq '[.Stacks[0].Parameters[] | {ParameterKey,ParameterValue}]' \
+    "$ROLLBACK_ROOT/$STACK.stack.json" \
+    > "$ROLLBACK_ROOT/$STACK.rollback-parameters.json"
+  jq -e 'type == "object" and length > 0' \
+    "$ROLLBACK_ROOT/$STACK.template.json" >/dev/null
+done
+```
+
+Capture both launcher configurations, complete task definitions, image
+references and resolved digests. A tag is not accepted as rollback evidence
+without the digest it resolves to now.
 
 ```bash
 BASELINE_LAUNCHER=$(aws cloudformation describe-stack-resources \
@@ -109,24 +175,92 @@ PREVIOUS_BASELINE_TASK=$(aws lambda get-function-configuration \
 PREVIOUS_CHRONOS_TASK=$(aws lambda get-function-configuration \
   --function-name "$CHRONOS_LAUNCHER" \
   --query 'Environment.Variables.TASK_DEFINITION_ARN' --output text)
-PREVIOUS_BASELINE_IMAGE=$(aws ecs describe-task-definition \
-  --task-definition "$PREVIOUS_BASELINE_TASK" \
-  --query 'taskDefinition.containerDefinitions[0].image' --output text)
-PREVIOUS_CHRONOS_IMAGE=$(aws ecs describe-task-definition \
-  --task-definition "$PREVIOUS_CHRONOS_TASK" \
-  --query 'taskDefinition.containerDefinitions[0].image' --output text)
-PREVIOUS_BASELINE_DIGEST=$(aws ecr describe-images \
-  --repository-name "$BASELINE_REPO" --image-ids imageTag="${PREVIOUS_BASELINE_IMAGE##*:}" \
-  --query 'imageDetails[0].imageDigest' --output text)
-PREVIOUS_CHRONOS_DIGEST=$(aws ecr describe-images \
-  --repository-name "$CHRONOS2_REPO" --image-ids imageTag="${PREVIOUS_CHRONOS_IMAGE##*:}" \
-  --query 'imageDetails[0].imageDigest' --output text)
+PREVIOUS_BASELINE_LAUNCHER=$(aws lambda get-function-configuration \
+  --function-name "$BASELINE_LAUNCHER" --output json)
+PREVIOUS_CHRONOS_LAUNCHER=$(aws lambda get-function-configuration \
+  --function-name "$CHRONOS_LAUNCHER" --output json)
+PREVIOUS_BASELINE_TASK_JSON=$(aws ecs describe-task-definition \
+  --task-definition "$PREVIOUS_BASELINE_TASK" --output json)
+PREVIOUS_CHRONOS_TASK_JSON=$(aws ecs describe-task-definition \
+  --task-definition "$PREVIOUS_CHRONOS_TASK" --output json)
+printf '%s\n' "$PREVIOUS_BASELINE_LAUNCHER" \
+  > "$ROLLBACK_ROOT/baseline-launcher.json"
+printf '%s\n' "$PREVIOUS_CHRONOS_LAUNCHER" \
+  > "$ROLLBACK_ROOT/chronos-launcher.json"
+printf '%s\n' "$PREVIOUS_BASELINE_TASK_JSON" \
+  > "$ROLLBACK_ROOT/baseline-task.json"
+printf '%s\n' "$PREVIOUS_CHRONOS_TASK_JSON" \
+  > "$ROLLBACK_ROOT/chronos-task.json"
+
+PREVIOUS_BASELINE_IMAGE=$(jq -r \
+  '.taskDefinition.containerDefinitions[0].image' \
+  "$ROLLBACK_ROOT/baseline-task.json")
+PREVIOUS_CHRONOS_IMAGE=$(jq -r \
+  '.taskDefinition.containerDefinitions[0].image' \
+  "$ROLLBACK_ROOT/chronos-task.json")
+
+resolve_image_digest() {
+  local image=$1
+  local repository_and_ref=${image#"$ECR/"}
+  if [[ "$repository_and_ref" == *@sha256:* ]]; then
+    printf 'sha256:%s\n' "${repository_and_ref##*:}"
+    return
+  fi
+  local repository=${repository_and_ref%:*}
+  local tag=${repository_and_ref##*:}
+  aws ecr describe-images \
+    --repository-name "$repository" --image-ids imageTag="$tag" \
+    --query 'imageDetails[0].imageDigest' --output text
+}
+
+PREVIOUS_BASELINE_DIGEST=$(resolve_image_digest "$PREVIOUS_BASELINE_IMAGE")
+PREVIOUS_CHRONOS_DIGEST=$(resolve_image_digest "$PREVIOUS_CHRONOS_IMAGE")
+```
+
+Capture the exact AgentCore version serving `live`, including its container,
+environment, network and role provenance, plus the endpoint routing state.
+
+```bash
 AGENT_RUNTIME_ID=$(aws cloudformation describe-stack-resources \
   --stack-name Chronos2DemoAgent \
   --query "StackResources[?ResourceType=='AWS::BedrockAgentCore::Runtime'].PhysicalResourceId | [0]" \
   --output text)
+PREVIOUS_AGENT_ENDPOINT=$(aws bedrock-agentcore-control \
+  get-agent-runtime-endpoint \
+  --agent-runtime-id "$AGENT_RUNTIME_ID" --endpoint-name live --output json)
+PREVIOUS_AGENT_LIVE_VERSION=$(printf '%s' "$PREVIOUS_AGENT_ENDPOINT" \
+  | jq -r .liveVersion)
 PREVIOUS_AGENT=$(aws bedrock-agentcore-control get-agent-runtime \
-  --agent-runtime-id "$AGENT_RUNTIME_ID" --output json)
+  --agent-runtime-id "$AGENT_RUNTIME_ID" \
+  --agent-runtime-version "$PREVIOUS_AGENT_LIVE_VERSION" --output json)
+PREVIOUS_AGENT_IMAGE=$(printf '%s' "$PREVIOUS_AGENT" \
+  | jq -r '.agentRuntimeArtifact.containerConfiguration.containerUri')
+PREVIOUS_AGENT_DIGEST=$(resolve_image_digest "$PREVIOUS_AGENT_IMAGE")
+printf '%s\n' "$PREVIOUS_AGENT" > "$ROLLBACK_ROOT/agent-runtime.json"
+printf '%s\n' "$PREVIOUS_AGENT_ENDPOINT" > "$ROLLBACK_ROOT/agent-endpoint.json"
+```
+
+Capture the last successful Amplify artifact itself. A job record without a
+downloadable, valid zip is not a restorable rollback, so stop before mutation.
+
+```bash
+PREVIOUS_AMPLIFY_JOB_ID=$(aws amplify list-jobs \
+  --app-id "$AMPLIFY_APP_ID" --branch-name main \
+  --query "jobSummaries[?status=='SUCCEED'] | [0].jobId" --output text)
+PREVIOUS_AMPLIFY_JOB=$(aws amplify get-job \
+  --app-id "$AMPLIFY_APP_ID" --branch-name main \
+  --job-id "$PREVIOUS_AMPLIFY_JOB_ID" --output json)
+printf '%s\n' "$PREVIOUS_AMPLIFY_JOB" \
+  > "$ROLLBACK_ROOT/amplify-job.json"
+PREVIOUS_AMPLIFY_ARTIFACT_URL=$(printf '%s' "$PREVIOUS_AMPLIFY_JOB" \
+  | jq -r '[.job.steps[]?.artifactsUrl | select(length > 0)] | last // empty')
+test -n "$PREVIOUS_AMPLIFY_ARTIFACT_URL"
+PREVIOUS_FRONTEND_ARTIFACT="$ROLLBACK_ROOT/frontend.zip"
+curl --fail --silent --show-error \
+  "$PREVIOUS_AMPLIFY_ARTIFACT_URL" -o "$PREVIOUS_FRONTEND_ARTIFACT"
+unzip -tq "$PREVIOUS_FRONTEND_ARTIFACT"
+PREVIOUS_FRONTEND_SHA256=$(shasum -a 256 "$PREVIOUS_FRONTEND_ARTIFACT" \
+  | awk '{print $1}')
 
 jq -n \
   --arg captured_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -136,37 +270,46 @@ jq -n \
   --arg chronos_task "$PREVIOUS_CHRONOS_TASK" \
   --arg chronos_image "$PREVIOUS_CHRONOS_IMAGE" \
   --arg chronos_digest "$PREVIOUS_CHRONOS_DIGEST" \
-  --argjson agent "$PREVIOUS_AGENT" \
-  '{captured_at:$captured_at,baseline:{task_definition:$baseline_task,image:$baseline_image,digest:$baseline_digest},chronos:{task_definition:$chronos_task,image:$chronos_image,digest:$chronos_digest},agent:$agent}' \
-  > /tmp/chronos2-task11-rollback.json
+  --arg agent_live_version "$PREVIOUS_AGENT_LIVE_VERSION" \
+  --arg agent_image "$PREVIOUS_AGENT_IMAGE" \
+  --arg agent_digest "$PREVIOUS_AGENT_DIGEST" \
+  --arg amplify_job_id "$PREVIOUS_AMPLIFY_JOB_ID" \
+  --arg frontend_sha256 "$PREVIOUS_FRONTEND_SHA256" \
+  '{captured_at:$captured_at,baseline:{task_definition:$baseline_task,image:$baseline_image,digest:$baseline_digest},chronos:{task_definition:$chronos_task,image:$chronos_image,digest:$chronos_digest},agent:{live_version:$agent_live_version,image:$agent_image,digest:$agent_digest},amplify:{job_id:$amplify_job_id,sha256:$frontend_sha256}}' \
+  > "$ROLLBACK_ROOT/rollback.json"
+(cd "$ROLLBACK_ROOT" && shasum -a 256 \
+  *.json *.zip > rollback-files.sha256)
 ```
 
 If a stack resource query returns `None`, resolve the physical ID from the full
-`describe-stack-resources` output before continuing.
+`describe-stack-resources` output before continuing. If any digest, runtime
+version, template, parameter set, or Amplify artifact is empty, stop.
 
 ### 0b. Build, push, and resolve immutable images
 
 Build the two Fargate images as `linux/amd64` and AgentCore as `linux/arm64`.
+Every Dockerfile and context comes from `BUILD_ROOT`, the committed export.
 The git SHA tag is the deployment identity; never use `latest` as the only
-record.
+record. This subsection remains prohibited by the frontend-auth block above.
 
 ```bash
+false # BLOCKED: approved frontend-auth implementation is required before AWS mutation.
 aws ecr get-login-password --region "$AWS_REGION" \
   | finch login --username AWS --password-stdin "$ECR"
 
 finch build --platform linux/amd64 \
-  -f tools/fargate/baseline_mc/Dockerfile \
-  -t "$ECR/${BASELINE_REPO}:${GIT_SHA}" .
+  -f "$BUILD_ROOT/tools/fargate/baseline_mc/Dockerfile" \
+  -t "$ECR/${BASELINE_REPO}:${GIT_SHA}" "$BUILD_ROOT"
 finch push "$ECR/${BASELINE_REPO}:${GIT_SHA}"
 
 finch build --platform linux/amd64 \
-  -f tools/fargate/run_chronos2/Dockerfile \
-  -t "$ECR/${CHRONOS2_REPO}:${GIT_SHA}" .
+  -f "$BUILD_ROOT/tools/fargate/run_chronos2/Dockerfile" \
+  -t "$ECR/${CHRONOS2_REPO}:${GIT_SHA}" "$BUILD_ROOT"
 finch push "$ECR/${CHRONOS2_REPO}:${GIT_SHA}"
 
 finch build --platform linux/arm64 \
-  -f agent/runtime/Dockerfile \
-  -t "$ECR/${AGENT_REPO}:${GIT_SHA}" .
+  -f "$BUILD_ROOT/agent/runtime/Dockerfile" \
+  -t "$ECR/${AGENT_REPO}:${GIT_SHA}" "$BUILD_ROOT"
 finch push "$ECR/${AGENT_REPO}:${GIT_SHA}"
 
 export BASELINE_IMAGE_DIGEST=$(aws ecr describe-images \
@@ -178,9 +321,15 @@ export CHRONOS_IMAGE_DIGEST=$(aws ecr describe-images \
 export AGENT_IMAGE_DIGEST=$(aws ecr describe-images \
   --repository-name "$AGENT_REPO" --image-ids imageTag="$GIT_SHA" \
   --query 'imageDetails[0].imageDigest' --output text)
-```
 
-Verify each digest matches `sha256:<64 lowercase hex characters>` before CDK.
+for DIGEST in \
+  "$BASELINE_IMAGE_DIGEST" \
+  "$CHRONOS_IMAGE_DIGEST" \
+  "$AGENT_IMAGE_DIGEST"
+do
+  printf '%s\n' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
+done
+```
 
 ### 0c. Pin data and deployment provenance
 
@@ -192,8 +341,10 @@ export DATA_BUCKET=$(aws cloudformation describe-stack-resources \
   --stack-name Chronos2DemoStorage \
   --query "StackResources[?ResourceType=='AWS::S3::Bucket' && contains(LogicalResourceId,'DataBucket')].PhysicalResourceId | [0]" \
   --output text)
-export MARKET_SHA256=$(shasum -a 256 data/curated/panel.parquet | awk '{print $1}')
-export COVARIATE_SHA256=$(shasum -a 256 data/curated/covariates.parquet | awk '{print $1}')
+export MARKET_SHA256=$(shasum -a 256 \
+  "$BUILD_ROOT/data/curated/panel.parquet" | awk '{print $1}')
+export COVARIATE_SHA256=$(shasum -a 256 \
+  "$BUILD_ROOT/data/curated/covariates.parquet" | awk '{print $1}')
 aws s3 cp "s3://$DATA_BUCKET/panel.parquet" /tmp/chronos2-panel.parquet
 aws s3 cp "s3://$DATA_BUCKET/covariates.parquet" /tmp/chronos2-covariates.parquet
 test "$(shasum -a 256 /tmp/chronos2-panel.parquet | awk '{print $1}')" = "$MARKET_SHA256"
@@ -230,36 +381,80 @@ jq -n \
 The Tools stack owns the shared layers, tool Lambdas, and both Fargate task
 definitions, so their CloudFormation update is one atomic deployment. The Agent
 stack then updates the Gateway schema and AgentCore runtime together with the
-pinned provenance environment.
+pinned provenance environment. This is an intentional hard stop until the
+frontend-auth decision is implemented and reviewed:
 
 ```bash
-cd infra
+cd "$BUILD_ROOT/infra"
 npx cdk deploy Chronos2DemoTools --exclusively \
   -c imageTag="$GIT_SHA" --require-approval never
-test "$(aws cloudformation describe-stacks --stack-name Chronos2DemoTools \
-  --query 'Stacks[0].StackStatus' --output text)" = "UPDATE_COMPLETE"
+TOOLS_STATUS=$(aws cloudformation describe-stacks \
+  --stack-name Chronos2DemoTools \
+  --query 'Stacks[0].StackStatus' --output text)
+case "$TOOLS_STATUS" in
+  CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+  *)
+    aws cloudformation describe-stack-events \
+      --stack-name Chronos2DemoTools \
+      --query "StackEvents[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]"
+    exit 1
+    ;;
+esac
 
 npx cdk deploy Chronos2DemoAgent --exclusively \
   -c imageTag="$GIT_SHA" --require-approval never
-test "$(aws cloudformation describe-stacks --stack-name Chronos2DemoAgent \
-  --query 'Stacks[0].StackStatus' --output text)" = "UPDATE_COMPLETE"
+AGENT_STACK_STATUS=$(aws cloudformation describe-stacks \
+  --stack-name Chronos2DemoAgent \
+  --query 'Stacks[0].StackStatus' --output text)
+case "$AGENT_STACK_STATUS" in
+  CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+  *)
+    aws cloudformation describe-stack-events \
+      --stack-name Chronos2DemoAgent \
+      --query "StackEvents[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]"
+    exit 1
+    ;;
+esac
 ```
 
-Require the `live` AgentCore endpoint to report a ready status before
-continuing. Inspect any failed CloudFormation event and stop rather than
-deploying downstream stacks:
+Require both the runtime and `live` endpoint to become `READY`. Unknown or
+failure states fail immediately; transient states get at most ten minutes.
 
 ```bash
-aws bedrock-agentcore-control get-agent-runtime \
-  --agent-runtime-id "$AGENT_RUNTIME_ID"
-aws bedrock-agentcore-control get-agent-runtime-endpoint \
-  --agent-runtime-id "$AGENT_RUNTIME_ID" --endpoint-name live
-aws cloudformation describe-stack-events --stack-name Chronos2DemoAgent \
-  --query "StackEvents[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]"
+AGENT_MAX_ATTEMPTS=60
+AGENT_RUNTIME_READY=0
+for ((ATTEMPT=1; ATTEMPT<=AGENT_MAX_ATTEMPTS; ATTEMPT++)); do
+  AGENT_RUNTIME_STATUS=$(aws bedrock-agentcore-control get-agent-runtime \
+    --agent-runtime-id "$AGENT_RUNTIME_ID" --query status --output text)
+  case "$AGENT_RUNTIME_STATUS" in
+    READY) AGENT_RUNTIME_READY=1; break ;;
+    CREATING|UPDATING) sleep 10 ;;
+    *) printf 'Agent runtime failed closed in status %s\n' \
+         "$AGENT_RUNTIME_STATUS" >&2; exit 1 ;;
+  esac
+done
+test "$AGENT_RUNTIME_READY" = 1 \
+  || { echo "agent runtime did not become READY" >&2; exit 1; }
+
+AGENT_ENDPOINT_READY=0
+for ((ATTEMPT=1; ATTEMPT<=AGENT_MAX_ATTEMPTS; ATTEMPT++)); do
+  AGENT_ENDPOINT_STATUS=$(aws bedrock-agentcore-control \
+    get-agent-runtime-endpoint \
+    --agent-runtime-id "$AGENT_RUNTIME_ID" --endpoint-name live \
+    --query status --output text)
+  case "$AGENT_ENDPOINT_STATUS" in
+    READY) AGENT_ENDPOINT_READY=1; break ;;
+    CREATING|UPDATING) sleep 10 ;;
+    *) printf 'Agent endpoint failed closed in status %s\n' \
+         "$AGENT_ENDPOINT_STATUS" >&2; exit 1 ;;
+  esac
+done
+test "$AGENT_ENDPOINT_READY" = 1 \
+  || { echo "agent endpoint did not become READY" >&2; exit 1; }
 ```
 
 Preserve the export-deadlock workaround exactly: deploy Frontend exclusively,
-rebuild the SPA from local `.env.production`, publish the manual Amplify zip,
+rebuild the SPA from the exported tree, publish the manual Amplify zip,
 then deploy Api exclusively.
 
 ```bash
@@ -272,84 +467,297 @@ export API_URL=$(aws cloudformation describe-stacks \
 export STREAM_URL=$(aws cloudformation describe-stacks \
   --stack-name Chronos2DemoApi \
   --query "Stacks[0].Outputs[?OutputKey=='StreamUrlOut'].OutputValue | [0]" --output text)
+# The frontend-auth replacement belongs here once approved. Until then the
+# hard stop above remains in place; do not retrieve or embed the secret.
 export API_KEY_SECRET_ARN=$(aws cloudformation describe-stacks \
   --stack-name Chronos2DemoTools \
   --query "Stacks[0].Outputs[?OutputKey=='ApiKeySecretArnOut'].OutputValue | [0]" --output text)
-export AMPLIFY_APP_ID=$(aws cloudformation describe-stacks \
-  --stack-name Chronos2DemoFrontend \
-  --query "Stacks[0].Outputs[?OutputKey=='AmplifyAppIdOut'].OutputValue | [0]" --output text)
 export APP_URL=$(aws cloudformation describe-stacks \
   --stack-name Chronos2DemoFrontend \
   --query "Stacks[0].Outputs[?OutputKey=='AmplifyDomainOut'].OutputValue | [0]" --output text)
 export API_KEY=$(aws secretsmanager get-secret-value \
   --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
 
-cd ../frontend
+cd "$BUILD_ROOT/frontend"
 printf 'VITE_API_URL=%s\nVITE_STREAM_URL=%s\nVITE_API_KEY=%s\n' \
   "$API_URL" "$STREAM_URL" "$API_KEY" > .env.production
 npm run build
-cd dist
-zip -r ../app.zip .
-cd ..
+export FRONTEND_ARTIFACT=/tmp/chronos2-frontend-"$GIT_SHA".zip
+(cd dist && zip -X -r "$FRONTEND_ARTIFACT" .)
+export FRONTEND_SHA256=$(shasum -a 256 "$FRONTEND_ARTIFACT" | awk '{print $1}')
+printf '%s\n' "$FRONTEND_SHA256" | grep -Eq '^[0-9a-f]{64}$'
+
+jq -n \
+  --arg git_sha "$GIT_SHA" \
+  --arg build_archive_sha256 "$BUILD_ARCHIVE_SHA256" \
+  --arg frontend_sha256 "$FRONTEND_SHA256" \
+  --slurpfile provenance /tmp/chronos2-task11-provenance.json \
+  '{"git_sha":$git_sha,"build_archive_sha256":$build_archive_sha256,"frontend_artifact_sha256":$frontend_sha256,"provenance":$provenance[0]}' \
+  > /tmp/chronos2-task11-deployment.json
+
 DEPLOY=$(aws amplify create-deployment \
   --app-id "$AMPLIFY_APP_ID" --branch-name main --output json)
 JOB_ID=$(printf '%s' "$DEPLOY" | jq -r .jobId)
 UPLOAD_URL=$(printf '%s' "$DEPLOY" | jq -r .zipUploadUrl)
-curl --fail --silent --show-error -T app.zip "$UPLOAD_URL"
+curl --fail --silent --show-error -T "$FRONTEND_ARTIFACT" "$UPLOAD_URL"
 aws amplify start-deployment \
   --app-id "$AMPLIFY_APP_ID" --branch-name main --job-id "$JOB_ID"
-until test "$(aws amplify get-job --app-id "$AMPLIFY_APP_ID" \
-  --branch-name main --job-id "$JOB_ID" \
-  --query 'job.summary.status' --output text)" = "SUCCEED"; do sleep 10; done
 
-cd ../infra
+AMPLIFY_MAX_ATTEMPTS=60
+AMPLIFY_SUCCEEDED=0
+for ((ATTEMPT=1; ATTEMPT<=AMPLIFY_MAX_ATTEMPTS; ATTEMPT++)); do
+  AMPLIFY_STATUS=$(aws amplify get-job --app-id "$AMPLIFY_APP_ID" \
+    --branch-name main --job-id "$JOB_ID" \
+    --query 'job.summary.status' --output text)
+  case "$AMPLIFY_STATUS" in
+    SUCCEED) AMPLIFY_SUCCEEDED=1; break ;;
+    PENDING|RUNNING) sleep 10 ;;
+    FAILED|CANCELLED) echo "Amplify deployment failed: $AMPLIFY_STATUS" >&2; exit 1 ;;
+    *) echo "Amplify deployment failed closed: $AMPLIFY_STATUS" >&2; exit 1 ;;
+  esac
+done
+test "$AMPLIFY_SUCCEEDED" = 1 \
+  || { echo "Amplify deployment timed out" >&2; exit 1; }
+
+cd "$BUILD_ROOT/infra"
 npx cdk deploy Chronos2DemoApi --exclusively \
   -c imageTag="$GIT_SHA" --require-approval never
-test "$(aws cloudformation describe-stacks --stack-name Chronos2DemoApi \
-  --query 'Stacks[0].StackStatus' --output text)" = "UPDATE_COMPLETE"
-cd ..
+API_STACK_STATUS=$(aws cloudformation describe-stacks \
+  --stack-name Chronos2DemoApi \
+  --query 'Stacks[0].StackStatus' --output text)
+case "$API_STACK_STATUS" in
+  CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+  *)
+    aws cloudformation describe-stack-events \
+      --stack-name Chronos2DemoApi \
+      --query "StackEvents[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]"
+    exit 1
+    ;;
+esac
+cd "$REPO_ROOT"
 ```
 
 ### 0e. Streaming-edge and live stop gates
 
-Verify the raw Function URL remains `AWS_IAM`, the CloudFront OAC has both
-Lambda permissions, WAF is associated, caching is disabled, and the viewer
-`x-api-key` is forwarded. The raw URL must return 403 without SigV4; the
-CloudFront relay must not return 4xx/5xx with the valid key.
+Resolve the deployed edge and assert its structure, rather than relying on
+descriptive output. The managed `AllViewerExceptHostHeader` policy forwards
+viewer headers including `x-api-key`.
+
+```bash
+SSE_FUNCTION=$(aws cloudformation describe-stack-resources \
+  --stack-name Chronos2DemoApi \
+  --query "StackResources[?ResourceType=='AWS::Lambda::Function' && contains(LogicalResourceId,'SseFn')].PhysicalResourceId | [0]" \
+  --output text)
+DISTRIBUTION_ID=$(aws cloudformation describe-stack-resources \
+  --stack-name Chronos2DemoApi \
+  --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution'].PhysicalResourceId | [0]" \
+  --output text)
+FUNCTION_URL_CONFIG=$(aws lambda get-function-url-config \
+  --function-name "$SSE_FUNCTION" --output json)
+test "$(jq -r .AuthType <<<"$FUNCTION_URL_CONFIG")" = "AWS_IAM"
+test "$(jq -r .InvokeMode <<<"$FUNCTION_URL_CONFIG")" = "RESPONSE_STREAM"
+
+LAMBDA_POLICY=$(aws lambda get-policy \
+  --function-name "$SSE_FUNCTION" --output json | jq -r .Policy)
+printf '%s' "$LAMBDA_POLICY" | jq -e \
+  '[.Statement[] | select(.Principal.Service? == "cloudfront.amazonaws.com") | .Action] | flatten | index("lambda:InvokeFunctionUrl") != null' \
+  >/dev/null
+printf '%s' "$LAMBDA_POLICY" | jq -e \
+  '[.Statement[] | select(.Principal.Service? == "cloudfront.amazonaws.com") | .Action] | flatten | index("lambda:InvokeFunction") != null' \
+  >/dev/null
+printf '%s' "$LAMBDA_POLICY" | jq -e --arg source \
+  "arn:aws:cloudfront::$ACCOUNT:distribution/$DISTRIBUTION_ID" \
+  '[.Statement[] | select(.Principal.Service? == "cloudfront.amazonaws.com") | (.Condition.ArnLike["AWS:SourceArn"] // .Condition.StringEquals["AWS:SourceArn"] // empty)] | index($source) != null' \
+  >/dev/null
+
+CACHE_POLICY_ID=$(aws cloudfront list-cache-policies --type managed \
+  --query "CachePolicyList.Items[?CachePolicy.CachePolicyConfig.Name=='Managed-CachingDisabled'].CachePolicy.Id | [0]" \
+  --output text)
+ORIGIN_REQUEST_POLICY_ID=$(aws cloudfront list-origin-request-policies \
+  --type managed \
+  --query "OriginRequestPolicyList.Items[?OriginRequestPolicy.OriginRequestPolicyConfig.Name=='Managed-AllViewerExceptHostHeader'].OriginRequestPolicy.Id | [0]" \
+  --output text)
+DISTRIBUTION_CONFIG=$(aws cloudfront get-distribution-config \
+  --id "$DISTRIBUTION_ID" --output json)
+test "$(jq -r .DistributionConfig.DefaultCacheBehavior.CachePolicyId \
+  <<<"$DISTRIBUTION_CONFIG")" = "$CACHE_POLICY_ID"
+test "$(jq -r .DistributionConfig.DefaultCacheBehavior.OriginRequestPolicyId \
+  <<<"$DISTRIBUTION_CONFIG")" = "$ORIGIN_REQUEST_POLICY_ID"
+test "$(jq -r '.DistributionConfig.WebACLId | length > 0' \
+  <<<"$DISTRIBUTION_CONFIG")" = "true"
+OAC_ID=$(jq -r \
+  '.DistributionConfig.Origins.Items[0].OriginAccessControlId' \
+  <<<"$DISTRIBUTION_CONFIG")
+test -n "$OAC_ID"
+OAC=$(aws cloudfront get-origin-access-control \
+  --id "$OAC_ID" --output json)
+test "$(jq -r .OriginAccessControl.OriginAccessControlConfig.SigningBehavior \
+  <<<"$OAC")" = "always"
+test "$(jq -r .OriginAccessControl.OriginAccessControlConfig.SigningProtocol \
+  <<<"$OAC")" = "sigv4"
+test "$(jq -r .OriginAccessControl.OriginAccessControlConfig.OriginAccessControlOriginType \
+  <<<"$OAC")" = "lambda"
+
+RAW_FUNCTION_URL=$(jq -r .FunctionUrl <<<"$FUNCTION_URL_CONFIG")
+test "$(curl --silent --connect-timeout 10 --max-time 30 \
+  --output /dev/null --write-out '%{http_code}' \
+  "${RAW_FUNCTION_URL}?session_id=unsigned&prompt=hello")" = "403"
+```
 
 Run one stage-safe smoke prompt and inspect every tool lifecycle event before
 the three-run gate. Any stopped ECS task with a non-zero container exit code
 blocks acceptance.
 
-Run calibration with the same provenance, then the exact three-run verifier:
+Run calibration from the exported commit with the deployed provenance. The
+verifier independently recomputes the spec hash, requires three terminal
+streams, and compares every terminal cent against this calibration.
 
 ```bash
-python scripts/calibrate_headline.py \
-  --profile stage_safe_headline_v1 \
-  --provenance-file /tmp/chronos2-task11-provenance.json
+export ACCEPTANCE_ROOT=$(mktemp -d /tmp/chronos2-task11-acceptance.XXXXXX)
+export CALIBRATION_MAX_SECONDS=1800
+(
+  cd "$BUILD_ROOT"
+  export PYTHONPATH="$BUILD_ROOT/src"
+  "$REPO_ROOT/.venv/bin/python" - <<'PY'
+import os
+import subprocess
+import sys
 
-python scripts/verify_live_reproducibility.py \
-  --stream-url "$STREAM_URL" \
-  --api-key "$API_KEY" \
-  --runs 3 \
-  --prompt "Run the stage-safe headline demo for September 30, 2022. Use five years of trading history, project one trading year into the future, and generate 500 scenarios with each engine. Apply a 53.05% stress weight. Show the market regime and compare baseline exposure with Chronos-2-augmented exposure. Report the final EE, 97.5% PFE, 97.5% ES, and the PFE change." \
-  --output docs/results/live_reproducibility.json
+subprocess.run(
+    [
+        sys.executable,
+        "scripts/calibrate_headline.py",
+        "--profile",
+        "stage_safe_headline_v1",
+        "--provenance-file",
+        "/tmp/chronos2-task11-provenance.json",
+    ],
+    check=True,
+    timeout=int(os.environ["CALIBRATION_MAX_SECONDS"]),
+)
+PY
+
+  "$REPO_ROOT/.venv/bin/python" \
+    scripts/verify_live_reproducibility.py \
+    --stream-url "$STREAM_URL" \
+    --api-key "$API_KEY" \
+    --runs 3 \
+    --prompt "Run the stage-safe headline demo for September 30, 2022. Use five years of trading history, project one trading year into the future, and generate 500 scenarios with each engine. Apply a 53.05% stress weight. Show the market regime and compare baseline exposure with Chronos-2-augmented exposure. Report the final EE, 97.5% PFE, 97.5% ES, and the PFE change." \
+    --calibration docs/results/headline_calibration.json \
+    --output "$ACCEPTANCE_ROOT/live_reproducibility.json"
+)
+test "$(jq -r .status "$ACCEPTANCE_ROOT/live_reproducibility.json")" = "passed"
 ```
 
-Compare calibration and one live run at Decimal cent precision for baseline,
-Chronos-only, and augmented EE, PFE 97.5%, and ES 97.5%. A mismatch is a defect,
-not a number to bless. Run both equivalent wording variants once, one ambiguous
-prompt with no `tool_start`, and the desktop/mobile Playwright acceptance.
+Do not copy results into `docs/results` yet. Run both equivalent wording
+variants once, one ambiguous prompt with no `tool_start`, and the desktop/mobile
+Playwright acceptance. Inspect all task ARNs present in the raw events with
+`aws ecs describe-tasks`; any non-zero container exit blocks acceptance. Only
+after every CLI and browser gate passes, copy the calibration, summary, and raw
+attempt logs from `BUILD_ROOT`/`ACCEPTANCE_ROOT` into `docs/results`.
 
 ### 0f. Rollback
 
-Rollback uses the identities captured in
-`/tmp/chronos2-task11-rollback.json`. Do not move `latest` to disguise the
-deployed version. Restore the prior immutable image tags or digests in CDK,
-redeploy Tools and Agent in the same order, then restore Frontend and Api using
-the same exclusive-stack workaround. Confirm the launcher Lambda environment
-variables again reference the prior task-definition revisions and AgentCore
-reports the previous runtime image/version before reopening traffic.
+Rollback uses only the files in `ROLLBACK_ROOT`; do not move `latest` or rebuild
+an approximation. Restore the exact prior templates and parameter values in
+Tools, Agent, Frontend, Api order. After Agent is restored, explicitly route
+`live` back to its captured version. After Frontend is restored, re-upload the
+captured Amplify artifact before restoring Api.
+
+```bash
+restore_stack() {
+  local stack=$1
+  local template_key="task11-rollback/$GIT_SHA/$stack.template.json"
+  aws s3 cp "$ROLLBACK_ROOT/$stack.template.json" \
+    "s3://$ROLLBACK_TEMPLATE_BUCKET/$template_key"
+  aws cloudformation update-stack \
+    --stack-name "$stack" \
+    --template-url \
+      "https://$ROLLBACK_TEMPLATE_BUCKET.s3.$AWS_REGION.amazonaws.com/$template_key" \
+    --parameters "file://$ROLLBACK_ROOT/$stack.rollback-parameters.json" \
+    --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND
+  aws cloudformation wait stack-update-complete --stack-name "$stack"
+  test "$(aws cloudformation describe-stacks --stack-name "$stack" \
+    --query 'Stacks[0].StackStatus' --output text)" = "UPDATE_COMPLETE"
+}
+
+restore_stack Chronos2DemoTools
+RESTORED_BASELINE_TASK=$(aws lambda get-function-configuration \
+  --function-name "$BASELINE_LAUNCHER" \
+  --query 'Environment.Variables.TASK_DEFINITION_ARN' --output text)
+RESTORED_CHRONOS_TASK=$(aws lambda get-function-configuration \
+  --function-name "$CHRONOS_LAUNCHER" \
+  --query 'Environment.Variables.TASK_DEFINITION_ARN' --output text)
+test "$RESTORED_BASELINE_TASK" = "$PREVIOUS_BASELINE_TASK"
+test "$RESTORED_CHRONOS_TASK" = "$PREVIOUS_CHRONOS_TASK"
+test "$(resolve_image_digest "$(aws ecs describe-task-definition \
+  --task-definition "$RESTORED_BASELINE_TASK" \
+  --query 'taskDefinition.containerDefinitions[0].image' --output text)")" \
+  = "$PREVIOUS_BASELINE_DIGEST"
+test "$(resolve_image_digest "$(aws ecs describe-task-definition \
+  --task-definition "$RESTORED_CHRONOS_TASK" \
+  --query 'taskDefinition.containerDefinitions[0].image' --output text)")" \
+  = "$PREVIOUS_CHRONOS_DIGEST"
+
+restore_stack Chronos2DemoAgent
+aws bedrock-agentcore-control update-agent-runtime-endpoint \
+  --agent-runtime-id "$AGENT_RUNTIME_ID" --endpoint-name live \
+  --agent-runtime-version "$PREVIOUS_AGENT_LIVE_VERSION"
+AGENT_MAX_ATTEMPTS=60
+for ((ATTEMPT=1; ATTEMPT<=AGENT_MAX_ATTEMPTS; ATTEMPT++)); do
+  RESTORED_ENDPOINT=$(aws bedrock-agentcore-control \
+    get-agent-runtime-endpoint \
+    --agent-runtime-id "$AGENT_RUNTIME_ID" --endpoint-name live --output json)
+  if test "$(jq -r .status <<<"$RESTORED_ENDPOINT")" = "READY" \
+    && test "$(jq -r .liveVersion <<<"$RESTORED_ENDPOINT")" \
+      = "$PREVIOUS_AGENT_LIVE_VERSION"; then
+    break
+  fi
+  test "$ATTEMPT" -lt "$AGENT_MAX_ATTEMPTS" \
+    || { echo "agent endpoint did not restore prior version" >&2; exit 1; }
+  sleep 10
+done
+aws bedrock-agentcore-control get-agent-runtime \
+  --agent-runtime-id "$AGENT_RUNTIME_ID" \
+  --agent-runtime-version "$PREVIOUS_AGENT_LIVE_VERSION" --output json \
+  | jq -S '{agentRuntimeArtifact,environmentVariables,networkConfiguration,roleArn}' \
+  > "$ROLLBACK_ROOT/restored-agent-runtime.json"
+jq -S '{agentRuntimeArtifact,environmentVariables,networkConfiguration,roleArn}' \
+  "$ROLLBACK_ROOT/agent-runtime.json" \
+  > "$ROLLBACK_ROOT/previous-agent-runtime-comparable.json"
+cmp --silent \
+  "$ROLLBACK_ROOT/restored-agent-runtime.json" \
+  "$ROLLBACK_ROOT/previous-agent-runtime-comparable.json"
+
+restore_stack Chronos2DemoFrontend
+ROLLBACK_DEPLOY=$(aws amplify create-deployment \
+  --app-id "$AMPLIFY_APP_ID" --branch-name main --output json)
+ROLLBACK_JOB_ID=$(printf '%s' "$ROLLBACK_DEPLOY" | jq -r .jobId)
+ROLLBACK_UPLOAD_URL=$(printf '%s' "$ROLLBACK_DEPLOY" | jq -r .zipUploadUrl)
+test "$(shasum -a 256 "$PREVIOUS_FRONTEND_ARTIFACT" | awk '{print $1}')" \
+  = "$PREVIOUS_FRONTEND_SHA256"
+curl --fail --silent --show-error \
+  -T "$PREVIOUS_FRONTEND_ARTIFACT" "$ROLLBACK_UPLOAD_URL"
+aws amplify start-deployment \
+  --app-id "$AMPLIFY_APP_ID" --branch-name main --job-id "$ROLLBACK_JOB_ID"
+AMPLIFY_MAX_ATTEMPTS=60
+for ((ATTEMPT=1; ATTEMPT<=AMPLIFY_MAX_ATTEMPTS; ATTEMPT++)); do
+  ROLLBACK_AMPLIFY_STATUS=$(aws amplify get-job \
+    --app-id "$AMPLIFY_APP_ID" --branch-name main \
+    --job-id "$ROLLBACK_JOB_ID" \
+    --query 'job.summary.status' --output text)
+  case "$ROLLBACK_AMPLIFY_STATUS" in
+    SUCCEED) break ;;
+    PENDING|RUNNING) sleep 10 ;;
+    FAILED|CANCELLED) exit 1 ;;
+    *) exit 1 ;;
+  esac
+  test "$ATTEMPT" -lt "$AMPLIFY_MAX_ATTEMPTS" \
+    || { echo "Amplify rollback timed out" >&2; exit 1; }
+done
+
+restore_stack Chronos2DemoApi
+```
 
 ## 1. Deploy infrastructure
 

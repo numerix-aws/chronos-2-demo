@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+from pathlib import Path
 
 import pytest
 
+from chronos2_demo.run_spec import compute_spec_hash
 from scripts import verify_live_reproducibility as verifier
 
 
 ROLES = ("baseline", "chronos_only", "augmented")
-SPEC_HASH = "f" * 64
 PROVENANCE = {
     "market_snapshot_id": "curated-market-v1",
     "market_sha256": "a" * 64,
@@ -26,24 +27,29 @@ PROVENANCE = {
     "tool_bundle_version": "git:63dda42bc8373c63398a298d76118d8c3787c16c",
     "strands_version": "1.30.0",
 }
+RUN_SPEC_PAYLOAD = {
+    "schema_version": "1",
+    "profile": "stage_safe_headline_v1",
+    "as_of_date": "2022-09-30",
+    "lookback_days": 1260,
+    "horizon": 252,
+    "n_paths": 500,
+    "baseline_components": 5,
+    "baseline_seed": 0,
+    "chronos_seed": 0,
+    "w_stress": 0.5305,
+    "regime_threshold": 0.7,
+    "book_id": "cross_asset_demo_v1",
+    "conditioning": None,
+    "provenance": PROVENANCE,
+}
+SPEC_HASH = compute_spec_hash(RUN_SPEC_PAYLOAD)
+RUNBOOK_PATH = Path(__file__).parents[1] / "docs" / "runbook.md"
 
 
 def _run_spec(execution_id: str) -> dict[str, object]:
     return {
-        "schema_version": "1",
-        "profile": "stage_safe_headline_v1",
-        "as_of_date": "2022-09-30",
-        "lookback_days": 1260,
-        "horizon": 252,
-        "n_paths": 500,
-        "baseline_components": 5,
-        "baseline_seed": 0,
-        "chronos_seed": 0,
-        "w_stress": 0.5305,
-        "regime_threshold": 0.7,
-        "book_id": "cross_asset_demo_v1",
-        "conditioning": None,
-        "provenance": deepcopy(PROVENANCE),
+        **deepcopy(RUN_SPEC_PAYLOAD),
         "spec_hash": SPEC_HASH,
         "execution_id": execution_id,
     }
@@ -189,9 +195,29 @@ def test_collect_events_parses_native_multiline_sse(monkeypatch):
     ]
 
 
+def test_collect_events_accepts_data_field_without_space(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self, decode_unicode):
+            return iter([
+                "event: message",
+                "id: 1",
+                'data:{"type":"done"}',
+                "",
+            ])
+
+    monkeypatch.setattr(verifier.requests, "get", lambda *args, **kwargs: Response())
+
+    assert verifier.collect_events("https://stream.example/", "secret", "run") == [
+        {"type": "done"}
+    ]
+
+
 def test_swapped_event_order_passes():
     runs = recorded_runs()
-    runs[1] = list(reversed(runs[1]))
+    runs[1] = [*reversed(runs[1][:-1]), runs[1][-1]]
 
     summaries = verifier.verify_runs(runs)
 
@@ -228,7 +254,7 @@ def test_missing_chronos_only_result_fails_with_specific_message():
 
 def test_failed_retry_fails_with_specific_message():
     runs = recorded_runs()
-    runs[1].append({
+    runs[1].insert(-1, {
         "type": "tool",
         "tool_use_id": "failed-retry",
         "name": "check_chronos2",
@@ -263,14 +289,59 @@ def test_provenance_mismatch_fails_with_specific_message():
     runs[1][0]["run_spec"]["provenance"]["agent_image_digest"] = (
         "sha256:" + "0" * 64
     )
+    changed_hash = compute_spec_hash(runs[1][0]["run_spec"])
+    runs[1][0]["run_spec"]["spec_hash"] = changed_hash
+    for event in runs[1]:
+        if "spec_hash" in event:
+            event["spec_hash"] = changed_hash
+        result = verifier._tool_result(event)
+        if result:
+            result["spec_hash"] = changed_hash
 
     with pytest.raises(AssertionError, match="run provenance differs"):
         verifier.verify_runs(runs)
 
 
+def test_tampered_run_spec_is_rejected_by_hash_binding():
+    runs = recorded_runs()
+    runs[0][0]["run_spec"]["w_stress"] = 0.99
+
+    with pytest.raises(
+        AssertionError,
+        match="spec_hash does not match canonical run_spec",
+    ):
+        verifier.verify_runs(runs)
+
+
+@pytest.mark.parametrize("role,source", [
+    ("baseline", "chronos2"),
+    ("chronos_only", "parametric"),
+    ("augmented", "chronos2"),
+])
+def test_role_source_mismatch_is_rejected(role, source):
+    runs = recorded_runs()
+    event = next(
+        item
+        for item in runs[0]
+        if item.get("scenario_role") == role
+    )
+    event["source"] = source
+
+    with pytest.raises(AssertionError, match=f"{role} source is invalid"):
+        verifier.verify_runs(runs)
+
+
+def test_unconditioned_chronos_result_rejects_conditioned_source():
+    runs = recorded_runs()
+    runs[0][2]["source"] = "chronos2_conditional"
+
+    with pytest.raises(AssertionError, match="chronos_only source is invalid"):
+        verifier.verify_runs(runs)
+
+
 def test_duplicate_exposure_role_fails_instead_of_overwriting():
     runs = recorded_runs()
-    runs[0].append(deepcopy(runs[0][1]))
+    runs[0].insert(-1, deepcopy(runs[0][1]))
 
     with pytest.raises(
         AssertionError,
@@ -279,9 +350,15 @@ def test_duplicate_exposure_role_fails_instead_of_overwriting():
         verifier.verify_runs(runs)
 
 
-def test_invalid_exposure_artifact_uri_fails():
+@pytest.mark.parametrize("uri", [
+    "https://example/baseline.pkl",
+    "s3://",
+    "s3:///baseline.pkl",
+    "s3://data",
+])
+def test_invalid_exposure_artifact_uri_fails(uri):
     runs = recorded_runs()
-    runs[0][1]["paths_uri"] = "https://example/baseline.pkl"
+    runs[0][1]["paths_uri"] = uri
 
     with pytest.raises(AssertionError, match="baseline paths URI is invalid"):
         verifier.verify_runs(runs)
@@ -293,6 +370,68 @@ def test_unpinned_provenance_fails():
 
     with pytest.raises(AssertionError, match="run provenance is not pinned"):
         verifier.verify_runs(runs)
+
+
+@pytest.mark.parametrize("event_index,label", [
+    (0, "run_spec"),
+    (4, "diagnostics"),
+])
+def test_duplicate_structured_event_is_rejected(event_index, label):
+    runs = recorded_runs()
+    runs[0].insert(-1, deepcopy(runs[0][event_index]))
+
+    with pytest.raises(AssertionError, match=f"expected one {label} event, got 2"):
+        verifier.verify_runs(runs)
+
+
+def test_missing_done_is_rejected_as_truncated():
+    runs = recorded_runs()
+    runs[0] = [event for event in runs[0] if event.get("type") != "done"]
+
+    with pytest.raises(AssertionError, match="expected one terminal done event, got 0"):
+        verifier.verify_runs(runs)
+
+
+def test_duplicate_done_is_rejected():
+    runs = recorded_runs()
+    runs[0].append({"type": "done"})
+
+    with pytest.raises(AssertionError, match="expected one terminal done event, got 2"):
+        verifier.verify_runs(runs)
+
+
+def test_event_after_done_is_rejected():
+    runs = recorded_runs()
+    runs[0].append({"type": "heartbeat"})
+
+    with pytest.raises(AssertionError, match="events appear after terminal done"):
+        verifier.verify_runs(runs)
+
+
+def _calibration_for(run_index: int = 1) -> dict[str, object]:
+    summary = verifier.summarize_run(recorded_run(run_index))
+    return {
+        "run_spec": _run_spec("calibration-run"),
+        "terminal_metrics": deepcopy(summary["terminal"]),
+    }
+
+
+def test_calibration_matches_live_at_cent_precision():
+    summary = verifier.summarize_run(recorded_run(1))
+
+    verifier.compare_calibration(summary, _calibration_for())
+
+
+def test_calibration_one_cent_mismatch_is_rejected():
+    summary = verifier.summarize_run(recorded_run(1))
+    calibration = _calibration_for()
+    calibration["terminal_metrics"]["augmented"]["pfe_975"] = 200.014
+
+    with pytest.raises(
+        AssertionError,
+        match=r"calibration augmented\.pfe_975 differs: 200\.01 != 200\.00",
+    ):
+        verifier.compare_calibration(summary, calibration)
 
 
 def test_cli_collects_three_runs_and_writes_raw_and_summary_files(
@@ -308,6 +447,8 @@ def test_cli_collects_three_runs_and_writes_raw_and_summary_files(
 
     monkeypatch.setattr(verifier, "collect_events", collect_events)
     output = tmp_path / "acceptance.json"
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps(_calibration_for()))
 
     result = verifier.main([
         "--stream-url", "https://stream.example/",
@@ -315,6 +456,7 @@ def test_cli_collects_three_runs_and_writes_raw_and_summary_files(
         "--runs", "3",
         "--prompt", verifier.CANONICAL_PROMPT,
         "--output", str(output),
+        "--calibration", str(calibration),
     ])
 
     assert result == 0
@@ -325,6 +467,71 @@ def test_cli_collects_three_runs_and_writes_raw_and_summary_files(
     summary = json.loads(output.read_text())
     assert summary["status"] == "passed"
     assert len(summary["runs"]) == 3
+    attempt_dir = tmp_path / summary["attempt_dir"]
+    assert attempt_dir.is_dir()
+    assert len(list(attempt_dir.glob("run-*.events.json"))) == 3
+
+
+def test_failed_verification_atomically_replaces_stale_passed_output(
+    monkeypatch,
+    tmp_path,
+):
+    runs = recorded_runs()
+    runs[1][1]["terminal"]["ee"] = 100.014
+    calls = []
+
+    def collect_events(*args):
+        calls.append(args)
+        return runs[len(calls) - 1]
+
+    monkeypatch.setattr(verifier, "collect_events", collect_events)
+    output = tmp_path / "acceptance.json"
+    output.write_text('{"status":"passed"}\n')
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps(_calibration_for()))
+
+    with pytest.raises(AssertionError, match=r"run 2 baseline\.ee differs"):
+        verifier.main([
+            "--stream-url", "https://stream.example/",
+            "--api-key", "secret",
+            "--runs", "3",
+            "--prompt", verifier.CANONICAL_PROMPT,
+            "--output", str(output),
+            "--calibration", str(calibration),
+        ])
+
+    failed = json.loads(output.read_text())
+    assert failed["status"] == "failed"
+    assert "run 2 baseline.ee differs" in failed["error"]
+    assert (tmp_path / failed["attempt_dir"]).is_dir()
+
+
+def test_failed_collection_atomically_replaces_stale_passed_output(
+    monkeypatch,
+    tmp_path,
+):
+    def collect_events(*args):
+        raise RuntimeError("collection stopped")
+
+    monkeypatch.setattr(verifier, "collect_events", collect_events)
+    output = tmp_path / "acceptance.json"
+    output.write_text('{"status":"passed"}\n')
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps(_calibration_for()))
+
+    with pytest.raises(RuntimeError, match="collection stopped"):
+        verifier.main([
+            "--stream-url", "https://stream.example/",
+            "--api-key", "secret",
+            "--runs", "3",
+            "--prompt", verifier.CANONICAL_PROMPT,
+            "--output", str(output),
+            "--calibration", str(calibration),
+        ])
+
+    failed = json.loads(output.read_text())
+    assert failed["status"] == "failed"
+    assert failed["error"] == "collection stopped"
 
 
 def test_cli_rejects_non_three_run_acceptance():
@@ -335,4 +542,90 @@ def test_cli_rejects_non_three_run_acceptance():
             "--runs", "2",
             "--prompt", verifier.CANONICAL_PROMPT,
             "--output", "ignored.json",
+            "--calibration", "ignored-calibration.json",
         ])
+
+
+def _task11_runbook() -> str:
+    runbook = RUNBOOK_PATH.read_text()
+    return runbook[
+        runbook.index("## 0. Production reproducibility acceptance"):
+        runbook.index("## 1. Deploy infrastructure")
+    ]
+
+
+def test_runbook_builds_only_clean_exported_commit_and_hashes_frontend():
+    runbook = _task11_runbook()
+
+    assert 'git diff --quiet "$GIT_SHA" -- "${DEPLOY_INPUTS[@]}"' in runbook
+    assert 'git diff --cached --quiet "$GIT_SHA" -- "${DEPLOY_INPUTS[@]}"' in runbook
+    assert 'git archive "$GIT_SHA"' in runbook
+    assert 'export BUILD_ROOT=' in runbook
+    assert '-f "$BUILD_ROOT/tools/fargate/baseline_mc/Dockerfile"' in runbook
+    assert '-f "$BUILD_ROOT/tools/fargate/run_chronos2/Dockerfile"' in runbook
+    assert '-f "$BUILD_ROOT/agent/runtime/Dockerfile"' in runbook
+    assert 'export FRONTEND_SHA256=' in runbook
+    assert '"frontend_artifact_sha256":$frontend_sha256' in runbook
+    assert runbook.index("false # BLOCKED: approved frontend-auth") < runbook.index(
+        "aws ecr get-login-password"
+    )
+
+
+def test_runbook_agentcore_and_amplify_waiters_are_bounded_and_fail_closed():
+    runbook = _task11_runbook()
+
+    assert "set -euo pipefail" in runbook
+    assert "AGENT_MAX_ATTEMPTS=" in runbook
+    assert "agent runtime did not become READY" in runbook
+    assert "agent endpoint did not become READY" in runbook
+    assert "AMPLIFY_MAX_ATTEMPTS=" in runbook
+    assert "Amplify deployment timed out" in runbook
+    assert "FAILED|CANCELLED" in runbook
+    assert "CALIBRATION_MAX_SECONDS=" in runbook
+    assert "timeout=int(os.environ[\"CALIBRATION_MAX_SECONDS\"])" in runbook
+
+
+def test_runbook_structurally_asserts_edge_and_executes_calibration_gate():
+    runbook = _task11_runbook()
+
+    for required in (
+        "aws lambda get-function-url-config",
+        'test "$(jq -r .AuthType',
+        'test "$(jq -r .InvokeMode',
+        "aws lambda get-policy",
+        "lambda:InvokeFunctionUrl",
+        "lambda:InvokeFunction",
+        "aws cloudfront get-distribution-config",
+        "CachePolicyId",
+        "OriginRequestPolicyId",
+        "WebACLId",
+        "OriginAccessControlId",
+        "SigningBehavior",
+        "x-api-key",
+        "--connect-timeout 10 --max-time 30",
+        "--calibration docs/results/headline_calibration.json",
+    ):
+        assert required in runbook
+
+
+def test_runbook_captures_and_restores_exact_prior_runtime_and_frontend():
+    runbook = _task11_runbook()
+
+    for required in (
+        "PREVIOUS_BASELINE_TASK_JSON",
+        "PREVIOUS_CHRONOS_TASK_JSON",
+        "PREVIOUS_AGENT",
+        "PREVIOUS_AGENT_ENDPOINT",
+        "PREVIOUS_AMPLIFY_JOB",
+        "PREVIOUS_FRONTEND_ARTIFACT",
+        "PREVIOUS_FRONTEND_SHA256",
+        "get-template",
+        "rollback-parameters.json",
+        "ROLLBACK_TEMPLATE_BUCKET",
+        "--template-url",
+        "update-stack",
+        'test "$RESTORED_BASELINE_TASK" = "$PREVIOUS_BASELINE_TASK"',
+        'test "$RESTORED_CHRONOS_TASK" = "$PREVIOUS_CHRONOS_TASK"',
+        "cmp --silent",
+    ):
+        assert required in runbook
