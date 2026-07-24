@@ -26,7 +26,11 @@ PROFILE = {
     "conditioning": None,
 }
 REQUIRED_FIELDS = tuple(k for k in PROFILE if k not in {"schema_version", "profile", "conditioning"})
-PROFILE_RE = re.compile(r"\b(stage[ -]safe|headline demo|same stage[ -]safe setup)\b", re.I)
+PROFILE_RE = re.compile(
+    r"\b(stage[ -]safe|headline demo|same stage[ -]safe setup"
+    r"|baseline and chronos-2-augmented exposure)\b",
+    re.I,
+)
 IMPERATIVE_ACTION_RE = re.compile(
     r"\b(?:please\s+)?(?:run|compare|forecast|simulate|expose)\b",
     re.I,
@@ -285,9 +289,11 @@ def compile_run_spec(
     ]
     decimal_weights = [
         float(value)
-        for value in re.findall(
-            r"\bstress weight\s+(?:of\s+)?(0(?:\.\d+)?|1(?:\.0+)?)\b", prompt, re.I
+        for pattern in (
+            r"\bstress weight\s+(?:of\s+)?(0(?:\.\d+)?|1(?:\.0+)?)\b",
+            r"\b(0(?:\.\d+)?|1(?:\.0+)?)\s+stress weight\b",
         )
+        for value in re.findall(pattern, prompt, re.I)
     ]
     explicit_values["w_stress"] = set(percent_weights + decimal_weights)
     for field, choices in explicit_values.items():

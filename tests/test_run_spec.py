@@ -30,6 +30,14 @@ HEADLINE_PROMPT = (
     "scenarios with each engine, and apply a 53.05% stress weight."
 )
 EXPECTED_SPEC_HASH = "1add95a87e0bc214d85f668b47c6fc0dfd7c5803a544dfd0cf1552903658de84"
+TASK11_WORDING_VARIANTS = (
+    "As of 2022-09-30, use 1,260 trading days of history, simulate 252 trading "
+    "days ahead with 500 paths per engine, and use a 0.5305 stress weight. "
+    "Compare baseline and Chronos-2-augmented exposure.",
+    "Run the stage safe comparison on Sep 30 2022 with five trading years behind "
+    "us and one trading year forward, 500 scenarios from each model, and 53.05 "
+    "percent stress weighting.",
+)
 
 
 @pytest.mark.parametrize("prompt", [
@@ -50,6 +58,16 @@ def test_equivalent_prompts_compile_to_same_spec_hash(prompt):
     assert spec.horizon == 252
     assert spec.n_paths == 500
     assert spec.w_stress == pytest.approx(0.5305)
+
+
+def test_task11_wording_variants_match_canonical_headline_spec_hash():
+    specs = [
+        compile_run_spec(prompt, provenance=PROVENANCE, execution_id=f"run-{index}")
+        for index, prompt in enumerate((HEADLINE_PROMPT, *TASK11_WORDING_VARIANTS))
+    ]
+
+    assert all(not isinstance(spec, Clarification) for spec in specs)
+    assert {spec.spec_hash for spec in specs} == {EXPECTED_SPEC_HASH}
 
 
 def test_independent_executions_share_spec_hash_but_not_execution_id():

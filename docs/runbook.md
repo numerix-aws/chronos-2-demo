@@ -38,6 +38,319 @@ profile named `chronos2-demo` with admin in the demo account.
 - Live demo data: a FRED API key in a gitignored `.env` (`FRED_API_KEY=...`) for `scripts/snapshot_data.py` (Plan A part-5 pulls live FRED keyed-JSON + ECB + Yahoo; credit uses the BAA10Y proxy). Then seed S3 — see §1b.
 - CDK bootstrap: `cd infra && CDK_DOCKER=finch npx cdk bootstrap aws://ACCOUNT/us-east-1` (one-time).
 
+## 0. Production reproducibility acceptance
+
+This is the canonical update path for an existing live deployment. Keep one
+deployment shell open so every command uses the same variables. Stop on a failed
+local suite, image push, CloudFormation resource, unhealthy AgentCore endpoint,
+failed ECS task, relay 4xx/5xx, or frontend smoke check.
+
+### 0a. Local gates and rollback capture
+
+Run every suite before creating deployment artifacts:
+
+```bash
+pytest -q
+pytest tools/tests agent/tests -q
+node --test tools/lambda/sse_relay/protocol.test.mjs
+
+cd infra
+npm test -- --runInBand
+npm run build
+
+cd ../frontend
+npm test -- --run
+npm run build
+cd ..
+```
+
+Set the target and resolve the existing resources. Do not print `API_KEY`.
+
+```bash
+export AWS_PROFILE=chronos2-demo
+export AWS_REGION=us-east-1
+export CDK_DOCKER=finch
+export GIT_SHA=$(git rev-parse HEAD)
+export IMAGE_TAG=$GIT_SHA
+export ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+test "$ACCOUNT" = "654654592675"
+export ECR=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
+export CHRONOS2_ENDPOINT_NAME=$(aws sagemaker list-endpoints \
+  --query 'Endpoints[?starts_with(EndpointName,`chronos2`)].EndpointName | [0]' \
+  --output text)
+
+export BASELINE_REPO=$(aws ecr describe-repositories \
+  --query "repositories[?contains(repositoryName,'baselinemcrepo')].repositoryName | [0]" \
+  --output text)
+export CHRONOS2_REPO=$(aws ecr describe-repositories \
+  --query "repositories[?contains(repositoryName,'chronos2repo')].repositoryName | [0]" \
+  --output text)
+export AGENT_REPO=$(aws ecr describe-repositories \
+  --query "repositories[?contains(repositoryName,'agentruntimerepo')].repositoryName | [0]" \
+  --output text)
+```
+
+Before updating anything, record the deployed image identities, Lambda-owned
+task-definition ARNs/revisions, AgentCore runtime identity, stack states, and
+Amplify job. Store the JSON outside the repository:
+
+```bash
+BASELINE_LAUNCHER=$(aws cloudformation describe-stack-resources \
+  --stack-name Chronos2DemoTools \
+  --query "StackResources[?starts_with(LogicalResourceId,'RunBaselineMc')].PhysicalResourceId | [0]" \
+  --output text)
+CHRONOS_LAUNCHER=$(aws cloudformation describe-stack-resources \
+  --stack-name Chronos2DemoTools \
+  --query "StackResources[?starts_with(LogicalResourceId,'RunChronos2')].PhysicalResourceId | [0]" \
+  --output text)
+PREVIOUS_BASELINE_TASK=$(aws lambda get-function-configuration \
+  --function-name "$BASELINE_LAUNCHER" \
+  --query 'Environment.Variables.TASK_DEFINITION_ARN' --output text)
+PREVIOUS_CHRONOS_TASK=$(aws lambda get-function-configuration \
+  --function-name "$CHRONOS_LAUNCHER" \
+  --query 'Environment.Variables.TASK_DEFINITION_ARN' --output text)
+PREVIOUS_BASELINE_IMAGE=$(aws ecs describe-task-definition \
+  --task-definition "$PREVIOUS_BASELINE_TASK" \
+  --query 'taskDefinition.containerDefinitions[0].image' --output text)
+PREVIOUS_CHRONOS_IMAGE=$(aws ecs describe-task-definition \
+  --task-definition "$PREVIOUS_CHRONOS_TASK" \
+  --query 'taskDefinition.containerDefinitions[0].image' --output text)
+PREVIOUS_BASELINE_DIGEST=$(aws ecr describe-images \
+  --repository-name "$BASELINE_REPO" --image-ids imageTag="${PREVIOUS_BASELINE_IMAGE##*:}" \
+  --query 'imageDetails[0].imageDigest' --output text)
+PREVIOUS_CHRONOS_DIGEST=$(aws ecr describe-images \
+  --repository-name "$CHRONOS2_REPO" --image-ids imageTag="${PREVIOUS_CHRONOS_IMAGE##*:}" \
+  --query 'imageDetails[0].imageDigest' --output text)
+AGENT_RUNTIME_ID=$(aws cloudformation describe-stack-resources \
+  --stack-name Chronos2DemoAgent \
+  --query "StackResources[?ResourceType=='AWS::BedrockAgentCore::Runtime'].PhysicalResourceId | [0]" \
+  --output text)
+PREVIOUS_AGENT=$(aws bedrock-agentcore-control get-agent-runtime \
+  --agent-runtime-id "$AGENT_RUNTIME_ID" --output json)
+
+jq -n \
+  --arg captured_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg baseline_task "$PREVIOUS_BASELINE_TASK" \
+  --arg baseline_image "$PREVIOUS_BASELINE_IMAGE" \
+  --arg baseline_digest "$PREVIOUS_BASELINE_DIGEST" \
+  --arg chronos_task "$PREVIOUS_CHRONOS_TASK" \
+  --arg chronos_image "$PREVIOUS_CHRONOS_IMAGE" \
+  --arg chronos_digest "$PREVIOUS_CHRONOS_DIGEST" \
+  --argjson agent "$PREVIOUS_AGENT" \
+  '{captured_at:$captured_at,baseline:{task_definition:$baseline_task,image:$baseline_image,digest:$baseline_digest},chronos:{task_definition:$chronos_task,image:$chronos_image,digest:$chronos_digest},agent:$agent}' \
+  > /tmp/chronos2-task11-rollback.json
+```
+
+If a stack resource query returns `None`, resolve the physical ID from the full
+`describe-stack-resources` output before continuing.
+
+### 0b. Build, push, and resolve immutable images
+
+Build the two Fargate images as `linux/amd64` and AgentCore as `linux/arm64`.
+The git SHA tag is the deployment identity; never use `latest` as the only
+record.
+
+```bash
+aws ecr get-login-password --region "$AWS_REGION" \
+  | finch login --username AWS --password-stdin "$ECR"
+
+finch build --platform linux/amd64 \
+  -f tools/fargate/baseline_mc/Dockerfile \
+  -t "$ECR/${BASELINE_REPO}:${GIT_SHA}" .
+finch push "$ECR/${BASELINE_REPO}:${GIT_SHA}"
+
+finch build --platform linux/amd64 \
+  -f tools/fargate/run_chronos2/Dockerfile \
+  -t "$ECR/${CHRONOS2_REPO}:${GIT_SHA}" .
+finch push "$ECR/${CHRONOS2_REPO}:${GIT_SHA}"
+
+finch build --platform linux/arm64 \
+  -f agent/runtime/Dockerfile \
+  -t "$ECR/${AGENT_REPO}:${GIT_SHA}" .
+finch push "$ECR/${AGENT_REPO}:${GIT_SHA}"
+
+export BASELINE_IMAGE_DIGEST=$(aws ecr describe-images \
+  --repository-name "$BASELINE_REPO" --image-ids imageTag="$GIT_SHA" \
+  --query 'imageDetails[0].imageDigest' --output text)
+export CHRONOS_IMAGE_DIGEST=$(aws ecr describe-images \
+  --repository-name "$CHRONOS2_REPO" --image-ids imageTag="$GIT_SHA" \
+  --query 'imageDetails[0].imageDigest' --output text)
+export AGENT_IMAGE_DIGEST=$(aws ecr describe-images \
+  --repository-name "$AGENT_REPO" --image-ids imageTag="$GIT_SHA" \
+  --query 'imageDetails[0].imageDigest' --output text)
+```
+
+Verify each digest matches `sha256:<64 lowercase hex characters>` before CDK.
+
+### 0c. Pin data and deployment provenance
+
+The S3 source objects and local calibration files must be byte-identical.
+Resolve `DATA_BUCKET` and compare hashes before deployment:
+
+```bash
+export DATA_BUCKET=$(aws cloudformation describe-stack-resources \
+  --stack-name Chronos2DemoStorage \
+  --query "StackResources[?ResourceType=='AWS::S3::Bucket' && contains(LogicalResourceId,'DataBucket')].PhysicalResourceId | [0]" \
+  --output text)
+export MARKET_SHA256=$(shasum -a 256 data/curated/panel.parquet | awk '{print $1}')
+export COVARIATE_SHA256=$(shasum -a 256 data/curated/covariates.parquet | awk '{print $1}')
+aws s3 cp "s3://$DATA_BUCKET/panel.parquet" /tmp/chronos2-panel.parquet
+aws s3 cp "s3://$DATA_BUCKET/covariates.parquet" /tmp/chronos2-covariates.parquet
+test "$(shasum -a 256 /tmp/chronos2-panel.parquet | awk '{print $1}')" = "$MARKET_SHA256"
+test "$(shasum -a 256 /tmp/chronos2-covariates.parquet | awk '{print $1}')" = "$COVARIATE_SHA256"
+
+export MARKET_SNAPSHOT_ID="panel.parquet@${GIT_SHA}"
+export COVARIATE_SNAPSHOT_ID="covariates.parquet@${GIT_SHA}"
+export CHRONOS_MODEL_VERSION=chronos-2
+export BOOK_VERSION=cross_asset_demo_v1
+export BLEND_VERSION=importance_weight_v1
+export PRICING_VERSION=cross_asset_v1
+export TOOL_BUNDLE_VERSION="git:${GIT_SHA}"
+
+jq -n \
+  --arg market_snapshot_id "$MARKET_SNAPSHOT_ID" \
+  --arg market_sha256 "$MARKET_SHA256" \
+  --arg covariate_snapshot_id "$COVARIATE_SNAPSHOT_ID" \
+  --arg covariate_sha256 "$COVARIATE_SHA256" \
+  --arg chronos_endpoint "$CHRONOS2_ENDPOINT_NAME" \
+  --arg chronos_model_version "$CHRONOS_MODEL_VERSION" \
+  --arg baseline_image_digest "$BASELINE_IMAGE_DIGEST" \
+  --arg chronos_image_digest "$CHRONOS_IMAGE_DIGEST" \
+  --arg agent_image_digest "$AGENT_IMAGE_DIGEST" \
+  --arg book_version "$BOOK_VERSION" \
+  --arg blend_version "$BLEND_VERSION" \
+  --arg pricing_version "$PRICING_VERSION" \
+  --arg tool_bundle_version "$TOOL_BUNDLE_VERSION" \
+  '{market_snapshot_id:$market_snapshot_id,market_sha256:$market_sha256,covariate_snapshot_id:$covariate_snapshot_id,covariate_sha256:$covariate_sha256,chronos_endpoint:$chronos_endpoint,chronos_model_version:$chronos_model_version,baseline_image_digest:$baseline_image_digest,chronos_image_digest:$chronos_image_digest,agent_image_digest:$agent_image_digest,book_version:$book_version,blend_version:$blend_version,pricing_version:$pricing_version,tool_bundle_version:$tool_bundle_version,strands_version:"1.30.0"}' \
+  > /tmp/chronos2-task11-provenance.json
+```
+
+### 0d. Deploy in dependency-safe order
+
+The Tools stack owns the shared layers, tool Lambdas, and both Fargate task
+definitions, so their CloudFormation update is one atomic deployment. The Agent
+stack then updates the Gateway schema and AgentCore runtime together with the
+pinned provenance environment.
+
+```bash
+cd infra
+npx cdk deploy Chronos2DemoTools --exclusively \
+  -c imageTag="$GIT_SHA" --require-approval never
+test "$(aws cloudformation describe-stacks --stack-name Chronos2DemoTools \
+  --query 'Stacks[0].StackStatus' --output text)" = "UPDATE_COMPLETE"
+
+npx cdk deploy Chronos2DemoAgent --exclusively \
+  -c imageTag="$GIT_SHA" --require-approval never
+test "$(aws cloudformation describe-stacks --stack-name Chronos2DemoAgent \
+  --query 'Stacks[0].StackStatus' --output text)" = "UPDATE_COMPLETE"
+```
+
+Require the `live` AgentCore endpoint to report a ready status before
+continuing. Inspect any failed CloudFormation event and stop rather than
+deploying downstream stacks:
+
+```bash
+aws bedrock-agentcore-control get-agent-runtime \
+  --agent-runtime-id "$AGENT_RUNTIME_ID"
+aws bedrock-agentcore-control get-agent-runtime-endpoint \
+  --agent-runtime-id "$AGENT_RUNTIME_ID" --endpoint-name live
+aws cloudformation describe-stack-events --stack-name Chronos2DemoAgent \
+  --query "StackEvents[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]"
+```
+
+Preserve the export-deadlock workaround exactly: deploy Frontend exclusively,
+rebuild the SPA from local `.env.production`, publish the manual Amplify zip,
+then deploy Api exclusively.
+
+```bash
+npx cdk deploy Chronos2DemoFrontend --exclusively \
+  -c imageTag="$GIT_SHA" --require-approval never
+
+export API_URL=$(aws cloudformation describe-stacks \
+  --stack-name Chronos2DemoApi \
+  --query "Stacks[0].Outputs[?OutputKey=='ApiUrlOut'].OutputValue | [0]" --output text)
+export STREAM_URL=$(aws cloudformation describe-stacks \
+  --stack-name Chronos2DemoApi \
+  --query "Stacks[0].Outputs[?OutputKey=='StreamUrlOut'].OutputValue | [0]" --output text)
+export API_KEY_SECRET_ARN=$(aws cloudformation describe-stacks \
+  --stack-name Chronos2DemoTools \
+  --query "Stacks[0].Outputs[?OutputKey=='ApiKeySecretArnOut'].OutputValue | [0]" --output text)
+export AMPLIFY_APP_ID=$(aws cloudformation describe-stacks \
+  --stack-name Chronos2DemoFrontend \
+  --query "Stacks[0].Outputs[?OutputKey=='AmplifyAppIdOut'].OutputValue | [0]" --output text)
+export APP_URL=$(aws cloudformation describe-stacks \
+  --stack-name Chronos2DemoFrontend \
+  --query "Stacks[0].Outputs[?OutputKey=='AmplifyDomainOut'].OutputValue | [0]" --output text)
+export API_KEY=$(aws secretsmanager get-secret-value \
+  --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
+
+cd ../frontend
+printf 'VITE_API_URL=%s\nVITE_STREAM_URL=%s\nVITE_API_KEY=%s\n' \
+  "$API_URL" "$STREAM_URL" "$API_KEY" > .env.production
+npm run build
+cd dist
+zip -r ../app.zip .
+cd ..
+DEPLOY=$(aws amplify create-deployment \
+  --app-id "$AMPLIFY_APP_ID" --branch-name main --output json)
+JOB_ID=$(printf '%s' "$DEPLOY" | jq -r .jobId)
+UPLOAD_URL=$(printf '%s' "$DEPLOY" | jq -r .zipUploadUrl)
+curl --fail --silent --show-error -T app.zip "$UPLOAD_URL"
+aws amplify start-deployment \
+  --app-id "$AMPLIFY_APP_ID" --branch-name main --job-id "$JOB_ID"
+until test "$(aws amplify get-job --app-id "$AMPLIFY_APP_ID" \
+  --branch-name main --job-id "$JOB_ID" \
+  --query 'job.summary.status' --output text)" = "SUCCEED"; do sleep 10; done
+
+cd ../infra
+npx cdk deploy Chronos2DemoApi --exclusively \
+  -c imageTag="$GIT_SHA" --require-approval never
+test "$(aws cloudformation describe-stacks --stack-name Chronos2DemoApi \
+  --query 'Stacks[0].StackStatus' --output text)" = "UPDATE_COMPLETE"
+cd ..
+```
+
+### 0e. Streaming-edge and live stop gates
+
+Verify the raw Function URL remains `AWS_IAM`, the CloudFront OAC has both
+Lambda permissions, WAF is associated, caching is disabled, and the viewer
+`x-api-key` is forwarded. The raw URL must return 403 without SigV4; the
+CloudFront relay must not return 4xx/5xx with the valid key.
+
+Run one stage-safe smoke prompt and inspect every tool lifecycle event before
+the three-run gate. Any stopped ECS task with a non-zero container exit code
+blocks acceptance.
+
+Run calibration with the same provenance, then the exact three-run verifier:
+
+```bash
+python scripts/calibrate_headline.py \
+  --profile stage_safe_headline_v1 \
+  --provenance-file /tmp/chronos2-task11-provenance.json
+
+python scripts/verify_live_reproducibility.py \
+  --stream-url "$STREAM_URL" \
+  --api-key "$API_KEY" \
+  --runs 3 \
+  --prompt "Run the stage-safe headline demo for September 30, 2022. Use five years of trading history, project one trading year into the future, and generate 500 scenarios with each engine. Apply a 53.05% stress weight. Show the market regime and compare baseline exposure with Chronos-2-augmented exposure. Report the final EE, 97.5% PFE, 97.5% ES, and the PFE change." \
+  --output docs/results/live_reproducibility.json
+```
+
+Compare calibration and one live run at Decimal cent precision for baseline,
+Chronos-only, and augmented EE, PFE 97.5%, and ES 97.5%. A mismatch is a defect,
+not a number to bless. Run both equivalent wording variants once, one ambiguous
+prompt with no `tool_start`, and the desktop/mobile Playwright acceptance.
+
+### 0f. Rollback
+
+Rollback uses the identities captured in
+`/tmp/chronos2-task11-rollback.json`. Do not move `latest` to disguise the
+deployed version. Restore the prior immutable image tags or digests in CDK,
+redeploy Tools and Agent in the same order, then restore Frontend and Api using
+the same exclusive-stack workaround. Confirm the launcher Lambda environment
+variables again reference the prior task-definition revisions and AgentCore
+reports the previous runtime image/version before reopening traffic.
+
 ## 1. Deploy infrastructure
 
 ```bash
@@ -64,38 +377,40 @@ Capture these outputs (printed at the end of `cdk deploy`):
 - `Chronos2DemoFrontend.AmplifyAppIdOut` → `AMPLIFY_APP_ID`
 - `Chronos2DemoFrontend.AmplifyDomainOut` → `APP_URL`
 
-### 1a. Build and push the two Fargate images
+### 1a. Build and push the three runtime images
 
 The `cdk deploy` creates two **empty** ECR repos (`baseline_mc`, `chronos2`); the
-Fargate tasks need `:latest` images pushed before the agent can run them. Build
-and push both from the repo root (the chronos2 image bundles `autogluon-cloud`,
-so it is large — allow several minutes):
+Fargate tasks and AgentCore need images pushed before they can run. Use the
+immutable full git SHA procedure in §0b. Do not deploy `:latest` as the only
+identity. The chronos2 image bundles `autogluon-cloud`, so allow several
+minutes.
 
 ```bash
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 ECR=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
-aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR
+GIT_SHA=$(git rev-parse HEAD)
+aws ecr get-login-password --region $AWS_REGION | finch login --username AWS --password-stdin $ECR
 
-# Resolve the two repo names from the ToolsStack (CDK auto-names them).
+# Resolve the repo names from the ToolsStack (CDK auto-names them).
 BASELINE_REPO=$(aws ecr describe-repositories \
   --query "repositories[?contains(repositoryName,'baselinemcrepo')].repositoryName | [0]" --output text)
 CHRONOS2_REPO=$(aws ecr describe-repositories \
   --query "repositories[?contains(repositoryName,'chronos2repo')].repositoryName | [0]" --output text)
+AGENT_REPO=$(aws ecr describe-repositories \
+  --query "repositories[?contains(repositoryName,'agentruntimerepo')].repositoryName | [0]" --output text)
 
-# Fargate images are linux/amd64. (Use `finch` here; quote ${REPO}:latest — zsh
+# Fargate images are linux/amd64. (Use `finch` here; quote ${REPO}:${GIT_SHA} — zsh
 # treats $VAR:l as a lowercase modifier and mangles the tag.)
-finch build --platform linux/amd64 -f tools/fargate/baseline_mc/Dockerfile -t "$ECR/${BASELINE_REPO}:latest" .
-finch push "$ECR/${BASELINE_REPO}:latest"
+finch build --platform linux/amd64 -f tools/fargate/baseline_mc/Dockerfile -t "$ECR/${BASELINE_REPO}:${GIT_SHA}" .
+finch push "$ECR/${BASELINE_REPO}:${GIT_SHA}"
 
-finch build --platform linux/amd64 -f tools/fargate/run_chronos2/Dockerfile -t "$ECR/${CHRONOS2_REPO}:latest" .
-finch push "$ECR/${CHRONOS2_REPO}:latest"
+finch build --platform linux/amd64 -f tools/fargate/run_chronos2/Dockerfile -t "$ECR/${CHRONOS2_REPO}:${GIT_SHA}" .
+finch push "$ECR/${CHRONOS2_REPO}:${GIT_SHA}"
 
 # THIRD image: the AgentCore runtime — MUST be linux/arm64 (AgentCore rejects
 # amd64), and its repo is in ToolsStack (agentruntimerepo). Push before AgentStack.
-AGENT_REPO=$(aws ecr describe-repositories \
-  --query "repositories[?contains(repositoryName,'agentruntimerepo')].repositoryName | [0]" --output text)
-finch build --platform linux/arm64 -f agent/runtime/Dockerfile -t "$ECR/${AGENT_REPO}:latest" .
-finch push "$ECR/${AGENT_REPO}:latest"
+finch build --platform linux/arm64 -f agent/runtime/Dockerfile -t "$ECR/${AGENT_REPO}:${GIT_SHA}" .
+finch push "$ECR/${AGENT_REPO}:${GIT_SHA}"
 ```
 
 Fetch the API key from Secrets Manager:
