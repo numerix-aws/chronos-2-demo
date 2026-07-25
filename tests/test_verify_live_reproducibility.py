@@ -182,7 +182,8 @@ def test_collect_events_parses_native_multiline_sse(monkeypatch):
         assert params["session_id"]
         assert headers == {"x-api-key": "secret"}
         assert stream is True
-        assert timeout == (10, 900)
+        assert timeout[0] == 10
+        assert timeout[1] == pytest.approx(900, abs=0.1)
         return Response()
 
     monkeypatch.setattr(verifier.requests, "get", get)
@@ -236,6 +237,43 @@ def test_collect_events_stops_heartbeat_stream_at_total_deadline(monkeypatch):
         "get",
         lambda *args, **kwargs: response,
     )
+
+    with pytest.raises(
+        verifier.SseCollectionDeadlineExceeded,
+        match="SSE collection deadline exceeded after 3 seconds",
+    ):
+        verifier.collect_events(
+            "https://stream.example/",
+            "secret",
+            "run",
+            total_deadline_seconds=3,
+            monotonic=monotonic,
+        )
+
+    assert response.closed is True
+
+
+def test_collect_events_bounds_blocked_read_at_total_deadline(monkeypatch):
+    class Response:
+        closed = False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self, decode_unicode):
+            raise verifier.requests.exceptions.ConnectionError("Read timed out.")
+
+        def close(self):
+            self.closed = True
+
+    response = Response()
+    monotonic = iter((0.0, 0.0, 3.0)).__next__
+
+    def get(*args, timeout, **kwargs):
+        assert timeout == (10, 3.0)
+        return response
+
+    monkeypatch.setattr(verifier.requests, "get", get)
 
     with pytest.raises(
         verifier.SseCollectionDeadlineExceeded,
@@ -662,6 +700,7 @@ def test_runbook_agentcore_and_amplify_waiters_are_bounded_and_fail_closed():
     assert "CALIBRATION_MAX_SECONDS=" in runbook
     assert "timeout=int(os.environ[\"CALIBRATION_MAX_SECONDS\"])" in runbook
     assert "--collection-deadline-seconds 900" in runbook
+    assert "remaining live-stream deadline" in runbook
 
 
 def test_runbook_structurally_asserts_edge_and_executes_calibration_gate():

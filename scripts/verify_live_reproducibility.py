@@ -94,14 +94,21 @@ def collect_events(
     if total_deadline_seconds <= 0:
         raise ValueError("SSE collection deadline must be positive")
     started_at = monotonic()
-    response = requests.get(
-        stream_url,
-        params={"session_id": str(uuid.uuid4()), "prompt": prompt},
-        headers={"x-api-key": api_key},
-        stream=True,
-        timeout=(10, 900),
-    )
+    remaining_seconds = total_deadline_seconds - (monotonic() - started_at)
+    if remaining_seconds <= 0:
+        raise SseCollectionDeadlineExceeded(
+            "SSE collection deadline exceeded after "
+            f"{total_deadline_seconds} seconds"
+        )
+    response = None
     try:
+        response = requests.get(
+            stream_url,
+            params={"session_id": str(uuid.uuid4()), "prompt": prompt},
+            headers={"x-api-key": api_key},
+            stream=True,
+            timeout=(10, remaining_seconds),
+        )
         response.raise_for_status()
         events: list[dict[str, object]] = []
         data_lines: list[str] = []
@@ -132,6 +139,13 @@ def collect_events(
         if data_lines:
             events.append(json.loads("\n".join(data_lines)))
         return events
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+        if monotonic() - started_at >= total_deadline_seconds:
+            raise SseCollectionDeadlineExceeded(
+                "SSE collection deadline exceeded after "
+                f"{total_deadline_seconds} seconds"
+            ) from exc
+        raise
     finally:
         close = getattr(response, "close", None)
         if close is not None:

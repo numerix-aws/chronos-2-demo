@@ -664,7 +664,10 @@ blocks acceptance.
 
 Run calibration from the exported commit with the deployed provenance. The
 verifier independently recomputes the spec hash, requires three terminal
-streams, and compares every terminal cent against this calibration.
+streams, and compares every terminal cent against this calibration. Its
+900-second default preserves the 10-second connect timeout while setting the
+socket read timeout from the remaining live-stream deadline; a silent read that
+hits that deadline is recorded as explicit failed evidence.
 
 ```bash
 export ACCEPTANCE_ROOT=$(mktemp -d /tmp/chronos2-task11-acceptance.XXXXXX)
