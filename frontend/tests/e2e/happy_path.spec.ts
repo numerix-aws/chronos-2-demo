@@ -3,8 +3,6 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 const RUN = process.env.RUN_E2E === '1';
 const APP_URL = process.env.APP_URL ?? '';
-const API_URL = process.env.API_URL ?? '';
-const STREAM_URL = process.env.STREAM_URL ?? '';
 const API_KEY = process.env.API_KEY ?? '';
 const HEADLINE_PROMPT =
   `Run the stage-safe headline demo for September 30, 2022. Use five years of trading history, project one trading year into the future, and generate 500 scenarios with each engine. Apply a 53.05% stress weight. Show the market regime and compare baseline exposure with Chronos-2-augmented exposure. Report the final EE, 97.5% PFE, 97.5% ES, and the PFE change.`;
@@ -121,6 +119,12 @@ test.describe('local structured plot gate', () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.setItem(
+        'chronos2-demo-session',
+        JSON.stringify({ sessionId: 'local-session', apiKey: 'local-runtime-code' }),
+      );
+    });
     await mockLocalNetwork(page);
   });
 
@@ -153,23 +157,19 @@ test.describe('local structured plot gate', () => {
 });
 
 test.describe('Numerix × Chronos-2 demo live happy path', () => {
-  test.skip(!RUN, 'Set RUN_E2E=1 + APP_URL/API_URL/STREAM_URL/API_KEY to run.');
+  test.skip(!RUN, 'Set RUN_E2E=1 + APP_URL/API_KEY to run.');
 
   test.beforeEach(async ({ page }) => {
-    // Seed localStorage so the SPA picks up an existing session and the API key
-    // without a login flow (the demo has none).
+    // Runtime-only automation credentials seed the tab session after the SPA is served.
     await page.addInitScript(
-      ([apiKey, apiUrl, streamUrl]) => {
+      ([apiKey]) => {
         const sessionId = crypto.randomUUID();
-        localStorage.setItem(
+        sessionStorage.setItem(
           'chronos2-demo-session',
           JSON.stringify({ sessionId, apiKey }),
         );
-        // Vite reads these at runtime via import.meta.env, so we patch globals.
-        (window as any).__VITE_API_URL__ = apiUrl;
-        (window as any).__VITE_STREAM_URL__ = streamUrl;
       },
-      [API_KEY, API_URL, STREAM_URL],
+      [API_KEY],
     );
   });
 

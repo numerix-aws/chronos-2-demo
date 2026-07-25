@@ -1,4 +1,13 @@
-import { Alert, AppLayout, Box, ContentLayout, Header, SpaceBetween } from '@cloudscape-design/components';
+import {
+  Alert,
+  AppLayout,
+  Button,
+  ContentLayout,
+  FormField,
+  Header,
+  Input,
+  SpaceBetween,
+} from '@cloudscape-design/components';
 import '@cloudscape-design/global-styles/index.css';
 import { useEffect, useState } from 'react';
 import { ChatPanel, type PlotArtifact } from './components/ChatPanel';
@@ -66,6 +75,9 @@ function plotArtifactFromToolResult(value: unknown): PlotArtifact | null {
 export function App() {
   const [session, setSession] = useState(loadSession);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [accessCode, setAccessCode] = useState('');
+  const [accessError, setAccessError] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [toolTraceEvents, setToolTraceEvents] = useState<ToolTraceEvent[]>([]);
   const [activeIdentity, setActiveIdentity] = useState<ArtifactIdentity | null>(null);
@@ -79,33 +91,13 @@ export function App() {
 
   const apiBase = import.meta.env.VITE_API_URL as string;
   const streamBase = import.meta.env.VITE_STREAM_URL as string;
-  const configuredApiKey = (import.meta.env.VITE_API_KEY as string | undefined)?.trim();
   const client = session ? new ApiClient(apiBase, session.apiKey) : null;
 
   useEffect(() => {
     let cancelled = false;
 
     if (!session) {
-      if (!configuredApiKey) {
-        setSessionError('Could not connect to the demo copilot: API key is not configured.');
-        return;
-      }
-      new ApiClient(apiBase, configuredApiKey)
-        .createSession()
-        .then(({ session_id }) => {
-          if (cancelled) return;
-          const nextSession = { sessionId: session_id, apiKey: configuredApiKey };
-          saveSession(nextSession);
-          setSession(nextSession);
-        })
-        .catch((error: unknown) => {
-          if (cancelled) return;
-          const detail = error instanceof Error ? error.message : String(error);
-          setSessionError(`Could not connect to the demo copilot: ${detail}`);
-        });
-      return () => {
-        cancelled = true;
-      };
+      return;
     }
 
     const activeClient = new ApiClient(apiBase, session.apiKey);
@@ -129,7 +121,29 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [apiBase, configuredApiKey, session]);
+  }, [apiBase, session]);
+
+  const connect = async () => {
+    const apiKey = accessCode.trim();
+    if (!apiKey) {
+      setAccessError('Enter a demo access code.');
+      return;
+    }
+
+    setAccessError(null);
+    setSessionError(null);
+    setConnecting(true);
+    try {
+      const { session_id } = await new ApiClient(apiBase, apiKey).createSession();
+      const nextSession = { sessionId: session_id, apiKey };
+      saveSession(nextSession);
+      setSession(nextSession);
+    } catch {
+      setSessionError('Could not connect to the demo copilot.');
+    } finally {
+      setConnecting(false);
+    }
+  };
 
   const handleSend = async (text: string) => {
     if (!client || !session) return;
@@ -304,8 +318,31 @@ export function App() {
           <SpaceBetween size="l">
             <section aria-label="Chat" role="region">
               <Header variant="h2">Conversation</Header>
-              {!session && !sessionError && (
-                <Box color="text-status-info">Connecting to the demo copilot...</Box>
+              {!session && (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void connect();
+                  }}
+                >
+                  <SpaceBetween size="xs" direction="horizontal" alignItems="end">
+                    <FormField label="Demo access code" errorText={accessError ?? undefined}>
+                      <Input
+                        ariaLabel="Demo access code"
+                        type="password"
+                        value={accessCode}
+                        onChange={({ detail }) => {
+                          setAccessCode(detail.value);
+                          setAccessError(null);
+                        }}
+                        disabled={connecting}
+                      />
+                    </FormField>
+                    <Button variant="primary" formAction="submit" loading={connecting}>
+                      Connect
+                    </Button>
+                  </SpaceBetween>
+                </form>
               )}
               {sessionError && (
                 <Alert type="error" header="Connection failed">
@@ -315,7 +352,7 @@ export function App() {
               <ChatPanel
                 messages={messages}
                 onSend={handleSend}
-                streaming={streaming || !session}
+                streaming={streaming || connecting || !session}
                 images={currentPlots}
               />
             </section>
@@ -338,7 +375,7 @@ export function App() {
             </section>
             <section aria-label="What-if" role="region">
               <Header variant="h2">What-if parameters</Header>
-              <WhatIfForm onApply={handleApply} disabled={streaming || !session} />
+              <WhatIfForm onApply={handleApply} disabled={streaming || connecting || !session} />
             </section>
           </SpaceBetween>
         </ContentLayout>

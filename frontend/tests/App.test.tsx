@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 const streamAgentMock = vi.fn();
 const createSessionMock = vi.fn();
 const saveSessionMock = vi.fn();
+const clientConstructorMock = vi.fn();
 let storedSession: { sessionId: string; apiKey: string } | null = {
   sessionId: 'sess-1',
   apiKey: 'key-1',
@@ -19,6 +20,9 @@ vi.mock('../src/state/session', () => ({
 }));
 vi.mock('../src/api/client', () => ({
   ApiClient: class {
+    constructor(...args: unknown[]) {
+      clientConstructorMock(...args);
+    }
     createSession = (...args: unknown[]) => createSessionMock(...args);
     listMessages = vi.fn().mockResolvedValue({ messages: listedMessages });
   },
@@ -32,42 +36,84 @@ async function* emptyStream() {
 
 describe('App', () => {
   beforeEach(() => {
-    vi.stubEnv('VITE_API_KEY', 'configured-demo-key');
     streamAgentMock.mockReset();
     streamAgentMock.mockReturnValue(emptyStream());
     createSessionMock.mockReset();
     createSessionMock.mockResolvedValue({ session_id: 'new-session' });
     saveSessionMock.mockReset();
+    clientConstructorMock.mockReset();
     storedSession = { sessionId: 'sess-1', apiKey: 'key-1' };
     listedMessages = [];
   });
 
-  it('creates and persists a session for a fresh browser', async () => {
+  it('does not create a session until a browser supplies a nonblank demo access code', async () => {
     storedSession = null;
 
     render(<App />);
 
+    expect(screen.getByLabelText(/demo access code/i)).toHaveAttribute('type', 'password');
     expect(screen.getByLabelText(/message/i)).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^apply$/i })).toBeDisabled();
+    expect(createSessionMock).not.toHaveBeenCalled();
+    expect(saveSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a blank demo access code without creating a session', async () => {
+    storedSession = null;
+
+    render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    expect(await screen.findByText(/enter a demo access code/i)).toBeInTheDocument();
+    expect(createSessionMock).not.toHaveBeenCalled();
+    expect(saveSessionMock).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(/message/i)).toBeDisabled();
+  });
+
+  it('uses a submitted demo access code to persist and connect a session', async () => {
+    storedSession = null;
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText(/demo access code/i), 'runtime-demo-code');
+    await userEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
     await waitFor(() => {
       expect(createSessionMock).toHaveBeenCalledOnce();
+      expect(clientConstructorMock.mock.calls.map(([, apiKey]) => apiKey)).toContain('runtime-demo-code');
       expect(saveSessionMock).toHaveBeenCalledWith({
         sessionId: 'new-session',
-        apiKey: 'configured-demo-key',
+        apiKey: 'runtime-demo-code',
       });
     });
     expect(screen.getByLabelText(/message/i)).toBeEnabled();
   });
 
-  it('shows a visible error when session initialization fails', async () => {
+  it('keeps a failed demo access code for retry without persisting it', async () => {
     storedSession = null;
-    createSessionMock.mockRejectedValue(new Error('401: invalid API key'));
+    createSessionMock.mockRejectedValueOnce(new Error('401: invalid API key'));
 
     render(<App />);
+    const accessCode = screen.getByLabelText(/demo access code/i);
+    await userEvent.type(accessCode, 'retry-demo-code');
+    await userEvent.click(screen.getByRole('button', { name: /^connect$/i }));
 
     expect(
-      await screen.findByText(/Could not connect to the demo copilot.*401/i),
+      await screen.findByText(/Could not connect to the demo copilot/i),
     ).toBeInTheDocument();
+    expect(accessCode).toHaveValue('retry-demo-code');
+    expect(saveSessionMock).not.toHaveBeenCalled();
     expect(screen.getByLabelText(/message/i)).toBeDisabled();
+
+    createSessionMock.mockResolvedValue({ session_id: 'retry-session' });
+    await userEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    await waitFor(() => {
+      expect(saveSessionMock).toHaveBeenCalledWith({
+        sessionId: 'retry-session',
+        apiKey: 'retry-demo-code',
+      });
+    });
+    expect(screen.getByLabelText(/message/i)).toBeEnabled();
   });
 
   it('renders the Numerix × Chronos-2 app shell', () => {

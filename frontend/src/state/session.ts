@@ -6,7 +6,7 @@ export interface SessionState {
 }
 
 export function loadSession(): SessionState | null {
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = sessionStorage.getItem(STORAGE_KEY);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as SessionState;
@@ -16,9 +16,9 @@ export function loadSession(): SessionState | null {
 }
 
 export function saveSession(s: SessionState): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+  sessionStorage.setItem(STORAGE_KEY, JSON.stringify(s));
 }
 
 export function clearSession(): void {
-  localStorage.removeItem(STORAGE_KEY);
+  sessionStorage.removeItem(STORAGE_KEY);
 }
