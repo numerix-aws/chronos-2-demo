@@ -10,15 +10,16 @@ import { handleRelayRequest } from './protocol.mjs';
 const agentClient = new BedrockAgentCoreClient({});
 const secretsClient = new SecretsManagerClient({});
 
-let cachedKey = null;
-async function getApiKey() {
-  if (cachedKey) return cachedKey;
-  const out = await secretsClient.send(
-    new GetSecretValueCommand({ SecretId: process.env.API_KEY_SECRET_ARN })
-  );
-  cachedKey = out.SecretString;
-  return cachedKey;
+export function createGetApiKey(client = secretsClient) {
+  return async function getApiKey() {
+    const out = await client.send(
+      new GetSecretValueCommand({ SecretId: process.env.API_KEY_SECRET_ARN })
+    );
+    return out.SecretString;
+  };
 }
+
+export const getApiKey = createGetApiKey();
 
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
   await handleRelayRequest(event, responseStream, {

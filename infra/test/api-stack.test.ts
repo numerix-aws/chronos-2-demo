@@ -40,6 +40,13 @@ test('every public route is gated by the Lambda authorizer', () => {
   }
 });
 
+test('does not cache Lambda authorizer results across access-code rotation', () => {
+  const { t } = build();
+  t.hasResourceProperties('AWS::ApiGateway::Authorizer', {
+    AuthorizerResultTtlInSeconds: 0,
+  });
+});
+
 test('exposes a Lambda Function URL for SSE streaming (AWS_IAM, fronted by CloudFront)', () => {
   const { t } = build();
   t.hasResourceProperties('AWS::Lambda::Url', {

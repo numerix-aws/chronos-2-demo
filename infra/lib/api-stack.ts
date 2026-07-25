@@ -248,7 +248,7 @@ export class ApiStack extends cdk.Stack {
     const authorizer = new apigw.RequestAuthorizer(this, 'ApiKeyAuthorizer', {
       handler: authorizerFn,
       identitySources: [apigw.IdentitySource.header('x-api-key')],
-      resultsCacheTtl: cdk.Duration.minutes(5),
+      resultsCacheTtl: cdk.Duration.seconds(0),
     });
 
     const guarded: apigw.MethodOptions = {

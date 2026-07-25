@@ -4,10 +4,16 @@ import { existsSync } from 'node:fs';
 import test from 'node:test';
 
 const protocolUrl = new URL('./protocol.mjs', import.meta.url);
+const relayUrl = new URL('./index.mjs', import.meta.url);
 
 async function loadProtocol() {
   assert.equal(existsSync(protocolUrl), true, 'SSE relay protocol module has not been implemented');
   return import(protocolUrl.href);
+}
+
+async function loadRelay() {
+  globalThis.awslambda = { streamifyResponse: (fn) => fn };
+  return import(`${relayUrl.href}?rotation-test=${Date.now()}`);
 }
 
 async function* chunks(...values) {
@@ -91,6 +97,18 @@ function relayDependencies(overrides = {}) {
   };
   return { dependencies, state };
 }
+
+test('fetches the current API key on each relay authorization request', async () => {
+  const { createGetApiKey } = await loadRelay();
+  let fetches = 0;
+  const getApiKey = createGetApiKey({
+    send: async () => ({ SecretString: ++fetches === 1 ? 'old-key' : 'new-key' }),
+  });
+
+  assert.equal(await getApiKey(), 'old-key');
+  assert.equal(await getApiKey(), 'new-key');
+  assert.equal(fetches, 2);
+});
 
 test('passes AgentCore SSE through without nesting it in another data frame', async () => {
   const { forwardAgentResponse } = await loadProtocol();
