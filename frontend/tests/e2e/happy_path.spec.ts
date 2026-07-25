@@ -1,9 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { readdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 const RUN = process.env.RUN_E2E === '1';
 const APP_URL = process.env.APP_URL ?? '';
 const API_KEY = process.env.API_KEY ?? '';
+const BUNDLE_SECRET_SENTINEL = process.env.BUNDLE_SECRET_SENTINEL ?? '';
 const HEADLINE_PROMPT =
   `Run the stage-safe headline demo for September 30, 2022. Use five years of trading history, project one trading year into the future, and generate 500 scenarios with each engine. Apply a 53.05% stress weight. Show the market regime and compare baseline exposure with Chronos-2-augmented exposure. Report the final EE, 97.5% PFE, 97.5% ES, and the PFE change.`;
 
@@ -33,6 +36,25 @@ async function waitForLocalApp(): Promise<void> {
   }
   throw new Error(`Local built app did not start at ${LOCAL_APP_URL}.`);
 }
+
+async function distFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(entries.map((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    return entry.isDirectory() ? distFiles(entryPath) : [entryPath];
+  }));
+  return files.flat();
+}
+
+test('built bundle excludes the access-key sentinel and VITE_API_KEY name', async () => {
+  expect(BUNDLE_SECRET_SENTINEL).not.toBe('');
+  const files = await distFiles(path.join(process.cwd(), 'dist'));
+  expect(files.length).toBeGreaterThan(0);
+  const bundle = await Promise.all(files.map((file) => readFile(file, 'utf8')));
+
+  expect(bundle.join('\n')).not.toContain('VITE_API_KEY');
+  expect(bundle.join('\n')).not.toContain(BUNDLE_SECRET_SENTINEL);
+});
 
 function plotEvent(
   toolUseId: string,

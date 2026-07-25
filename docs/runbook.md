@@ -45,10 +45,10 @@ deployment shell open so every command uses the same variables. Stop on a failed
 local suite, image push, CloudFormation resource, unhealthy AgentCore endpoint,
 failed ECS task, relay 4xx/5xx, or frontend smoke check.
 
-> **Deployment blocked pending frontend-auth decision (2026-07-24).** The SPA
-> currently embeds `VITE_API_KEY` at build time. Do not build images, push,
-> deploy, fetch the key, or run any mutating command in this section until the
-> replacement authentication design is approved and this block is removed.
+> **Frontend access-code gate (2026-07-24).** The SPA never receives a real API
+> key at build time. Build only the API and stream URLs, deliberately supply a
+> unique non-secret `VITE_API_KEY` sentinel for the bundle-leak test, and do not
+> retrieve the real key until that exact deployment artifact has passed the gate.
 
 ### 0a. Local gates and rollback capture
 
@@ -99,7 +99,10 @@ deployment before any image is built or pushed.
   cd "$BUILD_ROOT/frontend"
   npm ci
   npm test -- --run
-  npm run build
+  export BUNDLE_SECRET_SENTINEL="chronos2-bundle-$GIT_SHA-${RANDOM}${RANDOM}"
+  VITE_API_KEY="$BUNDLE_SECRET_SENTINEL" npm run build
+  BUNDLE_SECRET_SENTINEL="$BUNDLE_SECRET_SENTINEL" \
+    npm run e2e -- --grep 'built bundle excludes'
 )
 ```
 
@@ -521,22 +524,22 @@ export API_URL=$(aws cloudformation describe-stacks \
 export STREAM_URL=$(aws cloudformation describe-stacks \
   --stack-name Chronos2DemoApi \
   --query "Stacks[0].Outputs[?OutputKey=='StreamUrlOut'].OutputValue | [0]" --output text)
-# The frontend-auth replacement belongs here once approved. Until then the
-# hard stop above remains in place; do not retrieve or embed the secret.
 export API_KEY_SECRET_ARN=$(aws cloudformation describe-stacks \
   --stack-name Chronos2DemoTools \
   --query "Stacks[0].Outputs[?OutputKey=='ApiKeySecretArnOut'].OutputValue | [0]" --output text)
 export APP_URL=$(aws cloudformation describe-stacks \
   --stack-name Chronos2DemoFrontend \
   --query "Stacks[0].Outputs[?OutputKey=='AmplifyDomainOut'].OutputValue | [0]" --output text)
-export API_KEY=$(aws secretsmanager get-secret-value \
-  --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
 
 cd "$BUILD_ROOT/frontend"
-printf 'VITE_API_URL=%s\nVITE_STREAM_URL=%s\nVITE_API_KEY=%s\n' \
-  "$API_URL" "$STREAM_URL" "$API_KEY" > .env.production
-npm run build
-export FRONTEND_ARTIFACT=/tmp/chronos2-frontend-"$GIT_SHA".zip
+export BUNDLE_SECRET_SENTINEL="chronos2-bundle-$GIT_SHA-${RANDOM}${RANDOM}"
+VITE_API_URL="$API_URL" VITE_STREAM_URL="$STREAM_URL" \
+  VITE_API_KEY="$BUNDLE_SECRET_SENTINEL" npm run build
+BUNDLE_SECRET_SENTINEL="$BUNDLE_SECRET_SENTINEL" \
+  npm run e2e -- --grep 'built bundle excludes'
+unset BUNDLE_SECRET_SENTINEL
+export FRONTEND_DEPLOY_DIR=$(mktemp -d /tmp/chronos2-frontend-deploy.XXXXXX)
+export FRONTEND_ARTIFACT="$FRONTEND_DEPLOY_DIR/chronos2-frontend-$GIT_SHA.zip"
 (cd dist && zip -X -r "$FRONTEND_ARTIFACT" .)
 export FRONTEND_SHA256=$(shasum -a 256 "$FRONTEND_ARTIFACT" | awk '{print $1}')
 printf '%s\n' "$FRONTEND_SHA256" | grep -Eq '^[0-9a-f]{64}$'
@@ -591,7 +594,75 @@ esac
 cd "$REPO_ROOT"
 ```
 
-### 0e. Streaming-edge and live stop gates
+### 0e. API key rotation acceptance
+
+Run this only after the API deployment above has installed the no-cache
+authorizer and relay changes. Do not rotate before that deployment is complete.
+The old and new values remain shell variables for these runtime checks only;
+never print them, add them to a Vite environment, or write them to a file.
+
+```bash
+export API_GATEWAY_ID=$(printf '%s' "$API_URL" | sed -E 's#https://([^.]+).*#\1#')
+export AUTHORIZER_ID=$(aws apigateway get-authorizers \
+  --rest-api-id "$API_GATEWAY_ID" \
+  --query 'items[0].id' --output text)
+test -n "$AUTHORIZER_ID"
+test "$AUTHORIZER_ID" != "None"
+aws apigateway update-authorizer \
+  --rest-api-id "$API_GATEWAY_ID" --authorizer-id "$AUTHORIZER_ID" \
+  --patch-operations op=replace,path=/authorizerResultTtlInSeconds,value=0
+test "$(aws apigateway get-authorizer \
+  --rest-api-id "$API_GATEWAY_ID" --authorizer-id "$AUTHORIZER_ID" \
+  --query authorizerResultTtlInSeconds --output text)" = "0"
+
+export OLD_API_KEY=$(aws secretsmanager get-secret-value \
+  --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
+test -n "$OLD_API_KEY"
+aws secretsmanager rotate-secret --secret-id "$API_KEY_SECRET_ARN" >/dev/null
+
+NEW_API_KEY=
+for ((ATTEMPT=1; ATTEMPT<=60; ATTEMPT++)); do
+  NEW_API_KEY=$(aws secretsmanager get-secret-value \
+    --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
+    --query SecretString --output text)
+  if test -n "$NEW_API_KEY" && test "$NEW_API_KEY" != "$OLD_API_KEY"; then
+    break
+  fi
+  sleep 10
+done
+test -n "$NEW_API_KEY"
+test "$NEW_API_KEY" != "$OLD_API_KEY"
+
+expect_rejected() {
+  case "$1" in
+    401|403) ;;
+    *) printf 'expected old key rejection, got HTTP %s\n' "$1" >&2; exit 1 ;;
+  esac
+}
+
+expect_rejected "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --request POST "$API_URL/sessions" -H "x-api-key: $OLD_API_KEY")"
+export NEW_SESSION_ID=$(curl --fail --silent --show-error \
+  --request POST "$API_URL/sessions" -H "x-api-key: $NEW_API_KEY" \
+  | jq -r .session_id)
+test -n "$NEW_SESSION_ID"
+
+expect_rejected "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "x-api-key: $OLD_API_KEY" \
+  "$STREAM_URL?session_id=$NEW_SESSION_ID&prompt=rotation-check")"
+test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "x-api-key: $NEW_API_KEY" \
+  "$STREAM_URL?session_id=$NEW_SESSION_ID&prompt=rotation-check")" = "200"
+
+export API_KEY="$NEW_API_KEY"
+unset OLD_API_KEY NEW_API_KEY
+```
+
+Open tabs holding the old key automatically clear their tab session when REST
+or stream access is rejected and return to the masked access-code form. Enter
+the new runtime access code to reconnect.
+
+### 0f. Streaming-edge and live stop gates
 
 Resolve the deployed edge and assert its structure, rather than relying on
 descriptive output. The managed `AllViewerExceptHostHeader` policy forwards
@@ -714,7 +785,7 @@ Playwright acceptance. Inspect all task ARNs present in the raw events with
 after every CLI and browser gate passes, copy the calibration, summary, and raw
 attempt logs from `BUILD_ROOT`/`ACCEPTANCE_ROOT` into `docs/results`.
 
-### 0f. Rollback
+### 0g. Rollback
 
 Rollback begins by retrieving the durable, hash-verified bundle; do not move
 `latest` or rebuild an approximation. Restore the exact prior templates and
@@ -902,12 +973,6 @@ finch build --platform linux/arm64 -f agent/runtime/Dockerfile -t "$ECR/${AGENT_
 finch push "$ECR/${AGENT_REPO}:${GIT_SHA}"
 ```
 
-Fetch the API key from Secrets Manager:
-```bash
-export API_KEY=$(aws secretsmanager get-secret-value \
-  --secret-id $API_KEY_SECRET_ARN --query SecretString --output text)
-```
-
 ### 1b. Seed the demo data to S3
 
 The Lambda tools read `panel.parquet` / `regimes.parquet` from the data bucket;
@@ -923,26 +988,36 @@ python scripts/seed_demo_data.py --data-bucket "$DATA_BUCKET"
 
 ```bash
 cd frontend
-echo "VITE_API_URL=$API_URL"        >  .env.production
-echo "VITE_STREAM_URL=$STREAM_URL"  >> .env.production
-echo "VITE_API_KEY=$API_KEY"        >> .env.production
 npm install
-npm run build
-
-cd dist
-zip -r ../app.zip .
-cd ..
+export BUNDLE_SECRET_SENTINEL="chronos2-bundle-$GIT_SHA-${RANDOM}${RANDOM}"
+VITE_API_URL="$API_URL" VITE_STREAM_URL="$STREAM_URL" \
+  VITE_API_KEY="$BUNDLE_SECRET_SENTINEL" npm run build
+BUNDLE_SECRET_SENTINEL="$BUNDLE_SECRET_SENTINEL" \
+  npm run e2e -- --grep 'built bundle excludes'
+unset BUNDLE_SECRET_SENTINEL
+export FRONTEND_DEPLOY_DIR=$(mktemp -d /tmp/chronos2-frontend-deploy.XXXXXX)
+export FRONTEND_ARTIFACT="$FRONTEND_DEPLOY_DIR/chronos2-frontend-$GIT_SHA.zip"
+(cd dist && zip -X -r "$FRONTEND_ARTIFACT" .)
 
 DEPLOY=$(aws amplify create-deployment \
   --app-id $AMPLIFY_APP_ID --branch-name main --output json)
 JOB_ID=$(echo $DEPLOY | jq -r .jobId)
 URL=$(echo $DEPLOY | jq -r .zipUploadUrl)
-curl -T app.zip "$URL"
+curl -T "$FRONTEND_ARTIFACT" "$URL"
 aws amplify start-deployment \
   --app-id $AMPLIFY_APP_ID --branch-name main --job-id $JOB_ID
 ```
 
 Wait until `aws amplify get-job --app-id $AMPLIFY_APP_ID --branch-name main --job-id $JOB_ID --query 'job.summary.status' --output text` returns `SUCCEED`.
+
+Only after the bundle gate and deployment command above, retrieve the runtime
+access key without printing it:
+
+```bash
+export API_KEY=$(aws secretsmanager get-secret-value \
+  --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
+test -n "$API_KEY"
+```
 
 ## 3. Smoke test (CLI)
 
@@ -965,9 +1040,10 @@ Expected: a non-empty `text` containing references to "parametric", "Chronos-2",
 
 ## 4. End-to-end (browser)
 
-Open `$APP_URL`. Type the same prompt as step 3. Watch the assistant stream
-tokens and inline a PFE-overlay chart. Then exercise the **What-if** panel
-with `w_stress=0.8` and confirm a second chart renders.
+Open `$APP_URL`, enter the runtime access code, then type the same prompt as
+step 3. Watch the assistant stream tokens and inline a PFE-overlay chart. Then
+exercise the **What-if** panel with `w_stress=0.8` and confirm a second chart
+renders.
 
 ## 5. Run the Playwright happy-path
 
@@ -976,8 +1052,6 @@ cd frontend
 cat > tests/e2e/.env <<EOF
 RUN_E2E=1
 APP_URL=$APP_URL
-API_URL=$API_URL
-STREAM_URL=$STREAM_URL
 API_KEY=$API_KEY
 EOF
 npm run e2e
@@ -1051,9 +1125,9 @@ Expected: empty list.
 | `cdk deploy` "Cannot update/delete export … in use" | Cross-stack layer export churn | Api uses its own `ApiSharedLayer`; deploy Api before Tools |
 | Headline `/invoke` 504 at ~29s | API GW sync cap vs multi-minute Fargate | Use the streaming path (SSE via CloudFront) — `/invoke` is the non-streaming fallback only |
 | Stream returns 403 via CloudFront (`{"Message":"Forbidden…Function URL authorization"}`) | OAC needs BOTH `lambda:InvokeFunctionUrl` AND `lambda:InvokeFunction` for the cloudfront principal — `withOriginAccessControl` only adds the former | `api-stack.ts` adds the `StreamCfInvokeFunction` `CfnPermission` (InvokeFunction, scoped to the distribution ARN). Confirm both statements are on the relay's resource policy and the Function URL is `AWS_IAM`; also check `chronos2StreamWebAcl` WAF metrics for blocks |
-| `cdk deploy Chronos2DemoApi` rolls back: "Cannot delete export …SseRelayFnFunctionUrl… in use by Chronos2DemoFrontend" | Frontend imported the Api `streamUrl` export; repointing it to the CloudFront domain can't delete the in-use export | Frontend no longer imports it (env-vars are static placeholders; real URLs come from the local `.env.production`). If it recurs, `cdk deploy Chronos2DemoFrontend --exclusively` first (drops the import), then `Chronos2DemoApi --exclusively` |
+| `cdk deploy Chronos2DemoApi` rolls back: "Cannot delete export …SseRelayFnFunctionUrl… in use by Chronos2DemoFrontend" | Frontend imported the Api `streamUrl` export; repointing it to the CloudFront domain can't delete the in-use export | Frontend no longer imports it (env-vars are static placeholders; real URLs are supplied during the local URL-only build). If it recurs, `cdk deploy Chronos2DemoFrontend --exclusively` first (drops the import), then `Chronos2DemoApi --exclusively` |
 | Stream CORS preflight fails | Custom `x-api-key` header not reaching origin | Verify the distribution uses `ALL_VIEWER_EXCEPT_HOST_HEADER`; fallback is a CloudFront `ResponseHeadersPolicy` with explicit CORS |
-| Streaming endpoint returns 401 | Wrong API key in browser localStorage | Clear `localStorage["chronos2-demo-session"]`, reload, paste new key |
+| Streaming endpoint returns 401 | Wrong API key in the tab session | Clear `sessionStorage["chronos2-demo-session"]`, reload, enter a new demo access code |
 | Fargate task ENOSPC (baseline-MC or chronos2) | Low ephemeral storage; the chronos2 image is large (AutoGluon) | Edit the relevant `tools-stack.ts` Fargate task `ephemeralStorageGiB` and redeploy |
 | chronos2 task fails immediately / `CannotPullContainerError` | ECR image not pushed after first `cdk deploy` | Run the §1a build-and-push step for the `chronos2` repo |
 | chronos2 task `AccessDenied` on `sagemaker:InvokeEndpoint` | Endpoint name mismatch | Confirm `CHRONOS2_ENDPOINT` matches the deployed AutoGluon endpoint; the task role is scoped to that exact name |

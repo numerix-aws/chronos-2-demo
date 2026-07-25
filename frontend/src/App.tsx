@@ -9,7 +9,7 @@ import {
   SpaceBetween,
 } from '@cloudscape-design/components';
 import '@cloudscape-design/global-styles/index.css';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChatPanel, type PlotArtifact } from './components/ChatPanel';
 import {
   ExposureSummary,
@@ -27,7 +27,7 @@ import {
   type ExposureResultEvent,
   type RunSpecEvent,
 } from './api/stream';
-import { loadSession, saveSession } from './state/session';
+import { clearSession, loadSession, saveSession } from './state/session';
 import {
   parseToolTraceEvents,
   reduceToolTraceEvents,
@@ -39,6 +39,10 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof Error && /^\s*(401|403)(?:\s|:|$)/.test(error.message);
 }
 
 interface ArtifactIdentity {
@@ -78,6 +82,8 @@ export function App() {
   const [accessCode, setAccessCode] = useState('');
   const [accessError, setAccessError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const connectingRef = useRef(false);
+  const connectAttemptRef = useRef(0);
   const [messages, setMessages] = useState<Message[]>([]);
   const [toolTraceEvents, setToolTraceEvents] = useState<ToolTraceEvent[]>([]);
   const [activeIdentity, setActiveIdentity] = useState<ArtifactIdentity | null>(null);
@@ -115,6 +121,12 @@ export function App() {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
+        if (isUnauthorized(error)) {
+          clearSession();
+          setSession(null);
+          setSessionError('Demo access has expired. Enter a new access code.');
+          return;
+        }
         const detail = error instanceof Error ? error.message : String(error);
         setSessionError(`Could not connect to the demo copilot: ${detail}`);
       });
@@ -124,6 +136,7 @@ export function App() {
   }, [apiBase, session]);
 
   const connect = async () => {
+    if (connectingRef.current) return;
     const apiKey = accessCode.trim();
     if (!apiKey) {
       setAccessError('Enter a demo access code.');
@@ -132,16 +145,24 @@ export function App() {
 
     setAccessError(null);
     setSessionError(null);
+    connectingRef.current = true;
+    const attempt = ++connectAttemptRef.current;
     setConnecting(true);
     try {
       const { session_id } = await new ApiClient(apiBase, apiKey).createSession();
+      if (attempt !== connectAttemptRef.current) return;
       const nextSession = { sessionId: session_id, apiKey };
       saveSession(nextSession);
       setSession(nextSession);
     } catch {
-      setSessionError('Could not connect to the demo copilot.');
+      if (attempt === connectAttemptRef.current) {
+        setSessionError('Could not connect to the demo copilot.');
+      }
     } finally {
-      setConnecting(false);
+      if (attempt === connectAttemptRef.current) {
+        connectingRef.current = false;
+        setConnecting(false);
+      }
     }
   };
 
@@ -185,7 +206,8 @@ export function App() {
       ...prev,
       { role: 'assistant', content: '', turn_id: `local-asst-${Date.now()}` },
     ]);
-    for await (const ev of streamAgent(streamBase, session.apiKey, session.sessionId, text)) {
+    try {
+      for await (const ev of streamAgent(streamBase, session.apiKey, session.sessionId, text)) {
       if (ev.type === 'run_spec') {
         if (admitIdentity(ev, 'run specification')) {
           setRunSpec((previous) => previous ?? ev);
@@ -259,8 +281,16 @@ export function App() {
           return next;
         });
       }
+      }
+    } catch (error: unknown) {
+      if (isUnauthorized(error)) {
+        clearSession();
+        setSession(null);
+        setSessionError('Demo access has expired. Enter a new access code.');
+      }
+    } finally {
+      setStreaming(false);
     }
-    setStreaming(false);
   };
 
   const handleApply = (p: WhatIfParams) => {
