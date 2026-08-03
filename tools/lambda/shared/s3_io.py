@@ -4,10 +4,13 @@ from collections.abc import Mapping
 import hashlib
 import io
 import json
+from typing import TYPE_CHECKING
 
 import boto3
 from botocore.exceptions import ClientError
-import pandas as pd
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 _CONDITIONAL_CONFLICT_CODES = {
@@ -122,6 +125,8 @@ def upload_parquet(df: pd.DataFrame, bucket: str, key: str) -> str:
 
 
 def download_parquet(uri: str) -> pd.DataFrame:
+    import pandas as pd
+
     return pd.read_parquet(io.BytesIO(download_bytes(uri)))
 
 
