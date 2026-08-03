@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import threading
 import time
 
@@ -499,7 +500,9 @@ def test_clean_archive_rehearsal_stages_inputs_and_installs_relay_hermetically(t
     assert (build_root / "data" / "curated" / "covariates.parquet").is_file()
     subprocess.run(
         [
-            str(Path(__file__).parents[1] / ".venv" / "bin" / "pytest"),
+            sys.executable,
+            "-m",
+            "pytest",
             "-q",
             "tests/test_demo_stage_parameters.py",
         ],
