@@ -641,12 +641,23 @@ test "$NEW_API_KEY" != "$OLD_API_KEY"
 NEW_API_KEY_VERSION_ID=
 
 restore_previous_api_key() {
-  if test -n "$NEW_API_KEY_VERSION_ID"; then
-    aws secretsmanager update-secret-version-stage \
+  local exit_status=$?
+  local current_api_key_version_id=
+  trap - EXIT
+  if ! current_api_key_version_id=$(aws secretsmanager get-secret-value \
+    --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
+    --query VersionId --output text); then
+    printf '%s\n' "could not read AWSCURRENT during API key cleanup" >&2
+  elif test -n "$current_api_key_version_id" \
+    && test "$current_api_key_version_id" != "$PREVIOUS_API_KEY_VERSION_ID"; then
+    if ! aws secretsmanager update-secret-version-stage \
       --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
       --move-to-version-id "$PREVIOUS_API_KEY_VERSION_ID" \
-      --remove-from-version-id "$NEW_API_KEY_VERSION_ID" >/dev/null
+      --remove-from-version-id "$current_api_key_version_id" >/dev/null; then
+      printf '%s\n' "could not restore the previous API key version" >&2
+    fi
   fi
+  exit "$exit_status"
 }
 trap restore_previous_api_key EXIT
 
@@ -669,22 +680,30 @@ expect_rejected() {
   esac
 }
 
-expect_rejected "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+curl_with_api_key() {
+  local api_key=$1
+  shift
+  printf 'header = "x-api-key: %s"\n' "$api_key" | curl --config - "$@"
+}
+
+expect_rejected "$(curl_with_api_key "$OLD_API_KEY" \
+  --silent --output /dev/null --write-out '%{http_code}' \
   --connect-timeout 10 --max-time 30 \
-  --request POST "$API_URL/sessions" -H "x-api-key: $OLD_API_KEY")"
-export NEW_SESSION_ID=$(curl --fail --silent --show-error \
+  --request POST "$API_URL/sessions")"
+export NEW_SESSION_ID=$(curl_with_api_key "$NEW_API_KEY" \
+  --fail --silent --show-error \
   --connect-timeout 10 --max-time 30 \
-  --request POST "$API_URL/sessions" -H "x-api-key: $NEW_API_KEY" \
+  --request POST "$API_URL/sessions" \
   | jq -r .session_id)
 test -n "$NEW_SESSION_ID"
 
-expect_rejected "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+expect_rejected "$(curl_with_api_key "$OLD_API_KEY" \
+  --silent --output /dev/null --write-out '%{http_code}' \
   --connect-timeout 10 --max-time 30 \
-  -H "x-api-key: $OLD_API_KEY" \
   "$STREAM_URL?session_id=$NEW_SESSION_ID&prompt=rotation-check")"
-test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+test "$(curl_with_api_key "$NEW_API_KEY" \
+  --silent --output /dev/null --write-out '%{http_code}' \
   --connect-timeout 10 --max-time 30 \
-  -H "x-api-key: $NEW_API_KEY" \
   "$STREAM_URL?session_id=$NEW_SESSION_ID&prompt=rotation-check")" = "200"
 
 trap - EXIT
@@ -800,10 +819,10 @@ subprocess.run(
 )
 PY
 
-  "$REPO_ROOT/.venv/bin/python" \
+  CHRONOS2_VERIFY_API_KEY="$API_KEY" "$REPO_ROOT/.venv/bin/python" \
     scripts/verify_live_reproducibility.py \
     --stream-url "$STREAM_URL" \
-    --api-key "$API_KEY" \
+    --api-key-env CHRONOS2_VERIFY_API_KEY \
     --runs 3 \
     --prompt "Run the stage-safe headline demo for September 30, 2022. Use five years of trading history, project one trading year into the future, and generate 500 scenarios with each engine. Apply a 53.05% stress weight. Show the market regime and compare baseline exposure with Chronos-2-augmented exposure. Report the final EE, 97.5% PFE, 97.5% ES, and the PFE change." \
     --calibration docs/results/headline_calibration.json \
@@ -1076,18 +1095,24 @@ test -n "$API_KEY"
 ## 3. Smoke test (CLI)
 
 ```bash
+curl_with_api_key() {
+  local api_key=$1
+  shift
+  printf 'header = "x-api-key: %s"\n' "$api_key" | curl --config - "$@"
+}
+
 # Create session
-SID=$(curl -s -X POST "$API_URL/sessions" -H "x-api-key: $API_KEY" | jq -r .session_id)
+SID=$(curl_with_api_key "$API_KEY" -s -X POST "$API_URL/sessions" | jq -r .session_id)
 echo "session: $SID"
 
 # Synchronous invocation (skips streaming)
-curl -s -X POST "$API_URL/invoke" \
-  -H "x-api-key: $API_KEY" -H "content-type: application/json" \
+curl_with_api_key "$API_KEY" -s -X POST "$API_URL/invoke" \
+  -H "content-type: application/json" \
   -d "{\"session_id\":\"$SID\",\"prompt\":\"Run the headline demo at as_of_date=2020-03-15, lookback_days=1260, horizon=252, n_paths=2000, w_stress=0.5. Then plot a PFE overlay.\"}" \
   | jq .text
 
 # Inspect transcript
-curl -s "$API_URL/sessions/$SID/messages" -H "x-api-key: $API_KEY" | jq '.messages | length'
+curl_with_api_key "$API_KEY" -s "$API_URL/sessions/$SID/messages" | jq '.messages | length'
 ```
 
 Expected: a non-empty `text` containing references to "parametric", "Chronos-2", and a markdown image URL.
@@ -1133,7 +1158,8 @@ publicly invocable.
 curl -s -o /dev/null -w '%{http_code}\n' "<RAW_FUNCTION_URL>?session_id=x&prompt=hi"   # 403
 
 # CloudFront URL with a valid key streams SSE (expect text/event-stream frames):
-curl -N -H "x-api-key: $DEMO_API_KEY" \
+printf 'header = "x-api-key: %s"\n' "$DEMO_API_KEY" \
+  | curl --config - -N \
   "$STREAM_URL?session_id=demo&prompt=hello"
 ```
 

@@ -51,8 +51,9 @@ RUN_SPEC_PAYLOAD = {
     "provenance": PROVENANCE,
 }
 SPEC_HASH = compute_spec_hash(RUN_SPEC_PAYLOAD)
-RUNBOOK_PATH = Path(__file__).parents[1] / "docs" / "runbook.md"
-RELAY_DIR = Path(__file__).parents[1] / "tools" / "lambda" / "sse_relay"
+REPO_ROOT = Path(__file__).parents[1]
+RUNBOOK_PATH = REPO_ROOT / "docs" / "runbook.md"
+RELAY_DIR = REPO_ROOT / "tools" / "lambda" / "sse_relay"
 RELAY_LOCK_PATH = RELAY_DIR / "package-lock.json"
 
 
@@ -416,19 +417,28 @@ def test_collect_events_allows_completed_reader_to_close(monkeypatch):
 
 
 def test_clean_archive_rehearsal_stages_inputs_and_installs_relay_hermetically(tmp_path):
-    archive = subprocess.run(
-        ["git", "archive", "HEAD"],
-        check=True,
-        capture_output=True,
-    ).stdout
     build_root = tmp_path / "build"
-    build_root.mkdir()
-    subprocess.run(
-        ["tar", "-x", "-C", str(build_root)],
-        check=True,
-        input=archive,
+    for relative_path in (
+        "docs/runbook.md",
+        "docs/demo/demo-first-presenter-script.md",
+        "tools/lambda/sse_relay/package.json",
+        "tools/lambda/sse_relay/package-lock.json",
+        "tools/lambda/sse_relay/protocol.test.mjs",
+        "tests/test_demo_stage_parameters.py",
+        "tests/fixtures/headline_panel.parquet",
+        "data/sample_book.json",
+    ):
+        source = REPO_ROOT / relative_path
+        destination = build_root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    shutil.copytree(
+        REPO_ROOT / "src",
+        build_root / "src",
+        ignore=shutil.ignore_patterns("__pycache__"),
     )
 
+    assert not (build_root / ".git").exists()
     assert not (build_root / "data" / "curated").exists()
     assert not (build_root / "tools" / "lambda" / "sse_relay" / "node_modules").exists()
     assert (build_root / "tools" / "lambda" / "sse_relay" / "package-lock.json").is_file()
@@ -751,13 +761,14 @@ def test_cli_collects_three_runs_and_writes_raw_and_summary_files(
         return runs[len(calls) - 1]
 
     monkeypatch.setattr(verifier, "collect_events", collect_events)
+    monkeypatch.setenv("CHRONOS2_VERIFY_TEST_KEY", "secret")
     output = tmp_path / "acceptance.json"
     calibration = tmp_path / "calibration.json"
     calibration.write_text(json.dumps(_calibration_for()))
 
     result = verifier.main([
         "--stream-url", "https://stream.example/",
-        "--api-key", "secret",
+        "--api-key-env", "CHRONOS2_VERIFY_TEST_KEY",
         "--runs", "3",
         "--prompt", verifier.CANONICAL_PROMPT,
         "--output", str(output),
@@ -791,6 +802,7 @@ def test_failed_verification_atomically_replaces_stale_passed_output(
         return runs[len(calls) - 1]
 
     monkeypatch.setattr(verifier, "collect_events", collect_events)
+    monkeypatch.setenv("CHRONOS2_VERIFY_TEST_KEY", "secret")
     output = tmp_path / "acceptance.json"
     output.write_text('{"status":"passed"}\n')
     calibration = tmp_path / "calibration.json"
@@ -799,7 +811,7 @@ def test_failed_verification_atomically_replaces_stale_passed_output(
     with pytest.raises(AssertionError, match=r"run 2 baseline\.ee differs"):
         verifier.main([
             "--stream-url", "https://stream.example/",
-            "--api-key", "secret",
+            "--api-key-env", "CHRONOS2_VERIFY_TEST_KEY",
             "--runs", "3",
             "--prompt", verifier.CANONICAL_PROMPT,
             "--output", str(output),
@@ -821,6 +833,7 @@ def test_failed_collection_atomically_replaces_stale_passed_output(
         raise RuntimeError("collection stopped")
 
     monkeypatch.setattr(verifier, "collect_events", collect_events)
+    monkeypatch.setenv("CHRONOS2_VERIFY_TEST_KEY", "secret")
     output = tmp_path / "acceptance.json"
     output.write_text('{"status":"passed"}\n')
     calibration = tmp_path / "calibration.json"
@@ -829,7 +842,7 @@ def test_failed_collection_atomically_replaces_stale_passed_output(
     with pytest.raises(RuntimeError, match="collection stopped"):
         verifier.main([
             "--stream-url", "https://stream.example/",
-            "--api-key", "secret",
+            "--api-key-env", "CHRONOS2_VERIFY_TEST_KEY",
             "--runs", "3",
             "--prompt", verifier.CANONICAL_PROMPT,
             "--output", str(output),
@@ -849,6 +862,7 @@ def test_cli_deadline_failure_writes_failed_evidence(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(verifier, "collect_events", collect_events)
+    monkeypatch.setenv("CHRONOS2_VERIFY_TEST_KEY", "secret")
     output = tmp_path / "acceptance.json"
     calibration = tmp_path / "calibration.json"
     calibration.write_text(json.dumps(_calibration_for()))
@@ -859,7 +873,7 @@ def test_cli_deadline_failure_writes_failed_evidence(monkeypatch, tmp_path):
     ):
         verifier.main([
             "--stream-url", "https://stream.example/",
-            "--api-key", "secret",
+            "--api-key-env", "CHRONOS2_VERIFY_TEST_KEY",
             "--runs", "3",
             "--prompt", verifier.CANONICAL_PROMPT,
             "--output", str(output),
@@ -877,7 +891,7 @@ def test_cli_rejects_non_three_run_acceptance():
     with pytest.raises(SystemExit, match="--runs must be 3"):
         verifier.main([
             "--stream-url", "https://stream.example/",
-            "--api-key", "secret",
+            "--api-key-env", "UNUSED_API_KEY",
             "--runs", "2",
             "--prompt", verifier.CANONICAL_PROMPT,
             "--output", "ignored.json",
@@ -930,12 +944,7 @@ def test_runbook_stages_verified_sources_before_clean_archive_matrix():
 def test_relay_lockfile_matches_tracked_dependencies():
     assert RELAY_LOCK_PATH.is_file()
     lock = json.loads(RELAY_LOCK_PATH.read_text())
-    package = json.loads(
-        __import__("subprocess").check_output(
-            ["git", "show", "HEAD:tools/lambda/sse_relay/package.json"],
-            text=True,
-        )
-    )
+    package = json.loads((RELAY_DIR / "package.json").read_text())
 
     assert lock["packages"][""]["dependencies"] == package["dependencies"]
 
@@ -966,11 +975,129 @@ def test_runbook_updates_the_access_code_and_checks_both_endpoints():
     assert "update-secret-version-stage" in rotation
     assert "trap restore_previous_api_key EXIT" in rotation
     assert "trap - EXIT" in rotation
-    assert rotation.count('x-api-key: $OLD_API_KEY') == 2
-    assert rotation.count('x-api-key: $NEW_API_KEY') == 2
+    assert "curl_with_api_key()" in rotation
+    assert rotation.count('curl_with_api_key "$OLD_API_KEY"') == 2
+    assert rotation.count('curl_with_api_key "$NEW_API_KEY"') == 2
+    assert '-H "x-api-key:' not in rotation
+    assert "--config -" in rotation
     assert rotation.count("--connect-timeout 10 --max-time 30") == 4
     assert 'echo "$OLD_API_KEY"' not in rotation
     assert 'echo "$NEW_API_KEY"' not in rotation
+
+
+def test_runbook_live_verifier_reads_its_access_code_from_a_named_environment():
+    runbook = _task11_runbook()
+    verifier_start = runbook.index("scripts/verify_live_reproducibility.py")
+    verifier_call = runbook[
+        runbook.rindex("CHRONOS2_VERIFY_API_KEY", 0, verifier_start):
+        runbook.index('test "$(jq -r .status', verifier_start)
+    ]
+
+    assert "--api-key \"$API_KEY\"" not in verifier_call
+    assert "--api-key-env CHRONOS2_VERIFY_API_KEY" in verifier_call
+    assert 'CHRONOS2_VERIFY_API_KEY="$API_KEY"' in verifier_call
+    assert 'x-api-key: $' not in runbook
+    assert 'add_argument("--api-key"' not in Path(verifier.__file__).read_text()
+
+
+def _rotation_acceptance_script() -> str:
+    runbook = _task11_runbook()
+    rotation = runbook[
+        runbook.index("### 0e. API key rotation acceptance"):
+        runbook.index("### 0f. Streaming-edge and live stop gates")
+    ]
+    start = rotation.index("```bash\n") + len("```bash\n")
+    return rotation[start:rotation.index("\n```", start)]
+
+
+def _run_rotation_rehearsal(tmp_path, put_response_lost: bool) -> tuple[subprocess.CompletedProcess[str], str, str]:
+    state = tmp_path / "current-version"
+    state.write_text("old-version\n")
+    log = tmp_path / "calls.log"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "aws").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf 'AWS_ARGV:%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
+        "case \"$1 $2\" in\n"
+        "  'apigateway get-authorizers') printf 'authorizer-id\\n' ;;\n"
+        "  'apigateway update-authorizer') ;;\n"
+        "  'apigateway get-authorizer') printf '0\\n' ;;\n"
+        "  'secretsmanager get-secret-value')\n"
+        "    if [[ \"$*\" == *'VersionId'* ]]; then cat \"$CURRENT_VERSION\"; else printf 'old-secret\\n'; fi ;;\n"
+        "  'secretsmanager put-secret-value')\n"
+        "    cat >/dev/null\n"
+        "    printf 'new-version\\n' > \"$CURRENT_VERSION\"\n"
+        "    if [[ \"$PUT_RESPONSE_LOST\" == 1 ]]; then exit 1; fi\n"
+        "    printf 'new-version\\n' ;;\n"
+        "  'secretsmanager update-secret-version-stage')\n"
+        "    printf 'old-version\\n' > \"$CURRENT_VERSION\" ;;\n"
+        "  *) printf 'unexpected aws call: %s\\n' \"$*\" >&2; exit 1 ;;\n"
+        "esac\n"
+    )
+    (fake_bin / "curl").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf 'CURL_ARGV:%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
+        "config=$(cat)\n"
+        "printf 'CURL_CONFIG:%s\\n' \"$config\" >> \"$CALL_LOG\"\n"
+        "if [[ \"$*\" == *'/sessions'* && \"$config\" == *old-secret* ]]; then\n"
+        "  printf '401'\n"
+        "elif [[ \"$*\" == *'/sessions'* && \"$config\" == *new-secret* ]]; then\n"
+        "  printf '{\\\"session_id\\\":\\\"new-session\\\"}'\n"
+        "elif [[ \"$*\" == *rotation-check* && \"$config\" == *old-secret* ]]; then\n"
+        "  printf '403'\n"
+        "elif [[ \"$*\" == *rotation-check* && \"$config\" == *new-secret* ]]; then\n"
+        "  printf '200'\n"
+        "else\n"
+        "  printf 'unexpected curl call: %s' \"$*\" >&2; exit 1\n"
+        "fi\n"
+    )
+    (fake_bin / "openssl").write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'new-secret\\n'\n"
+    )
+    for command in ("aws", "curl", "openssl"):
+        (fake_bin / command).chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + _rotation_acceptance_script()],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "API_URL": "https://api.example/",
+            "STREAM_URL": "https://stream.example/",
+            "API_KEY_SECRET_ARN": "secret-arn",
+            "CURRENT_VERSION": str(state),
+            "CALL_LOG": str(log),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PUT_RESPONSE_LOST": "1" if put_response_lost else "0",
+        },
+    )
+    return result, state.read_text(), log.read_text()
+
+
+def test_rotation_rehearsal_keeps_access_codes_out_of_child_argv(tmp_path):
+    result, current_version, log = _run_rotation_rehearsal(tmp_path, False)
+
+    assert result.returncode == 0, result.stderr
+    assert current_version == "new-version\n"
+    curl_argv = [line for line in log.splitlines() if line.startswith("CURL_ARGV:")]
+    assert len(curl_argv) == 4
+    assert all("old-secret" not in line and "new-secret" not in line for line in curl_argv)
+    assert all("--config -" in line for line in curl_argv)
+
+
+def test_rotation_rehearsal_restores_previous_version_after_lost_write_response(tmp_path):
+    result, current_version, log = _run_rotation_rehearsal(tmp_path, True)
+
+    assert result.returncode != 0
+    assert current_version == "old-version\n"
+    assert (
+        "update-secret-version-stage --secret-id secret-arn --version-stage AWSCURRENT "
+        "--move-to-version-id old-version --remove-from-version-id new-version"
+    ) in log
 
 
 def test_runbook_stages_canonical_curated_data_before_hashing_it():

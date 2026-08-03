@@ -5,6 +5,7 @@ import argparse
 from decimal import Decimal
 import json
 import multiprocessing
+import os
 from pathlib import Path
 import re
 import time
@@ -577,7 +578,7 @@ def _write_json(path: Path, value: object) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stream-url", required=True)
-    parser.add_argument("--api-key", required=True)
+    parser.add_argument("--api-key-env", default="API_KEY")
     parser.add_argument("--runs", required=True, type=int)
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--output", required=True, type=Path)
@@ -590,6 +591,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.runs != 3:
         raise SystemExit("--runs must be 3")
+    api_key = os.environ.get(args.api_key_env)
+    if not api_key:
+        raise SystemExit(f"environment variable {args.api_key_env} must be set")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     attempt_root = args.output.parent / f"{args.output.stem}-attempts"
@@ -609,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
         for index in range(1, args.runs + 1):
             events = collect_events(
                 args.stream_url,
-                args.api_key,
+                api_key,
                 args.prompt,
                 total_deadline_seconds=args.collection_deadline_seconds,
             )
