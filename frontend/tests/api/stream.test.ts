@@ -152,14 +152,29 @@ describe('parseSseStream', () => {
 });
 
 describe('streamAgent', () => {
-  it.each([401, 403])('throws an HTTP %i response for the caller to handle', async (status) => {
+  it.each([401, 403])('throws only the HTTP %i status for the caller to handle', async (status) => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(new Response('expired access code', { status })),
+      vi.fn().mockResolvedValue(new Response('sensitive expired access detail', { status })),
     );
 
     const iterator = streamAgent('https://stream.example.com', 'stale-key', 'session-1', 'run');
 
-    await expect(iterator.next()).rejects.toThrow(`${status}: expired access code`);
+    await expect(iterator.next()).rejects.toThrow(new RegExp(`^${status}$`));
+  });
+
+  it('yields a sanitized HTTP 500 error event without exposing the response body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('sensitive upstream failure detail', { status: 500 })),
+    );
+
+    const iterator = streamAgent('https://stream.example.com', 'valid-key', 'session-1', 'run');
+
+    await expect(iterator.next()).resolves.toEqual({
+      value: { type: 'error', message: 'HTTP 500' },
+      done: false,
+    });
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
   });
 });

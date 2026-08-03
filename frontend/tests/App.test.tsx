@@ -18,8 +18,14 @@ vi.mock('../src/api/stream', () => ({
 }));
 vi.mock('../src/state/session', () => ({
   loadSession: () => storedSession,
-  saveSession: (...args: unknown[]) => saveSessionMock(...args),
-  clearSession: () => clearSessionMock(),
+  saveSession: (...args: unknown[]) => {
+    saveSessionMock(...args);
+    sessionStorage.setItem('chronos2-demo-session', JSON.stringify(args[0]));
+  },
+  clearSession: () => {
+    clearSessionMock();
+    sessionStorage.removeItem('chronos2-demo-session');
+  },
 }));
 vi.mock('../src/api/client', () => ({
   ApiClient: class {
@@ -47,6 +53,7 @@ describe('App', () => {
     clearSessionMock.mockReset();
     clientConstructorMock.mockReset();
     storedSession = { sessionId: 'sess-1', apiKey: 'key-1' };
+    sessionStorage.clear();
     listedMessages = [];
     listMessagesMock.mockReset();
     listMessagesMock.mockImplementation(() => Promise.resolve({ messages: listedMessages }));
@@ -168,28 +175,83 @@ describe('App', () => {
   });
 
   it.each([401, 403])(
-    'clears an HTTP %i stream session and resets the access form',
+    'clears a connected HTTP %i stream session, credential, and access form',
     async (status) => {
+      storedSession = null;
       const { streamAgent } = await vi.importActual<typeof import('../src/api/stream')>(
         '../src/api/stream',
       );
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockResolvedValue(new Response('expired key', { status })),
+        vi.fn().mockResolvedValue(
+          new Response('sensitive expired credential detail', { status }),
+        ),
       );
       streamAgentMock.mockImplementation(streamAgent);
 
       render(<App />);
+      await userEvent.type(screen.getByLabelText(/demo access code/i), 'old-access-code');
+      await userEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+      await waitFor(() => {
+        expect(sessionStorage.getItem('chronos2-demo-session')).toBe(JSON.stringify({
+          sessionId: 'new-session',
+          apiKey: 'old-access-code',
+        }));
+      });
+      expect(screen.getByLabelText(/message/i)).toBeEnabled();
+
       await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
       await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
 
       expect(await screen.findByText(/Demo access has expired/i)).toBeInTheDocument();
       expect(clearSessionMock).toHaveBeenCalledOnce();
+      expect(sessionStorage.getItem('chronos2-demo-session')).toBeNull();
       expect(screen.getByLabelText(/demo access code/i)).toHaveAttribute('type', 'password');
+      expect(screen.getByLabelText(/demo access code/i)).toHaveValue('');
       expect(screen.getByLabelText(/message/i)).toBeDisabled();
-      expect(screen.queryByText('key-1')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^apply$/i })).toBeDisabled();
+      expect(document.body).not.toHaveTextContent('sensitive expired credential detail');
     },
   );
+
+  it('shows a sanitized HTTP 500 stream error and retains the connected session', async () => {
+    storedSession = null;
+    const { streamAgent } = await vi.importActual<typeof import('../src/api/stream')>(
+      '../src/api/stream',
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('sensitive upstream failure detail', { status: 500 }),
+      ),
+    );
+    streamAgentMock.mockImplementation(streamAgent);
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText(/demo access code/i), 'valid-access-code');
+    await userEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    const savedSession = JSON.stringify({
+      sessionId: 'new-session',
+      apiKey: 'valid-access-code',
+    });
+    await waitFor(() => {
+      expect(sessionStorage.getItem('chronos2-demo-session')).toBe(savedSession);
+    });
+
+    await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
+    await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: /^chat$/i })).toHaveTextContent('error: HTTP 500');
+    });
+    expect(clearSessionMock).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('chronos2-demo-session')).toBe(savedSession);
+    expect(screen.queryByLabelText(/demo access code/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/message/i)).toBeEnabled();
+    expect(document.body).not.toHaveTextContent('sensitive upstream failure detail');
+  });
 
   it('renders the Numerix × Chronos-2 app shell', () => {
     render(<App />);

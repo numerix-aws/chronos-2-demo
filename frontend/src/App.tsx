@@ -124,6 +124,7 @@ export function App() {
         if (isUnauthorized(error)) {
           clearSession();
           setSession(null);
+          setAccessCode('');
           setSessionError('Demo access has expired. Enter a new access code.');
           return;
         }
@@ -153,6 +154,7 @@ export function App() {
       if (attempt !== connectAttemptRef.current) return;
       const nextSession = { sessionId: session_id, apiKey };
       saveSession(nextSession);
+      setAccessCode('');
       setSession(nextSession);
     } catch {
       if (attempt === connectAttemptRef.current) {
@@ -286,6 +288,7 @@ export function App() {
       if (isUnauthorized(error)) {
         clearSession();
         setSession(null);
+        setAccessCode('');
         setSessionError('Demo access has expired. Enter a new access code.');
       }
     } finally {
