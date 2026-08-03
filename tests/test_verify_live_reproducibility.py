@@ -985,6 +985,9 @@ def test_runbook_updates_the_access_code_and_checks_both_endpoints():
     assert "ClientRequestToken" in rotation
     assert "VersionStages" in rotation
     assert "TASK11_CANDIDATE" in rotation
+    assert 'NEW_API_KEY_STAGE="TASK11_CANDIDATE"' in rotation
+    assert "TASK11_CANDIDATE_${" not in rotation
+    assert "remove_candidate_stage()" in rotation
     assert "update-secret-version-stage" in rotation
     assert "trap restore_previous_api_key EXIT" in rotation
     assert "trap - EXIT" in rotation
@@ -1025,8 +1028,10 @@ def _rotation_acceptance_script() -> str:
 
 
 def _run_rotation_rehearsal(tmp_path, failure_mode: str | None) -> tuple[subprocess.CompletedProcess[str], str, str]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     state = tmp_path / "current-version"
     state.write_text("old-version\n")
+    candidate_stage = tmp_path / "candidate-stage"
     log = tmp_path / "calls.log"
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -1043,10 +1048,15 @@ def _run_rotation_rehearsal(tmp_path, failure_mode: str | None) -> tuple[subproc
         "  'secretsmanager put-secret-value')\n"
         "    cat > \"$PUT_INPUT\"\n"
         "    grep -q '\"ClientRequestToken\": \"new-version\"' \"$PUT_INPUT\"\n"
-        "    grep -q '\"VersionStages\": \\[\"TASK11_CANDIDATE_new-version\"\\]' \"$PUT_INPUT\"\n"
+        "    grep -q '\"VersionStages\": \\[\"TASK11_CANDIDATE\"\\]' \"$PUT_INPUT\"\n"
+        "    printf 'new-version\\n' > \"$CANDIDATE_STAGE\"\n"
         "    if [[ \"$FAILURE_MODE\" == candidate-response-lost ]]; then exit 1; fi ;;\n"
         "  'secretsmanager update-secret-version-stage')\n"
-        "    if [[ \"$*\" == *'--move-to-version-id new-version --remove-from-version-id old-version'* ]]; then\n"
+        "    if [[ \"$*\" == *'--version-stage TASK11_CANDIDATE --remove-from-version-id new-version'* ]]; then\n"
+        "      if [[ \"$FAILURE_MODE\" == candidate-label-cleanup-fails ]]; then exit 1; fi\n"
+        "      printf 'TASK11_CANDIDATE removed\\n' >> \"$CALL_LOG\"\n"
+        "      : > \"$CANDIDATE_STAGE\"\n"
+        "    elif [[ \"$*\" == *'--move-to-version-id new-version --remove-from-version-id old-version'* ]]; then\n"
         "      printf 'new-version\\n' > \"$CURRENT_VERSION\"\n"
         "      if [[ \"$FAILURE_MODE\" == promotion-response-lost || \"$FAILURE_MODE\" == cleanup-fails ]]; then exit 1; fi\n"
         "    elif [[ \"$*\" == *'--move-to-version-id old-version --remove-from-version-id new-version'* ]]; then\n"
@@ -1065,7 +1075,7 @@ def _run_rotation_rehearsal(tmp_path, failure_mode: str | None) -> tuple[subproc
         "config=$(cat)\n"
         "printf 'CURL_CONFIG:%s\\n' \"$config\" >> \"$CALL_LOG\"\n"
         "if [[ \"$*\" == *'/sessions'* && \"$config\" == *old-secret* ]]; then\n"
-        "  printf '401'\n"
+        "  if [[ \"$FAILURE_MODE\" == old-rest-accepted ]]; then printf '200'; else printf '401'; fi\n"
         "elif [[ \"$*\" == *'/sessions'* && \"$config\" == *new-secret* ]]; then\n"
         "  printf '{\\\"session_id\\\":\\\"new-session\\\"}'\n"
         "elif [[ \"$*\" == *rotation-check* && \"$config\" == *old-secret* ]]; then\n"
@@ -1096,6 +1106,7 @@ def _run_rotation_rehearsal(tmp_path, failure_mode: str | None) -> tuple[subproc
             "STREAM_URL": "https://stream.example/",
             "API_KEY_SECRET_ARN": "secret-arn",
             "CURRENT_VERSION": str(state),
+            "CANDIDATE_STAGE": str(candidate_stage),
             "CALL_LOG": str(log),
             "PUT_INPUT": str(tmp_path / "put-input.json"),
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -1128,6 +1139,7 @@ def test_rotation_rehearsal_restores_previous_version_after_lost_promotion_respo
         "update-secret-version-stage --secret-id secret-arn --version-stage AWSCURRENT "
         "--move-to-version-id old-version --remove-from-version-id new-version"
     ) in log
+    assert "TASK11_CANDIDATE removed" in log
 
 
 def test_rotation_rehearsal_keeps_awscurrent_after_a_stale_lost_candidate_write(tmp_path):
@@ -1137,7 +1149,8 @@ def test_rotation_rehearsal_keeps_awscurrent_after_a_stale_lost_candidate_write(
 
     assert result.returncode != 0
     assert current_version == "old-version\n"
-    assert "update-secret-version-stage" not in log
+    assert "update-secret-version-stage --secret-id secret-arn --version-stage AWSCURRENT" not in log
+    assert "TASK11_CANDIDATE removed" in log
 
 
 def test_rotation_rehearsal_fails_closed_when_exact_cleanup_fails(tmp_path):
@@ -1152,6 +1165,43 @@ def test_rotation_rehearsal_fails_closed_when_exact_cleanup_fails(tmp_path):
         "update-secret-version-stage --secret-id secret-arn --version-stage AWSCURRENT "
         "--move-to-version-id old-version --remove-from-version-id new-version"
     ) in log
+    assert "TASK11_CANDIDATE removed" in log
+
+
+def test_rotation_rehearsal_restores_previous_version_after_acceptance_failure(tmp_path):
+    result, current_version, log = _run_rotation_rehearsal(
+        tmp_path, "old-rest-accepted"
+    )
+
+    assert result.returncode != 0
+    assert current_version == "old-version\n"
+    assert (
+        "update-secret-version-stage --secret-id secret-arn --version-stage AWSCURRENT "
+        "--move-to-version-id old-version --remove-from-version-id new-version"
+    ) in log
+    assert "TASK11_CANDIDATE removed" in log
+
+
+def test_repeated_rotation_rehearsals_reuse_and_remove_the_candidate_label(tmp_path):
+    for attempt in ("first", "second"):
+        result, current_version, log = _run_rotation_rehearsal(
+            tmp_path / attempt, None
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert current_version == "new-version\n"
+        assert log.count("TASK11_CANDIDATE removed") == 1
+
+
+def test_rotation_rehearsal_fails_closed_when_candidate_label_cleanup_fails(tmp_path):
+    result, current_version, log = _run_rotation_rehearsal(
+        tmp_path, "candidate-label-cleanup-fails"
+    )
+
+    assert result.returncode != 0
+    assert current_version == "old-version\n"
+    assert "API key cleanup failed; candidate label may not be removed" in result.stderr
+    assert "TASK11_CANDIDATE removed" not in log
 
 
 def test_runbook_stages_canonical_curated_data_before_hashing_it():

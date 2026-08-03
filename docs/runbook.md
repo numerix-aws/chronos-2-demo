@@ -640,11 +640,19 @@ NEW_API_KEY=$(openssl rand -hex 32)
 test -n "$NEW_API_KEY"
 test "$NEW_API_KEY" != "$OLD_API_KEY"
 NEW_API_KEY_VERSION_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
-NEW_API_KEY_STAGE="TASK11_CANDIDATE_${NEW_API_KEY_VERSION_ID}"
+NEW_API_KEY_STAGE="TASK11_CANDIDATE"
+CANDIDATE_WRITE_STARTED=0
 PROMOTION_STARTED=0
+
+remove_candidate_stage() {
+  aws secretsmanager update-secret-version-stage \
+    --secret-id "$API_KEY_SECRET_ARN" --version-stage "$NEW_API_KEY_STAGE" \
+    --remove-from-version-id "$NEW_API_KEY_VERSION_ID" >/dev/null
+}
 
 restore_previous_api_key() {
   local exit_status=$?
+  local cleanup_failed=0
   trap - EXIT
   if test "$PROMOTION_STARTED" = 1; then
     if ! aws secretsmanager update-secret-version-stage \
@@ -652,13 +660,21 @@ restore_previous_api_key() {
       --move-to-version-id "$PREVIOUS_API_KEY_VERSION_ID" \
       --remove-from-version-id "$NEW_API_KEY_VERSION_ID" >/dev/null; then
       printf '%s\n' "API key cleanup failed; AWSCURRENT may not be restored" >&2
-      exit 1
+      cleanup_failed=1
     fi
   fi
+  if test "$CANDIDATE_WRITE_STARTED" = 1; then
+    if ! remove_candidate_stage; then
+      printf '%s\n' "API key cleanup failed; candidate label may not be removed" >&2
+      cleanup_failed=1
+    fi
+  fi
+  test "$cleanup_failed" = 0 || exit 1
   exit "$exit_status"
 }
 trap restore_previous_api_key EXIT
 
+CANDIDATE_WRITE_STARTED=1
 printf '%s' "$NEW_API_KEY" \
   | API_KEY_SECRET_ARN="$API_KEY_SECRET_ARN" \
     NEW_API_KEY_VERSION_ID="$NEW_API_KEY_VERSION_ID" \
@@ -680,7 +696,6 @@ aws secretsmanager update-secret-version-stage \
   --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
   --move-to-version-id "$NEW_API_KEY_VERSION_ID" \
   --remove-from-version-id "$PREVIOUS_API_KEY_VERSION_ID" >/dev/null
-PROMOTION_STARTED=0
 
 expect_rejected() {
   case "$1" in
@@ -715,9 +730,13 @@ test "$(curl_with_api_key "$NEW_API_KEY" \
   --connect-timeout 10 --max-time 30 \
   "$STREAM_URL?session_id=$NEW_SESSION_ID&prompt=rotation-check")" = "200"
 
+remove_candidate_stage
+CANDIDATE_WRITE_STARTED=0
+PROMOTION_STARTED=0
 trap - EXIT
 export API_KEY="$NEW_API_KEY"
-unset OLD_API_KEY NEW_API_KEY PREVIOUS_API_KEY_VERSION_ID NEW_API_KEY_VERSION_ID
+unset OLD_API_KEY NEW_API_KEY PREVIOUS_API_KEY_VERSION_ID NEW_API_KEY_VERSION_ID \
+  NEW_API_KEY_STAGE CANDIDATE_WRITE_STARTED PROMOTION_STARTED
 ```
 
 Open tabs holding the old key automatically clear their tab session when REST
