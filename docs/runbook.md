@@ -77,6 +77,27 @@ export IMAGE_TAG=$GIT_SHA
 export ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 test "$ACCOUNT" = "654654592675"
 export ECR=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
+
+stage_verified_curated_inputs() {
+  export DATA_BUCKET=$(aws cloudformation describe-stack-resources \
+    --stack-name Chronos2DemoStorage \
+    --query "StackResources[?ResourceType=='AWS::S3::Bucket' && contains(LogicalResourceId,'DataBucket')].PhysicalResourceId | [0]" \
+    --output text)
+  test -n "$DATA_BUCKET"
+  test "$DATA_BUCKET" != "None"
+  mkdir -p "$BUILD_ROOT/data/curated"
+  aws s3 cp "s3://$DATA_BUCKET/panel.parquet" \
+    "$BUILD_ROOT/data/curated/panel.parquet"
+  aws s3 cp "s3://$DATA_BUCKET/covariates.parquet" \
+    "$BUILD_ROOT/data/curated/covariates.parquet"
+  test -s "$BUILD_ROOT/data/curated/panel.parquet"
+  test -s "$BUILD_ROOT/data/curated/covariates.parquet"
+  export MARKET_SHA256=$(shasum -a 256 \
+    "$BUILD_ROOT/data/curated/panel.parquet" | awk '{print $1}')
+  export COVARIATE_SHA256=$(shasum -a 256 \
+    "$BUILD_ROOT/data/curated/covariates.parquet" | awk '{print $1}')
+}
+stage_verified_curated_inputs
 ```
 
 Run the complete matrix against the exported commit. A failure stops the
@@ -87,7 +108,11 @@ deployment before any image is built or pushed.
   cd "$BUILD_ROOT"
   PYTHONPATH="$BUILD_ROOT/src" "$REPO_ROOT/.venv/bin/pytest" -q
   PYTHONPATH="$BUILD_ROOT/src" "$REPO_ROOT/.venv/bin/pytest" tools/tests agent/tests -q
-  node --test tools/lambda/sse_relay/protocol.test.mjs
+  (
+    cd "$BUILD_ROOT/tools/lambda/sse_relay"
+    npm ci
+    node --test protocol.test.mjs
+  )
 )
 (
   cd "$BUILD_ROOT/infra"
@@ -151,7 +176,7 @@ do
     > "$ROLLBACK_ROOT/$STACK.template.json"
   aws cloudformation describe-stacks --stack-name "$STACK" --output json \
     > "$ROLLBACK_ROOT/$STACK.stack.json"
-  jq '[.Stacks[0].Parameters[] | {ParameterKey,ParameterValue}]' \
+  jq '[.Stacks[0].Parameters[] | {ParameterKey,ParameterValue}] | sort_by(.ParameterKey)' \
     "$ROLLBACK_ROOT/$STACK.stack.json" \
     > "$ROLLBACK_ROOT/$STACK.rollback-parameters.json"
   jq -e 'type == "object" and length > 0' \
@@ -389,32 +414,11 @@ done
 
 ### 0c. Pin data and deployment provenance
 
-The canonical S3 objects are staged into the clean exported build tree; never
-copy local ignored data into it. Resolve `DATA_BUCKET`, download the required
-curated inputs, and derive the calibration provenance hashes from those bytes:
+The `stage_verified_curated_inputs` helper above downloads the canonical S3
+panel and covariates before the local matrix, never from ignored local files.
+Bind their derived content hashes to the deployment provenance:
 
 ```bash
-export DATA_BUCKET=$(aws cloudformation describe-stack-resources \
-  --stack-name Chronos2DemoStorage \
-  --query "StackResources[?ResourceType=='AWS::S3::Bucket' && contains(LogicalResourceId,'DataBucket')].PhysicalResourceId | [0]" \
-  --output text)
-test -n "$DATA_BUCKET"
-test "$DATA_BUCKET" != "None"
-mkdir -p "$BUILD_ROOT/data/curated"
-aws s3 cp "s3://$DATA_BUCKET/panel.parquet" \
-  "$BUILD_ROOT/data/curated/panel.parquet"
-aws s3 cp "s3://$DATA_BUCKET/covariates.parquet" \
-  "$BUILD_ROOT/data/curated/covariates.parquet"
-aws s3 cp "s3://$DATA_BUCKET/regimes.parquet" \
-  "$BUILD_ROOT/data/curated/regimes.parquet"
-test -s "$BUILD_ROOT/data/curated/panel.parquet"
-test -s "$BUILD_ROOT/data/curated/covariates.parquet"
-test -s "$BUILD_ROOT/data/curated/regimes.parquet"
-export MARKET_SHA256=$(shasum -a 256 \
-  "$BUILD_ROOT/data/curated/panel.parquet" | awk '{print $1}')
-export COVARIATE_SHA256=$(shasum -a 256 \
-  "$BUILD_ROOT/data/curated/covariates.parquet" | awk '{print $1}')
-
 export MARKET_SNAPSHOT_ID="panel.parquet@sha256:${MARKET_SHA256}"
 export COVARIATE_SNAPSHOT_ID="covariates.parquet@sha256:${COVARIATE_SHA256}"
 export CHRONOS_MODEL_VERSION=chronos-2
@@ -624,14 +628,39 @@ test "$(aws apigateway get-authorizer \
   --query authorizerResultTtlInSeconds --output text)" = "0"
 
 export OLD_API_KEY=$(aws secretsmanager get-secret-value \
-  --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
+  --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
+  --query SecretString --output text)
+export PREVIOUS_API_KEY_VERSION_ID=$(aws secretsmanager get-secret-value \
+  --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
+  --query VersionId --output text)
 test -n "$OLD_API_KEY"
+test -n "$PREVIOUS_API_KEY_VERSION_ID"
 NEW_API_KEY=$(openssl rand -hex 32)
 test -n "$NEW_API_KEY"
 test "$NEW_API_KEY" != "$OLD_API_KEY"
-aws secretsmanager put-secret-value \
-  --secret-id "$API_KEY_SECRET_ARN" \
-  --secret-string "$NEW_API_KEY" >/dev/null
+NEW_API_KEY_VERSION_ID=
+
+restore_previous_api_key() {
+  if test -n "$NEW_API_KEY_VERSION_ID"; then
+    aws secretsmanager update-secret-version-stage \
+      --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
+      --move-to-version-id "$PREVIOUS_API_KEY_VERSION_ID" \
+      --remove-from-version-id "$NEW_API_KEY_VERSION_ID" >/dev/null
+  fi
+}
+trap restore_previous_api_key EXIT
+
+NEW_API_KEY_VERSION_ID=$(printf '%s' "$NEW_API_KEY" \
+  | API_KEY_SECRET_ARN="$API_KEY_SECRET_ARN" python3 -c '
+import json
+import os
+import sys
+print(json.dumps({"SecretId": os.environ["API_KEY_SECRET_ARN"], "SecretString": sys.stdin.read()}))
+' \
+  | aws secretsmanager put-secret-value --cli-input-json file:///dev/stdin \
+      --query VersionId --output text)
+test -n "$NEW_API_KEY_VERSION_ID"
+test "$NEW_API_KEY_VERSION_ID" != "$PREVIOUS_API_KEY_VERSION_ID"
 
 expect_rejected() {
   case "$1" in
@@ -641,21 +670,26 @@ expect_rejected() {
 }
 
 expect_rejected "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --connect-timeout 10 --max-time 30 \
   --request POST "$API_URL/sessions" -H "x-api-key: $OLD_API_KEY")"
 export NEW_SESSION_ID=$(curl --fail --silent --show-error \
+  --connect-timeout 10 --max-time 30 \
   --request POST "$API_URL/sessions" -H "x-api-key: $NEW_API_KEY" \
   | jq -r .session_id)
 test -n "$NEW_SESSION_ID"
 
 expect_rejected "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --connect-timeout 10 --max-time 30 \
   -H "x-api-key: $OLD_API_KEY" \
   "$STREAM_URL?session_id=$NEW_SESSION_ID&prompt=rotation-check")"
 test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --connect-timeout 10 --max-time 30 \
   -H "x-api-key: $NEW_API_KEY" \
   "$STREAM_URL?session_id=$NEW_SESSION_ID&prompt=rotation-check")" = "200"
 
+trap - EXIT
 export API_KEY="$NEW_API_KEY"
-unset OLD_API_KEY NEW_API_KEY
+unset OLD_API_KEY NEW_API_KEY PREVIOUS_API_KEY_VERSION_ID NEW_API_KEY_VERSION_ID
 ```
 
 Open tabs holding the old key automatically clear their tab session when REST
@@ -807,6 +841,25 @@ ROLLBACK_ROOT=$ROLLBACK_RESTORE_ROOT
 restore_stack() {
   local stack=$1
   local template_key="$ROLLBACK_BUNDLE_PREFIX/templates/$stack.template.json"
+  local current_template="$ROLLBACK_ROOT/current-$stack.template.json"
+  local current_stack="$ROLLBACK_ROOT/current-$stack.stack.json"
+  local current_parameters="$ROLLBACK_ROOT/current-$stack.parameters.json"
+  aws cloudformation get-template \
+    --stack-name "$stack" --template-stage Original \
+    --query TemplateBody --output json \
+    > "$current_template"
+  aws cloudformation describe-stacks --stack-name "$stack" --output json \
+    > "$current_stack"
+  jq '[.Stacks[0].Parameters[] | {ParameterKey,ParameterValue}] | sort_by(.ParameterKey)' \
+    "$current_stack" > "$current_parameters"
+  if cmp --silent \
+    <(jq -S . "$ROLLBACK_ROOT/$stack.template.json") \
+    <(jq -S . "$current_template") \
+    && cmp --silent \
+      <(jq -S . "$ROLLBACK_ROOT/$stack.rollback-parameters.json") \
+      <(jq -S . "$current_parameters"); then
+    return
+  fi
   aws s3 cp "$ROLLBACK_ROOT/$stack.template.json" \
     "s3://$ROLLBACK_TEMPLATE_BUCKET/$template_key"
   aws cloudformation update-stack \

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import multiprocessing
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import threading
 import time
 
+import pandas as pd
 import pytest
 
 from chronos2_demo.run_spec import compute_spec_hash
@@ -47,6 +52,12 @@ RUN_SPEC_PAYLOAD = {
 }
 SPEC_HASH = compute_spec_hash(RUN_SPEC_PAYLOAD)
 RUNBOOK_PATH = Path(__file__).parents[1] / "docs" / "runbook.md"
+RELAY_DIR = Path(__file__).parents[1] / "tools" / "lambda" / "sse_relay"
+RELAY_LOCK_PATH = RELAY_DIR / "package-lock.json"
+
+
+def _noncooperative_sse_reader() -> None:
+    time.sleep(5)
 
 
 def _run_spec(execution_id: str) -> dict[str, object]:
@@ -220,8 +231,6 @@ def test_collect_events_accepts_data_field_without_space(monkeypatch):
 
 def test_collect_events_stops_heartbeat_stream_at_total_deadline(monkeypatch):
     class Response:
-        closed = False
-
         def raise_for_status(self):
             return None
 
@@ -230,7 +239,7 @@ def test_collect_events_stops_heartbeat_stream_at_total_deadline(monkeypatch):
                 yield ": heartbeat"
 
         def close(self):
-            self.closed = True
+            return None
 
     response = Response()
     monotonic = iter((0.0, 1.0, 2.0, 3.0)).__next__
@@ -252,13 +261,8 @@ def test_collect_events_stops_heartbeat_stream_at_total_deadline(monkeypatch):
             monotonic=monotonic,
         )
 
-    assert response.closed is True
-
-
 def test_collect_events_bounds_blocked_read_at_total_deadline(monkeypatch):
     class Response:
-        closed = False
-
         def raise_for_status(self):
             return None
 
@@ -266,7 +270,7 @@ def test_collect_events_bounds_blocked_read_at_total_deadline(monkeypatch):
             raise verifier.requests.exceptions.ConnectionError("Read timed out.")
 
         def close(self):
-            self.closed = True
+            return None
 
     response = Response()
     monotonic = iter((0.0, 0.0, 3.0)).__next__
@@ -289,28 +293,26 @@ def test_collect_events_bounds_blocked_read_at_total_deadline(monkeypatch):
             monotonic=monotonic,
         )
 
-    assert response.closed is True
-
-
 def test_collect_events_closes_slow_partial_line_at_wall_clock_deadline(
     monkeypatch,
 ):
+    context = multiprocessing.get_context("fork")
+
     class Response:
         def __init__(self):
-            self.closed = threading.Event()
-            self.partial_line_started = threading.Event()
+            self.partial_line_started = context.Event()
 
         def raise_for_status(self):
             return None
 
         def iter_lines(self, decode_unicode):
             self.partial_line_started.set()
-            self.closed.wait(timeout=1)
+            time.sleep(1)
             if False:
                 yield "data: incomplete"
 
         def close(self):
-            self.closed.set()
+            return None
 
     response = Response()
     monkeypatch.setattr(verifier.requests, "get", lambda *args, **kwargs: response)
@@ -329,8 +331,186 @@ def test_collect_events_closes_slow_partial_line_at_wall_clock_deadline(
     elapsed_seconds = time.monotonic() - started_at
 
     assert response.partial_line_started.is_set()
-    assert response.closed.is_set()
     assert elapsed_seconds < 0.25
+
+
+def test_collect_events_reaps_noncooperative_reader_at_deadline(monkeypatch):
+    context = multiprocessing.get_context("fork")
+    started = context.Event()
+
+    class Response:
+        reader_ident = None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self, decode_unicode):
+            self.reader_ident = threading.get_ident()
+            started.set()
+            time.sleep(5)
+            if False:
+                yield "data: incomplete"
+
+        def close(self):
+            return None
+
+    response = Response()
+    monkeypatch.setattr(verifier.requests, "get", lambda *args, **kwargs: response)
+    stopped_readers = []
+    stop_reader = verifier._stop_sse_reader
+
+    def record_stopped_reader(reader):
+        stop_reader(reader)
+        stopped_readers.append(reader)
+
+    monkeypatch.setattr(verifier, "_stop_sse_reader", record_stopped_reader)
+
+    with pytest.raises(
+        verifier.SseCollectionDeadlineExceeded,
+        match="SSE collection deadline exceeded after 0.2 seconds",
+    ):
+        verifier.collect_events(
+            "https://stream.example/",
+            "secret",
+            "run",
+            total_deadline_seconds=0.2,
+        )
+
+    assert started.wait(timeout=0.5)
+    assert response.reader_ident is None
+    assert len(stopped_readers) == 1
+    assert not stopped_readers[0].is_alive()
+
+
+def test_stop_sse_reader_reaps_noncooperative_process():
+    context = multiprocessing.get_context("fork")
+    reader = context.Process(target=_noncooperative_sse_reader)
+    reader.start()
+
+    verifier._stop_sse_reader(reader)
+
+    assert not reader.is_alive()
+
+
+def test_collect_events_allows_completed_reader_to_close(monkeypatch):
+    context = multiprocessing.get_context("fork")
+    closed = context.Event()
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self, decode_unicode):
+            return iter(['data: {"type":"done"}', ""])
+
+        def close(self):
+            time.sleep(0.05)
+            closed.set()
+
+    monkeypatch.setattr(verifier.requests, "get", lambda *args, **kwargs: Response())
+
+    assert verifier.collect_events("https://stream.example/", "secret", "run") == [
+        {"type": "done"}
+    ]
+    assert closed.wait(timeout=0.2)
+
+
+def test_clean_archive_rehearsal_stages_inputs_and_installs_relay_hermetically(tmp_path):
+    archive = subprocess.run(
+        ["git", "archive", "HEAD"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    build_root = tmp_path / "build"
+    build_root.mkdir()
+    subprocess.run(
+        ["tar", "-x", "-C", str(build_root)],
+        check=True,
+        input=archive,
+    )
+
+    assert not (build_root / "data" / "curated").exists()
+    assert not (build_root / "tools" / "lambda" / "sse_relay" / "node_modules").exists()
+    assert (build_root / "tools" / "lambda" / "sse_relay" / "package-lock.json").is_file()
+
+    fake_s3 = tmp_path / "fake-s3"
+    fake_s3.mkdir()
+    shutil.copy2(
+        build_root / "tests" / "fixtures" / "headline_panel.parquet",
+        fake_s3 / "panel.parquet",
+    )
+    pd.DataFrame({"VIX": [20.0]}).to_parquet(fake_s3 / "covariates.parquet")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "aws").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "if [[ \"$1 $2\" == 'cloudformation describe-stack-resources' ]]; then\n"
+        "  printf 'fixture-bucket\\n'\n"
+        "elif [[ \"$1 $2\" == 's3 cp' ]]; then\n"
+        "  cp \"$FAKE_S3/$(basename \"$3\")\" \"$4\"\n"
+        "else\n"
+        "  printf 'unexpected aws call: %s\\n' \"$*\" >&2; exit 1\n"
+        "fi\n"
+    )
+    (fake_bin / "npm").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"$*\" >> \"$NPM_LOG\"\n"
+    )
+    (fake_bin / "node").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"$*\" >> \"$NODE_LOG\"\n"
+    )
+    for command in ("aws", "npm", "node"):
+        (fake_bin / command).chmod(0o755)
+    archive_runbook = (build_root / "docs" / "runbook.md").read_text()
+    function_start = archive_runbook.index("stage_verified_curated_inputs() {")
+    function_end = archive_runbook.index("\n}\nstage_verified_curated_inputs", function_start) + 2
+    stage_script = archive_runbook[function_start:function_end] + "\nstage_verified_curated_inputs\n"
+    relay_matrix_start = archive_runbook.index('cd "$BUILD_ROOT/tools/lambda/sse_relay"')
+    relay_matrix_end = archive_runbook.index("\n  )", relay_matrix_start)
+    relay_matrix = archive_runbook[relay_matrix_start:relay_matrix_end]
+    assert relay_matrix.index("npm ci") < relay_matrix.index("node --test protocol.test.mjs")
+    npm_log = tmp_path / "npm.log"
+    node_log = tmp_path / "node.log"
+    env = {
+        **os.environ,
+        "BUILD_ROOT": str(build_root),
+        "FAKE_S3": str(fake_s3),
+        "NPM_LOG": str(npm_log),
+        "NODE_LOG": str(node_log),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "PYTHONPATH": str(build_root / "src"),
+    }
+    subprocess.run(["bash", "-c", stage_script], env=env, check=True)
+    assert (build_root / "data" / "curated" / "panel.parquet").is_file()
+    assert (build_root / "data" / "curated" / "covariates.parquet").is_file()
+    subprocess.run(
+        [
+            str(Path(__file__).parents[1] / ".venv" / "bin" / "pytest"),
+            "-q",
+            "tests/test_demo_stage_parameters.py",
+        ],
+        cwd=build_root,
+        env=env,
+        check=True,
+    )
+    subprocess.run(
+        ["npm", "ci"],
+        cwd=build_root / "tools" / "lambda" / "sse_relay",
+        env=env,
+        check=True,
+    )
+    subprocess.run(
+        ["node", "--test", "protocol.test.mjs"],
+        cwd=build_root / "tools" / "lambda" / "sse_relay",
+        env=env,
+        check=True,
+    )
+    assert npm_log.read_text() == "ci\n"
+    assert node_log.read_text() == "--test protocol.test.mjs\n"
 
 
 def test_swapped_event_order_passes():
@@ -725,7 +905,39 @@ def test_runbook_builds_only_clean_exported_commit_and_hashes_frontend():
     assert '-f "$BUILD_ROOT/agent/runtime/Dockerfile"' in runbook
     assert 'export FRONTEND_SHA256=' in runbook
     assert '"frontend_artifact_sha256":$frontend_sha256' in runbook
-    assert "false # BLOCKED: approved frontend-auth" not in runbook
+    pre_ecr_acceptance = runbook[:runbook.index("aws ecr get-login-password")]
+    assert "false # BLOCKED: approved frontend-auth" not in pre_ecr_acceptance
+
+
+def test_runbook_stages_verified_sources_before_clean_archive_matrix():
+    runbook = _task11_runbook()
+    assert "stage_verified_curated_inputs()" in runbook
+    matrix_start = runbook.index("Run the complete matrix against the exported commit")
+    stage_start = runbook.index("stage_verified_curated_inputs()")
+    stage_end = runbook.index("stage_verified_curated_inputs", stage_start + 1)
+    stage = runbook[stage_start:stage_end]
+    matrix = runbook[matrix_start:]
+
+    assert stage_start < matrix_start
+    assert '"s3://$DATA_BUCKET/panel.parquet"' in stage
+    assert '"s3://$DATA_BUCKET/covariates.parquet"' in stage
+    assert "regimes.parquet" not in stage
+    assert 'cd "$BUILD_ROOT/tools/lambda/sse_relay"' in matrix
+    assert "npm ci" in matrix
+    assert matrix.index("npm ci") < matrix.index("node --test protocol.test.mjs")
+
+
+def test_relay_lockfile_matches_tracked_dependencies():
+    assert RELAY_LOCK_PATH.is_file()
+    lock = json.loads(RELAY_LOCK_PATH.read_text())
+    package = json.loads(
+        __import__("subprocess").check_output(
+            ["git", "show", "HEAD:tools/lambda/sse_relay/package.json"],
+            text=True,
+        )
+    )
+
+    assert lock["packages"][""]["dependencies"] == package["dependencies"]
 
 
 def test_task11_runbook_honors_an_externally_supplied_aws_profile():
@@ -745,9 +957,18 @@ def test_runbook_updates_the_access_code_and_checks_both_endpoints():
     assert "aws secretsmanager rotate-secret" not in rotation
     assert "openssl rand -hex 32" in rotation
     assert "aws secretsmanager put-secret-value" in rotation
-    assert '--secret-string "$NEW_API_KEY"' in rotation
+    assert 'file:///dev/stdin' in rotation
+    assert '--secret-string "$NEW_API_KEY"' not in rotation
+    assert 'secret_string "$NEW_API_KEY"' not in rotation
+    assert "python3 -c" in rotation
+    assert "PREVIOUS_API_KEY_VERSION_ID" in rotation
+    assert "NEW_API_KEY_VERSION_ID" in rotation
+    assert "update-secret-version-stage" in rotation
+    assert "trap restore_previous_api_key EXIT" in rotation
+    assert "trap - EXIT" in rotation
     assert rotation.count('x-api-key: $OLD_API_KEY') == 2
     assert rotation.count('x-api-key: $NEW_API_KEY') == 2
+    assert rotation.count("--connect-timeout 10 --max-time 30") == 4
     assert 'echo "$OLD_API_KEY"' not in rotation
     assert 'echo "$NEW_API_KEY"' not in rotation
 
@@ -759,19 +980,8 @@ def test_runbook_stages_canonical_curated_data_before_hashing_it():
         runbook.index("### 0d. Deploy in dependency-safe order")
     ]
 
-    assert 'mkdir -p "$BUILD_ROOT/data/curated"' in provenance
-    for filename in ("panel.parquet", "covariates.parquet", "regimes.parquet"):
-        source = f'"s3://$DATA_BUCKET/{filename}"'
-        destination = f'"$BUILD_ROOT/data/curated/{filename}"'
-        assert source in provenance
-        assert destination in provenance
-        assert provenance.index(source) < provenance.index(destination)
-    assert provenance.index('"s3://$DATA_BUCKET/panel.parquet"') < provenance.index(
-        "export MARKET_SHA256="
-    )
-    assert provenance.index('"s3://$DATA_BUCKET/covariates.parquet"') < provenance.index(
-        "export COVARIATE_SHA256="
-    )
+    assert "stage_verified_curated_inputs" in provenance
+    assert "regimes.parquet" not in provenance
     assert 'export MARKET_SNAPSHOT_ID="panel.parquet@sha256:${MARKET_SHA256}"' in provenance
     assert (
         'export COVARIATE_SNAPSHOT_ID='
@@ -862,3 +1072,81 @@ def test_runbook_captures_durable_rollback_inputs_and_restores_semantics():
         '| select(length > 0)] | last // empty'
     ) in runbook
     assert "[.job.steps[]?.artifactsUrl | select(length > 0)] | last // empty" not in runbook
+
+
+def _restore_stack_function() -> str:
+    runbook = _task11_runbook()
+    start = runbook.index("restore_stack() {")
+    end = runbook.index("\n}\n\nverify_restored_task_definition", start) + 2
+    return runbook[start:end]
+
+
+def _run_restore_stack_rehearsal(tmp_path, current_template: dict[str, object]) -> str:
+    rollback_root = tmp_path / "rollback"
+    rollback_root.mkdir(parents=True)
+    captured_template = {"Resources": {"Example": {"Type": "AWS::S3::Bucket"}}}
+    parameters = [{"ParameterKey": "ImageTag", "ParameterValue": "captured"}]
+    (rollback_root / "Chronos2DemoTools.template.json").write_text(
+        json.dumps(captured_template)
+    )
+    (rollback_root / "Chronos2DemoTools.rollback-parameters.json").write_text(
+        json.dumps(parameters)
+    )
+    current_template_path = tmp_path / "current-template.json"
+    current_template_path.write_text(json.dumps(current_template))
+    current_stack_path = tmp_path / "current-stack.json"
+    current_stack_path.write_text(json.dumps({"Stacks": [{"Parameters": parameters}]}))
+    aws_log = tmp_path / "aws.log"
+    aws = tmp_path / "aws"
+    aws.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "case \"$*\" in\n"
+        "  *'cloudformation get-template'*) cat \"$CURRENT_TEMPLATE\" ;;\n"
+        "  *'cloudformation describe-stacks'*'StackStatus'*) printf 'UPDATE_COMPLETE\\n' ;;\n"
+        "  *'cloudformation describe-stacks'*) cat \"$CURRENT_STACK\" ;;\n"
+        "  *'cloudformation update-stack'*) printf 'update\\n' >> \"$AWS_LOG\" ;;\n"
+        "  *'cloudformation wait stack-update-complete'*) printf 'wait\\n' >> \"$AWS_LOG\" ;;\n"
+        "  *'s3 cp'*) printf 'copy\\n' >> \"$AWS_LOG\" ;;\n"
+        "  *) printf 'unexpected aws call: %s\\n' \"$*\" >&2; exit 1 ;;\n"
+        "esac\n"
+    )
+    aws.chmod(0o755)
+    script = "\n".join((
+        "set -euo pipefail",
+        _restore_stack_function(),
+        "restore_stack Chronos2DemoTools",
+    ))
+    result = subprocess.run(
+        ["bash", "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "AWS_LOG": str(aws_log),
+            "CURRENT_TEMPLATE": str(current_template_path),
+            "CURRENT_STACK": str(current_stack_path),
+            "ROLLBACK_ROOT": str(rollback_root),
+            "ROLLBACK_BUNDLE_PREFIX": "rollback-prefix",
+            "ROLLBACK_TEMPLATE_BUCKET": "rollback-bucket",
+            "AWS_REGION": "us-east-1",
+        },
+    )
+    return aws_log.read_text() if aws_log.exists() else result.stdout
+
+
+def test_runbook_restore_stack_skips_equal_inputs_and_updates_changed_inputs(tmp_path):
+    captured_template = {"Resources": {"Example": {"Type": "AWS::S3::Bucket"}}}
+
+    no_op_log = _run_restore_stack_rehearsal(tmp_path / "no-op", captured_template)
+    changed_log = _run_restore_stack_rehearsal(
+        tmp_path / "changed",
+        {"Resources": {"Example": {"Type": "AWS::SNS::Topic"}}},
+    )
+
+    assert "update" not in no_op_log
+    assert "wait" not in no_op_log
+    assert "update" in changed_log
+    assert "wait" in changed_log

@@ -4,10 +4,9 @@ from __future__ import annotations
 import argparse
 from decimal import Decimal
 import json
+import multiprocessing
 from pathlib import Path
-import queue
 import re
-import threading
 import time
 from urllib.parse import urlsplit
 import uuid
@@ -85,6 +84,50 @@ class SseCollectionDeadlineExceeded(TimeoutError):
     """Raised when an SSE stream exceeds its total collection deadline."""
 
 
+def _read_sse_lines(
+    stream_url: str,
+    api_key: str,
+    prompt: str,
+    session_id: str,
+    timeout_seconds: float,
+    sender,
+) -> None:
+    response = None
+    try:
+        response = requests.get(
+            stream_url,
+            params={"session_id": session_id, "prompt": prompt},
+            headers={"x-api-key": api_key},
+            stream=True,
+            timeout=(min(10, timeout_seconds), timeout_seconds),
+        )
+        response.raise_for_status()
+        for line in response.iter_lines(decode_unicode=True):
+            sender.send(("line", line))
+        sender.send(("end", None))
+    except requests.exceptions.RequestException as exc:
+        sender.send(("request_error", exc.__class__.__name__, str(exc)))
+    except Exception as exc:
+        sender.send(("error", exc.__class__.__name__, str(exc)))
+    finally:
+        close = getattr(response, "close", None)
+        if close is not None:
+            close()
+        sender.close()
+
+
+def _stop_sse_reader(reader) -> None:
+    reader.join(timeout=0.1)
+    if reader.is_alive():
+        reader.terminate()
+    reader.join(timeout=1)
+    if reader.is_alive():
+        reader.kill()
+        reader.join(timeout=1)
+    if reader.is_alive():
+        raise RuntimeError("SSE reader process did not terminate")
+
+
 def collect_events(
     stream_url: str,
     api_key: str,
@@ -108,57 +151,46 @@ def collect_events(
             f"{total_deadline_seconds} seconds"
         )
 
-    response = None
-    stop_reader = threading.Event()
-    try:
-        response = requests.get(
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    reader = context.Process(
+        target=_read_sse_lines,
+        args=(
             stream_url,
-            params={"session_id": str(uuid.uuid4()), "prompt": prompt},
-            headers={"x-api-key": api_key},
-            stream=True,
-            timeout=(min(10, remaining_seconds), remaining_seconds),
-        )
-        response.raise_for_status()
-        received = queue.Queue(maxsize=1)
-
-        def publish(kind: str, value: object) -> None:
-            while not stop_reader.is_set():
-                try:
-                    received.put((kind, value), timeout=0.1)
-                    return
-                except queue.Full:
-                    continue
-
-        def read_lines() -> None:
-            try:
-                for line in response.iter_lines(decode_unicode=True):
-                    if stop_reader.is_set():
-                        return
-                    publish("line", line)
-            except Exception as exc:
-                publish("exception", exc)
-            else:
-                publish("end", None)
-
-        threading.Thread(target=read_lines, daemon=True).start()
+            api_key,
+            prompt,
+            str(uuid.uuid4()),
+            remaining_seconds,
+            sender,
+        ),
+    )
+    try:
+        reader.start()
+        sender.close()
         events: list[dict[str, object]] = []
         data_lines: list[str] = []
         while True:
             remaining_seconds = total_deadline_seconds - (monotonic() - started_at)
             if remaining_seconds <= 0:
                 raise deadline_exceeded()
-            try:
-                kind, value = received.get(timeout=remaining_seconds)
-            except queue.Empty:
+            if not receiver.poll(remaining_seconds):
                 raise deadline_exceeded()
+            try:
+                message = receiver.recv()
+            except EOFError:
+                raise RuntimeError("SSE reader exited without a terminal event")
+            kind, *values = message
             elapsed_seconds = monotonic() - started_at
             if elapsed_seconds >= total_deadline_seconds:
                 raise deadline_exceeded()
-            if kind == "exception":
-                raise value
+            if kind == "request_error":
+                exception = getattr(requests.exceptions, values[0])
+                raise exception(values[1])
+            if kind == "error":
+                raise RuntimeError(f"SSE reader {values[0]}: {values[1]}")
             if kind == "end":
                 break
-            line = value
+            line = values[0]
             if line == "":
                 if data_lines:
                     events.append(json.loads("\n".join(data_lines)))
@@ -181,10 +213,8 @@ def collect_events(
             raise deadline_exceeded() from exc
         raise
     finally:
-        stop_reader.set()
-        close = getattr(response, "close", None)
-        if close is not None:
-            close()
+        receiver.close()
+        _stop_sse_reader(reader)
 
 
 def _cent(value: object) -> Decimal:
