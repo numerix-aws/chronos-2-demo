@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
-import pandas as pd
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 REQUIRED_COVARIATES = ("VIX", "MOVE", "WTI")
@@ -36,6 +37,8 @@ def scenario_role(source: str) -> str:
 
 
 def _normalized(frame: pd.DataFrame, name: str) -> pd.DataFrame:
+    import pandas as pd
+
     result = frame.copy()
     result.index = pd.DatetimeIndex(pd.to_datetime(result.index)).normalize()
     if result.index.has_duplicates:
@@ -50,6 +53,8 @@ def aligned_run_inputs(
     as_of_date: str,
     lookback_days: int,
 ) -> AlignedRunInputs:
+    import pandas as pd
+
     if lookback_days <= 0:
         raise ValueError("lookback_days must be positive")
     panel = _normalized(panel, "panel")

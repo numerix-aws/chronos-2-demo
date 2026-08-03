@@ -1,3 +1,6 @@
+from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +25,37 @@ PROVENANCE = {
     "tool_bundle_version": "git:test",
     "strands_version": "1.30.0",
 }
+
+
+def test_launcher_handler_imports_without_pandas():
+    repo_root = Path(__file__).resolve().parents[2]
+    lambda_dir = repo_root / "tools" / "lambda"
+    script = f"""
+import builtins
+import sys
+import types
+
+lambda_pkg = types.ModuleType("tools.lambda_")
+lambda_pkg.__path__ = [{str(lambda_dir)!r}]
+sys.modules["tools.lambda_"] = lambda_pkg
+
+real_import = builtins.__import__
+def block_pandas(name, *args, **kwargs):
+    if name == "pandas" or name.startswith("pandas."):
+        raise ModuleNotFoundError("pandas is not installed in the light layer")
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = block_pandas
+
+from tools.lambda_.run_baseline_mc import handler
+assert callable(handler.handler)
+"""
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _run_spec(execution_id="run-1"):
