@@ -76,6 +76,8 @@ function relayDependencies(overrides = {}) {
   let intervalCallback = null;
   const state = {
     cleared: [],
+    responseMetadata: [],
+    writesBeforeMetadata: [],
     get intervalCallback() {
       return intervalCallback;
     },
@@ -92,6 +94,12 @@ function relayDependencies(overrides = {}) {
     },
     clearIntervalFn(handle) {
       state.cleared.push(handle);
+    },
+    createResponseStream(stream, metadata) {
+      state.writesBeforeMetadata.push(stream.writes.length);
+      state.responseMetadata.push(metadata);
+      stream.setContentType('application/vnd.awslambda.http-integration-response');
+      return stream;
     },
     ...overrides,
   };
@@ -430,6 +438,44 @@ test('awaits each forwarded write before emitting the next frame', async () => {
   assert.equal(writes.length, 2);
 });
 
+test('relay sets HTTP 403 metadata before writing an unauthorized response', async () => {
+  const { handleRelayRequest } = await loadProtocol();
+  const stream = new FakeResponseStream();
+  const { dependencies, state } = relayDependencies();
+
+  await handleRelayRequest(
+    { ...validRequest(), headers: { 'x-api-key': 'stale-key' } },
+    stream,
+    dependencies,
+  );
+
+  assert.deepEqual(state.responseMetadata, [{
+    statusCode: 403,
+    headers: { 'Content-Type': 'text/plain' },
+  }]);
+  assert.deepEqual(state.writesBeforeMetadata, [0]);
+  assert.equal(stream.writes.join(''), 'unauthorized');
+});
+
+test('relay sets HTTP 200 SSE metadata before success streaming', async () => {
+  const { handleRelayRequest } = await loadProtocol();
+  const stream = new FakeResponseStream();
+  const { dependencies, state } = relayDependencies();
+
+  await handleRelayRequest(validRequest(), stream, dependencies);
+
+  assert.deepEqual(state.responseMetadata, [{
+    statusCode: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  }]);
+  assert.deepEqual(state.writesBeforeMetadata, [0]);
+  assert.deepEqual(stream.writes, [
+    ': connected\n\n',
+    'data: {"type":"text","text":"ok"}\n\n',
+    'data: {"type":"done"}\n\n',
+  ]);
+});
+
 test('relay cleanup covers secret, authorization, and setup failures', async () => {
   const { handleRelayRequest } = await loadProtocol();
   const cases = [
@@ -437,14 +483,14 @@ test('relay cleanup covers secret, authorization, and setup failures', async () 
       stream: new FakeResponseStream(),
       event: validRequest(),
       overrides: { getApiKey: async () => { throw new Error('secret failed'); } },
-      expectedType: 'text/plain',
+      expectedType: 'application/vnd.awslambda.http-integration-response',
       expectedWrite: 'error: secret failed',
     },
     {
       stream: new FakeResponseStream(),
       event: { ...validRequest(), headers: { 'x-api-key': 'wrong' } },
       overrides: {},
-      expectedType: 'text/plain',
+      expectedType: 'application/vnd.awslambda.http-integration-response',
       expectedWrite: 'unauthorized',
     },
     {

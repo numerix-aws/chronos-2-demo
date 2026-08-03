@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { parseSseFrame, parseSseStream } from '../../src/api/stream';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { parseSseFrame, parseSseStream, streamAgent } from '../../src/api/stream';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('parseSseFrame', () => {
   it('extracts a single-line data event', () => {
@@ -144,5 +148,18 @@ describe('parseSseStream', () => {
       },
       { type: 'done' },
     ]);
+  });
+});
+
+describe('streamAgent', () => {
+  it.each([401, 403])('throws an HTTP %i response for the caller to handle', async (status) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('expired access code', { status })),
+    );
+
+    const iterator = streamAgent('https://stream.example.com', 'stale-key', 'session-1', 'run');
+
+    await expect(iterator.next()).rejects.toThrow(`${status}: expired access code`);
   });
 });

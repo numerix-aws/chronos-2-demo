@@ -227,7 +227,11 @@ export async function* streamAgent(
 ): AsyncGenerator<StreamEvent> {
   const url = `${streamUrl}?session_id=${encodeURIComponent(sessionId)}&prompt=${encodeURIComponent(prompt)}`;
   const resp = await fetch(url, { headers: { 'x-api-key': apiKey } });
-  if (!resp.ok || !resp.body) {
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    throw new Error(`${resp.status}: ${body}`);
+  }
+  if (!resp.body) {
     yield { type: 'error', message: `${resp.status}` };
     return;
   }

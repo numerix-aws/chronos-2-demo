@@ -230,10 +230,22 @@ function errorMessage(error) {
 }
 
 export async function handleRelayRequest(event, responseStream, dependencies) {
-  const writer = createAwaitableWriter(responseStream);
+  let stream = responseStream;
+  let writer = null;
+  let responsePrepared = false;
   let heartbeat = null;
   let sseStarted = false;
   let terminalQueued = false;
+
+  function prepareResponse(statusCode, contentType) {
+    if (responsePrepared) return;
+    stream = dependencies.createResponseStream(responseStream, {
+      statusCode,
+      headers: { 'Content-Type': contentType },
+    });
+    writer = createAwaitableWriter(stream);
+    responsePrepared = true;
+  }
 
   function stopHeartbeat() {
     if (heartbeat === null) return;
@@ -260,7 +272,7 @@ export async function handleRelayRequest(event, responseStream, dependencies) {
   try {
     const key = await dependencies.getApiKey();
     if (!isAuthorized(event.headers || {}, key)) {
-      responseStream.setContentType('text/plain');
+      prepareResponse(403, 'text/plain');
       await writer.write('unauthorized');
       return;
     }
@@ -269,12 +281,12 @@ export async function handleRelayRequest(event, responseStream, dependencies) {
     const sessionId = query.session_id;
     const prompt = query.prompt;
     if (!sessionId || !prompt) {
-      responseStream.setContentType('text/plain');
+      prepareResponse(400, 'text/plain');
       await writer.write('session_id and prompt required');
       return;
     }
 
-    responseStream.setContentType('text/event-stream');
+    prepareResponse(200, 'text/event-stream');
     sseStarted = true;
     await writeRelay(': connected\n\n');
     heartbeat = dependencies.setIntervalFn(() => {
@@ -294,7 +306,7 @@ export async function handleRelayRequest(event, responseStream, dependencies) {
           message: errorMessage(error),
         }));
       } else {
-        responseStream.setContentType('text/plain');
+        if (!responsePrepared) prepareResponse(500, 'text/plain');
         await writer.write(`error: ${errorMessage(error)}`);
       }
     } catch {
@@ -303,10 +315,10 @@ export async function handleRelayRequest(event, responseStream, dependencies) {
   } finally {
     stopHeartbeat();
     try {
-      await writer.flush();
+      if (writer !== null) await writer.flush();
     } catch {
       // A closed stream cannot accept a terminal frame, but must still end.
     }
-    responseStream.end();
+    stream.end();
   }
 }

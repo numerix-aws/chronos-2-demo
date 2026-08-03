@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -50,6 +50,10 @@ describe('App', () => {
     listedMessages = [];
     listMessagesMock.mockReset();
     listMessagesMock.mockImplementation(() => Promise.resolve({ messages: listedMessages }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('does not create a session until a browser supplies a nonblank demo access code', async () => {
@@ -163,22 +167,29 @@ describe('App', () => {
     expect(screen.queryByText('key-1')).not.toBeInTheDocument();
   });
 
-  it('clears an unauthorized stream session and resets the access form', async () => {
-    async function* unauthorizedStream() {
-      throw new Error('403: expired key');
-    }
-    streamAgentMock.mockReturnValue(unauthorizedStream());
+  it.each([401, 403])(
+    'clears an HTTP %i stream session and resets the access form',
+    async (status) => {
+      const { streamAgent } = await vi.importActual<typeof import('../src/api/stream')>(
+        '../src/api/stream',
+      );
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(new Response('expired key', { status })),
+      );
+      streamAgentMock.mockImplementation(streamAgent);
 
-    render(<App />);
-    await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
-    await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
+      render(<App />);
+      await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
+      await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
 
-    expect(await screen.findByText(/Demo access has expired/i)).toBeInTheDocument();
-    expect(clearSessionMock).toHaveBeenCalledOnce();
-    expect(screen.getByLabelText(/demo access code/i)).toHaveAttribute('type', 'password');
-    expect(screen.getByLabelText(/message/i)).toBeDisabled();
-    expect(screen.queryByText('key-1')).not.toBeInTheDocument();
-  });
+      expect(await screen.findByText(/Demo access has expired/i)).toBeInTheDocument();
+      expect(clearSessionMock).toHaveBeenCalledOnce();
+      expect(screen.getByLabelText(/demo access code/i)).toHaveAttribute('type', 'password');
+      expect(screen.getByLabelText(/message/i)).toBeDisabled();
+      expect(screen.queryByText('key-1')).not.toBeInTheDocument();
+    },
+  );
 
   it('renders the Numerix × Chronos-2 app shell', () => {
     render(<App />);

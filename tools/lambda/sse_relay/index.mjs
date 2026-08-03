@@ -24,6 +24,9 @@ export const getApiKey = createGetApiKey();
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
   await handleRelayRequest(event, responseStream, {
     getApiKey,
+    createResponseStream(stream, metadata) {
+      return awslambda.HttpResponseStream.from(stream, metadata);
+    },
     async invokeAgent({ sessionId, prompt }) {
       const command = new InvokeAgentRuntimeCommand({
         agentRuntimeArn: process.env.AGENT_RUNTIME_ARN,
