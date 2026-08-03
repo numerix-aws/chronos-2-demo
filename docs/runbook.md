@@ -676,20 +676,11 @@ trap restore_previous_api_key EXIT
 
 CANDIDATE_WRITE_STARTED=1
 printf '%s' "$NEW_API_KEY" \
-  | API_KEY_SECRET_ARN="$API_KEY_SECRET_ARN" \
-    NEW_API_KEY_VERSION_ID="$NEW_API_KEY_VERSION_ID" \
-    NEW_API_KEY_STAGE="$NEW_API_KEY_STAGE" python3 -c '
-import json
-import os
-import sys
-print(json.dumps({
-    "SecretId": os.environ["API_KEY_SECRET_ARN"],
-    "SecretString": sys.stdin.read(),
-    "ClientRequestToken": os.environ["NEW_API_KEY_VERSION_ID"],
-    "VersionStages": [os.environ["NEW_API_KEY_STAGE"]],
-}))
-' \
-  | aws secretsmanager put-secret-value --cli-input-json file:///dev/stdin \
+  | aws secretsmanager put-secret-value \
+      --secret-id "$API_KEY_SECRET_ARN" \
+      --secret-string file:///dev/stdin \
+      --client-request-token "$NEW_API_KEY_VERSION_ID" \
+      --version-stages "$NEW_API_KEY_STAGE" \
       >/dev/null
 PROMOTION_STARTED=1
 aws secretsmanager update-secret-version-stage \
@@ -752,7 +743,7 @@ viewer headers including `x-api-key`.
 ```bash
 SSE_FUNCTION=$(aws cloudformation describe-stack-resources \
   --stack-name Chronos2DemoApi \
-  --query "StackResources[?ResourceType=='AWS::Lambda::Function' && contains(LogicalResourceId,'SseFn')].PhysicalResourceId | [0]" \
+  --query "StackResources[?ResourceType=='AWS::Lambda::Function' && contains(LogicalResourceId,'SseRelayFn')].PhysicalResourceId | [0]" \
   --output text)
 DISTRIBUTION_ID=$(aws cloudformation describe-stack-resources \
   --stack-name Chronos2DemoApi \

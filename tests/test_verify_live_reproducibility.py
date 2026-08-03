@@ -976,14 +976,14 @@ def test_runbook_updates_the_access_code_and_checks_both_endpoints():
     assert "aws secretsmanager rotate-secret" not in rotation
     assert "openssl rand -hex 32" in rotation
     assert "aws secretsmanager put-secret-value" in rotation
-    assert 'file:///dev/stdin' in rotation
+    assert '--secret-string file:///dev/stdin' in rotation
+    assert '--client-request-token "$NEW_API_KEY_VERSION_ID"' in rotation
+    assert '--version-stages "$NEW_API_KEY_STAGE"' in rotation
     assert '--secret-string "$NEW_API_KEY"' not in rotation
     assert 'secret_string "$NEW_API_KEY"' not in rotation
-    assert "python3 -c" in rotation
+    assert '"SecretString":' not in rotation
     assert "PREVIOUS_API_KEY_VERSION_ID" in rotation
     assert "NEW_API_KEY_VERSION_ID" in rotation
-    assert "ClientRequestToken" in rotation
-    assert "VersionStages" in rotation
     assert "TASK11_CANDIDATE" in rotation
     assert 'NEW_API_KEY_STAGE="TASK11_CANDIDATE"' in rotation
     assert "TASK11_CANDIDATE_${" not in rotation
@@ -1047,8 +1047,10 @@ def _run_rotation_rehearsal(tmp_path, failure_mode: str | None) -> tuple[subproc
         "    if [[ \"$*\" == *'VersionId'* ]]; then cat \"$CURRENT_VERSION\"; else printf 'old-secret\\n'; fi ;;\n"
         "  'secretsmanager put-secret-value')\n"
         "    cat > \"$PUT_INPUT\"\n"
-        "    grep -q '\"ClientRequestToken\": \"new-version\"' \"$PUT_INPUT\"\n"
-        "    grep -q '\"VersionStages\": \\[\"TASK11_CANDIDATE\"\\]' \"$PUT_INPUT\"\n"
+        "    grep -qx 'new-secret' \"$PUT_INPUT\"\n"
+        "    [[ \"$*\" == *'--secret-string file:///dev/stdin'* ]]\n"
+        "    [[ \"$*\" == *'--client-request-token new-version'* ]]\n"
+        "    [[ \"$*\" == *'--version-stages TASK11_CANDIDATE'* ]]\n"
         "    printf 'new-version\\n' > \"$CANDIDATE_STAGE\"\n"
         "    if [[ \"$FAILURE_MODE\" == candidate-response-lost ]]; then exit 1; fi ;;\n"
         "  'secretsmanager update-secret-version-stage')\n"
@@ -1241,6 +1243,8 @@ def test_runbook_agentcore_and_amplify_waiters_are_bounded_and_fail_closed():
 def test_runbook_structurally_asserts_edge_and_executes_calibration_gate():
     runbook = _task11_runbook()
 
+    assert "contains(LogicalResourceId,'SseRelayFn')" in runbook
+    assert "contains(LogicalResourceId,'SseFn')" not in runbook
     for required in (
         "aws lambda get-function-url-config",
         'test "$(jq -r .AuthType',

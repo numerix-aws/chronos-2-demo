@@ -11,7 +11,7 @@ import pandas as pd
 from chronos2_demo import config
 from chronos2_demo.data import fetch
 from chronos2_demo.data.align import align_panel
-from chronos2_demo.data.covariates import load_covariates
+from chronos2_demo.data.covariates import align_covariates_to_panel, load_covariates
 
 
 FRED_RATE_IDS = {
@@ -64,6 +64,7 @@ def main() -> int:
     print(f"wrote panel: {panel.shape} → {config.DATA_CURATED / 'panel.parquet'}")
 
     cov = load_covariates(args.fred_api_key)
+    cov = align_covariates_to_panel(cov, panel.index)
     cov.to_parquet(config.DATA_CURATED / "covariates.parquet")
     print(f"wrote covariates: {cov.shape}")
 
