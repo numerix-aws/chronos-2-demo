@@ -638,40 +638,48 @@ test -n "$PREVIOUS_API_KEY_VERSION_ID"
 NEW_API_KEY=$(openssl rand -hex 32)
 test -n "$NEW_API_KEY"
 test "$NEW_API_KEY" != "$OLD_API_KEY"
-NEW_API_KEY_VERSION_ID=
+NEW_API_KEY_VERSION_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+NEW_API_KEY_STAGE="TASK11_CANDIDATE_${NEW_API_KEY_VERSION_ID}"
+PROMOTION_STARTED=0
 
 restore_previous_api_key() {
   local exit_status=$?
-  local current_api_key_version_id=
   trap - EXIT
-  if ! current_api_key_version_id=$(aws secretsmanager get-secret-value \
-    --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
-    --query VersionId --output text); then
-    printf '%s\n' "could not read AWSCURRENT during API key cleanup" >&2
-  elif test -n "$current_api_key_version_id" \
-    && test "$current_api_key_version_id" != "$PREVIOUS_API_KEY_VERSION_ID"; then
+  if test "$PROMOTION_STARTED" = 1; then
     if ! aws secretsmanager update-secret-version-stage \
       --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
       --move-to-version-id "$PREVIOUS_API_KEY_VERSION_ID" \
-      --remove-from-version-id "$current_api_key_version_id" >/dev/null; then
-      printf '%s\n' "could not restore the previous API key version" >&2
+      --remove-from-version-id "$NEW_API_KEY_VERSION_ID" >/dev/null; then
+      printf '%s\n' "API key cleanup failed; AWSCURRENT may not be restored" >&2
+      exit 1
     fi
   fi
   exit "$exit_status"
 }
 trap restore_previous_api_key EXIT
 
-NEW_API_KEY_VERSION_ID=$(printf '%s' "$NEW_API_KEY" \
-  | API_KEY_SECRET_ARN="$API_KEY_SECRET_ARN" python3 -c '
+printf '%s' "$NEW_API_KEY" \
+  | API_KEY_SECRET_ARN="$API_KEY_SECRET_ARN" \
+    NEW_API_KEY_VERSION_ID="$NEW_API_KEY_VERSION_ID" \
+    NEW_API_KEY_STAGE="$NEW_API_KEY_STAGE" python3 -c '
 import json
 import os
 import sys
-print(json.dumps({"SecretId": os.environ["API_KEY_SECRET_ARN"], "SecretString": sys.stdin.read()}))
+print(json.dumps({
+    "SecretId": os.environ["API_KEY_SECRET_ARN"],
+    "SecretString": sys.stdin.read(),
+    "ClientRequestToken": os.environ["NEW_API_KEY_VERSION_ID"],
+    "VersionStages": [os.environ["NEW_API_KEY_STAGE"]],
+}))
 ' \
   | aws secretsmanager put-secret-value --cli-input-json file:///dev/stdin \
-      --query VersionId --output text)
-test -n "$NEW_API_KEY_VERSION_ID"
-test "$NEW_API_KEY_VERSION_ID" != "$PREVIOUS_API_KEY_VERSION_ID"
+      >/dev/null
+PROMOTION_STARTED=1
+aws secretsmanager update-secret-version-stage \
+  --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
+  --move-to-version-id "$NEW_API_KEY_VERSION_ID" \
+  --remove-from-version-id "$PREVIOUS_API_KEY_VERSION_ID" >/dev/null
+PROMOTION_STARTED=0
 
 expect_rejected() {
   case "$1" in

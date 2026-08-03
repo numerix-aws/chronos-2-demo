@@ -975,6 +975,9 @@ def test_runbook_updates_the_access_code_and_checks_both_endpoints():
     assert "python3 -c" in rotation
     assert "PREVIOUS_API_KEY_VERSION_ID" in rotation
     assert "NEW_API_KEY_VERSION_ID" in rotation
+    assert "ClientRequestToken" in rotation
+    assert "VersionStages" in rotation
+    assert "TASK11_CANDIDATE" in rotation
     assert "update-secret-version-stage" in rotation
     assert "trap restore_previous_api_key EXIT" in rotation
     assert "trap - EXIT" in rotation
@@ -984,6 +987,7 @@ def test_runbook_updates_the_access_code_and_checks_both_endpoints():
     assert '-H "x-api-key:' not in rotation
     assert "--config -" in rotation
     assert rotation.count("--connect-timeout 10 --max-time 30") == 4
+    assert "current_api_key_version_id=$(aws secretsmanager get-secret-value" not in rotation
     assert 'echo "$OLD_API_KEY"' not in rotation
     assert 'echo "$NEW_API_KEY"' not in rotation
 
@@ -1013,7 +1017,7 @@ def _rotation_acceptance_script() -> str:
     return rotation[start:rotation.index("\n```", start)]
 
 
-def _run_rotation_rehearsal(tmp_path, put_response_lost: bool) -> tuple[subprocess.CompletedProcess[str], str, str]:
+def _run_rotation_rehearsal(tmp_path, failure_mode: str | None) -> tuple[subprocess.CompletedProcess[str], str, str]:
     state = tmp_path / "current-version"
     state.write_text("old-version\n")
     log = tmp_path / "calls.log"
@@ -1030,12 +1034,20 @@ def _run_rotation_rehearsal(tmp_path, put_response_lost: bool) -> tuple[subproce
         "  'secretsmanager get-secret-value')\n"
         "    if [[ \"$*\" == *'VersionId'* ]]; then cat \"$CURRENT_VERSION\"; else printf 'old-secret\\n'; fi ;;\n"
         "  'secretsmanager put-secret-value')\n"
-        "    cat >/dev/null\n"
-        "    printf 'new-version\\n' > \"$CURRENT_VERSION\"\n"
-        "    if [[ \"$PUT_RESPONSE_LOST\" == 1 ]]; then exit 1; fi\n"
-        "    printf 'new-version\\n' ;;\n"
+        "    cat > \"$PUT_INPUT\"\n"
+        "    grep -q '\"ClientRequestToken\": \"new-version\"' \"$PUT_INPUT\"\n"
+        "    grep -q '\"VersionStages\": \\[\"TASK11_CANDIDATE_new-version\"\\]' \"$PUT_INPUT\"\n"
+        "    if [[ \"$FAILURE_MODE\" == candidate-response-lost ]]; then exit 1; fi ;;\n"
         "  'secretsmanager update-secret-version-stage')\n"
-        "    printf 'old-version\\n' > \"$CURRENT_VERSION\" ;;\n"
+        "    if [[ \"$*\" == *'--move-to-version-id new-version --remove-from-version-id old-version'* ]]; then\n"
+        "      printf 'new-version\\n' > \"$CURRENT_VERSION\"\n"
+        "      if [[ \"$FAILURE_MODE\" == promotion-response-lost || \"$FAILURE_MODE\" == cleanup-fails ]]; then exit 1; fi\n"
+        "    elif [[ \"$*\" == *'--move-to-version-id old-version --remove-from-version-id new-version'* ]]; then\n"
+        "      if [[ \"$FAILURE_MODE\" == cleanup-fails ]]; then exit 1; fi\n"
+        "      printf 'old-version\\n' > \"$CURRENT_VERSION\"\n"
+        "    else\n"
+        "      printf 'unexpected stage update: %s\\n' \"$*\" >&2; exit 1\n"
+        "    fi ;;\n"
         "  *) printf 'unexpected aws call: %s\\n' \"$*\" >&2; exit 1 ;;\n"
         "esac\n"
     )
@@ -1061,7 +1073,11 @@ def _run_rotation_rehearsal(tmp_path, put_response_lost: bool) -> tuple[subproce
         "#!/usr/bin/env bash\n"
         "printf 'new-secret\\n'\n"
     )
-    for command in ("aws", "curl", "openssl"):
+    (fake_bin / "python3").write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$2\" == *'uuid.uuid4'* ]]; then printf 'new-version\\n'; else exec \"$REAL_PYTHON\" \"$@\"; fi\n"
+    )
+    for command in ("aws", "curl", "openssl", "python3"):
         (fake_bin / command).chmod(0o755)
     result = subprocess.run(
         ["bash", "-c", "set -euo pipefail\n" + _rotation_acceptance_script()],
@@ -1074,15 +1090,17 @@ def _run_rotation_rehearsal(tmp_path, put_response_lost: bool) -> tuple[subproce
             "API_KEY_SECRET_ARN": "secret-arn",
             "CURRENT_VERSION": str(state),
             "CALL_LOG": str(log),
+            "PUT_INPUT": str(tmp_path / "put-input.json"),
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "PUT_RESPONSE_LOST": "1" if put_response_lost else "0",
+            "FAILURE_MODE": failure_mode or "",
+            "REAL_PYTHON": sys.executable,
         },
     )
     return result, state.read_text(), log.read_text()
 
 
 def test_rotation_rehearsal_keeps_access_codes_out_of_child_argv(tmp_path):
-    result, current_version, log = _run_rotation_rehearsal(tmp_path, False)
+    result, current_version, log = _run_rotation_rehearsal(tmp_path, None)
 
     assert result.returncode == 0, result.stderr
     assert current_version == "new-version\n"
@@ -1092,11 +1110,37 @@ def test_rotation_rehearsal_keeps_access_codes_out_of_child_argv(tmp_path):
     assert all("--config -" in line for line in curl_argv)
 
 
-def test_rotation_rehearsal_restores_previous_version_after_lost_write_response(tmp_path):
-    result, current_version, log = _run_rotation_rehearsal(tmp_path, True)
+def test_rotation_rehearsal_restores_previous_version_after_lost_promotion_response(tmp_path):
+    result, current_version, log = _run_rotation_rehearsal(
+        tmp_path, "promotion-response-lost"
+    )
 
     assert result.returncode != 0
     assert current_version == "old-version\n"
+    assert (
+        "update-secret-version-stage --secret-id secret-arn --version-stage AWSCURRENT "
+        "--move-to-version-id old-version --remove-from-version-id new-version"
+    ) in log
+
+
+def test_rotation_rehearsal_keeps_awscurrent_after_a_stale_lost_candidate_write(tmp_path):
+    result, current_version, log = _run_rotation_rehearsal(
+        tmp_path, "candidate-response-lost"
+    )
+
+    assert result.returncode != 0
+    assert current_version == "old-version\n"
+    assert "update-secret-version-stage" not in log
+
+
+def test_rotation_rehearsal_fails_closed_when_exact_cleanup_fails(tmp_path):
+    result, current_version, log = _run_rotation_rehearsal(
+        tmp_path, "cleanup-fails"
+    )
+
+    assert result.returncode != 0
+    assert current_version == "new-version\n"
+    assert "API key cleanup failed; AWSCURRENT may not be restored" in result.stderr
     assert (
         "update-secret-version-stage --secret-id secret-arn --version-stage AWSCURRENT "
         "--move-to-version-id old-version --remove-from-version-id new-version"
