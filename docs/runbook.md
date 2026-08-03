@@ -70,7 +70,7 @@ git archive "$GIT_SHA" | tar -x -C "$BUILD_ROOT"
 export BUILD_ARCHIVE_SHA256=$(git archive "$GIT_SHA" | shasum -a 256 | awk '{print $1}')
 test -n "$BUILD_ARCHIVE_SHA256"
 
-export AWS_PROFILE=chronos2-demo
+export AWS_PROFILE="${AWS_PROFILE:-default}"
 export AWS_REGION=us-east-1
 export CDK_DOCKER=finch
 export IMAGE_TAG=$GIT_SHA
@@ -297,7 +297,7 @@ PREVIOUS_AMPLIFY_JOB=$(aws amplify get-job \
 printf '%s\n' "$PREVIOUS_AMPLIFY_JOB" \
   > "$ROLLBACK_ROOT/amplify-job.json"
 PREVIOUS_AMPLIFY_ARTIFACT_URL=$(printf '%s' "$PREVIOUS_AMPLIFY_JOB" \
-  | jq -r '[.job.steps[]?.artifactsUrl | select(length > 0)] | last // empty')
+  | jq -r '[.job.steps[] | select(.stepName=="DEPLOY") | .artifactsUrl | select(length > 0)] | last // empty')
 test -n "$PREVIOUS_AMPLIFY_ARTIFACT_URL"
 PREVIOUS_FRONTEND_ARTIFACT="$ROLLBACK_ROOT/frontend.zip"
 curl --fail --silent --show-error \
@@ -347,10 +347,9 @@ before the first deployment mutation.
 Build the two Fargate images as `linux/amd64` and AgentCore as `linux/arm64`.
 Every Dockerfile and context comes from `BUILD_ROOT`, the committed export.
 The git SHA tag is the deployment identity; never use `latest` as the only
-record. This subsection remains prohibited by the frontend-auth block above.
+record. The frontend access-code gate above must pass before this subsection.
 
 ```bash
-false # BLOCKED: approved frontend-auth implementation is required before AWS mutation.
 aws ecr get-login-password --region "$AWS_REGION" \
   | finch login --username AWS --password-stdin "$ECR"
 
@@ -390,25 +389,34 @@ done
 
 ### 0c. Pin data and deployment provenance
 
-The S3 source objects and local calibration files must be byte-identical.
-Resolve `DATA_BUCKET` and compare hashes before deployment:
+The canonical S3 objects are staged into the clean exported build tree; never
+copy local ignored data into it. Resolve `DATA_BUCKET`, download the required
+curated inputs, and derive the calibration provenance hashes from those bytes:
 
 ```bash
 export DATA_BUCKET=$(aws cloudformation describe-stack-resources \
   --stack-name Chronos2DemoStorage \
   --query "StackResources[?ResourceType=='AWS::S3::Bucket' && contains(LogicalResourceId,'DataBucket')].PhysicalResourceId | [0]" \
   --output text)
+test -n "$DATA_BUCKET"
+test "$DATA_BUCKET" != "None"
+mkdir -p "$BUILD_ROOT/data/curated"
+aws s3 cp "s3://$DATA_BUCKET/panel.parquet" \
+  "$BUILD_ROOT/data/curated/panel.parquet"
+aws s3 cp "s3://$DATA_BUCKET/covariates.parquet" \
+  "$BUILD_ROOT/data/curated/covariates.parquet"
+aws s3 cp "s3://$DATA_BUCKET/regimes.parquet" \
+  "$BUILD_ROOT/data/curated/regimes.parquet"
+test -s "$BUILD_ROOT/data/curated/panel.parquet"
+test -s "$BUILD_ROOT/data/curated/covariates.parquet"
+test -s "$BUILD_ROOT/data/curated/regimes.parquet"
 export MARKET_SHA256=$(shasum -a 256 \
   "$BUILD_ROOT/data/curated/panel.parquet" | awk '{print $1}')
 export COVARIATE_SHA256=$(shasum -a 256 \
   "$BUILD_ROOT/data/curated/covariates.parquet" | awk '{print $1}')
-aws s3 cp "s3://$DATA_BUCKET/panel.parquet" /tmp/chronos2-panel.parquet
-aws s3 cp "s3://$DATA_BUCKET/covariates.parquet" /tmp/chronos2-covariates.parquet
-test "$(shasum -a 256 /tmp/chronos2-panel.parquet | awk '{print $1}')" = "$MARKET_SHA256"
-test "$(shasum -a 256 /tmp/chronos2-covariates.parquet | awk '{print $1}')" = "$COVARIATE_SHA256"
 
-export MARKET_SNAPSHOT_ID="panel.parquet@${GIT_SHA}"
-export COVARIATE_SNAPSHOT_ID="covariates.parquet@${GIT_SHA}"
+export MARKET_SNAPSHOT_ID="panel.parquet@sha256:${MARKET_SHA256}"
+export COVARIATE_SNAPSHOT_ID="covariates.parquet@sha256:${COVARIATE_SHA256}"
 export CHRONOS_MODEL_VERSION=chronos-2
 export BOOK_VERSION=cross_asset_demo_v1
 export BLEND_VERSION=importance_weight_v1
@@ -438,8 +446,8 @@ jq -n \
 The Tools stack owns the shared layers, tool Lambdas, and both Fargate task
 definitions, so their CloudFormation update is one atomic deployment. The Agent
 stack then updates the Gateway schema and AgentCore runtime together with the
-pinned provenance environment. This is an intentional hard stop until the
-frontend-auth decision is implemented and reviewed:
+pinned provenance environment. Run this only after the frontend access-code
+gate above has passed:
 
 ```bash
 cd "$BUILD_ROOT/infra"
@@ -618,20 +626,12 @@ test "$(aws apigateway get-authorizer \
 export OLD_API_KEY=$(aws secretsmanager get-secret-value \
   --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
 test -n "$OLD_API_KEY"
-aws secretsmanager rotate-secret --secret-id "$API_KEY_SECRET_ARN" >/dev/null
-
-NEW_API_KEY=
-for ((ATTEMPT=1; ATTEMPT<=60; ATTEMPT++)); do
-  NEW_API_KEY=$(aws secretsmanager get-secret-value \
-    --secret-id "$API_KEY_SECRET_ARN" --version-stage AWSCURRENT \
-    --query SecretString --output text)
-  if test -n "$NEW_API_KEY" && test "$NEW_API_KEY" != "$OLD_API_KEY"; then
-    break
-  fi
-  sleep 10
-done
+NEW_API_KEY=$(openssl rand -hex 32)
 test -n "$NEW_API_KEY"
 test "$NEW_API_KEY" != "$OLD_API_KEY"
+aws secretsmanager put-secret-value \
+  --secret-id "$API_KEY_SECRET_ARN" \
+  --secret-string "$NEW_API_KEY" >/dev/null
 
 expect_rejected() {
   case "$1" in
@@ -736,9 +736,10 @@ blocks acceptance.
 Run calibration from the exported commit with the deployed provenance. The
 verifier independently recomputes the spec hash, requires three terminal
 streams, and compares every terminal cent against this calibration. Its
-900-second default preserves the 10-second connect timeout while setting the
-socket read timeout from the remaining live-stream deadline; a silent read that
-hits that deadline is recorded as explicit failed evidence.
+900-second total wall-clock deadline bounds both connection and socket reads
+from the remaining live-stream deadline; a bounded reader closes a stream that
+only receives slow partial lines, and records the deadline as explicit failed
+evidence.
 
 ```bash
 export ACCEPTANCE_ROOT=$(mktemp -d /tmp/chronos2-task11-acceptance.XXXXXX)

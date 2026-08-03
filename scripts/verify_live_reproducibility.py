@@ -5,7 +5,9 @@ import argparse
 from decimal import Decimal
 import json
 from pathlib import Path
+import queue
 import re
+import threading
 import time
 from urllib.parse import urlsplit
 import uuid
@@ -88,7 +90,7 @@ def collect_events(
     api_key: str,
     prompt: str,
     *,
-    total_deadline_seconds: int = DEFAULT_COLLECTION_DEADLINE_SECONDS,
+    total_deadline_seconds: float = DEFAULT_COLLECTION_DEADLINE_SECONDS,
     monotonic=time.monotonic,
 ) -> list[dict[str, object]]:
     if total_deadline_seconds <= 0:
@@ -100,25 +102,63 @@ def collect_events(
             "SSE collection deadline exceeded after "
             f"{total_deadline_seconds} seconds"
         )
+    def deadline_exceeded() -> SseCollectionDeadlineExceeded:
+        return SseCollectionDeadlineExceeded(
+            "SSE collection deadline exceeded after "
+            f"{total_deadline_seconds} seconds"
+        )
+
     response = None
+    stop_reader = threading.Event()
     try:
         response = requests.get(
             stream_url,
             params={"session_id": str(uuid.uuid4()), "prompt": prompt},
             headers={"x-api-key": api_key},
             stream=True,
-            timeout=(10, remaining_seconds),
+            timeout=(min(10, remaining_seconds), remaining_seconds),
         )
         response.raise_for_status()
+        received = queue.Queue(maxsize=1)
+
+        def publish(kind: str, value: object) -> None:
+            while not stop_reader.is_set():
+                try:
+                    received.put((kind, value), timeout=0.1)
+                    return
+                except queue.Full:
+                    continue
+
+        def read_lines() -> None:
+            try:
+                for line in response.iter_lines(decode_unicode=True):
+                    if stop_reader.is_set():
+                        return
+                    publish("line", line)
+            except Exception as exc:
+                publish("exception", exc)
+            else:
+                publish("end", None)
+
+        threading.Thread(target=read_lines, daemon=True).start()
         events: list[dict[str, object]] = []
         data_lines: list[str] = []
-        for line in response.iter_lines(decode_unicode=True):
+        while True:
+            remaining_seconds = total_deadline_seconds - (monotonic() - started_at)
+            if remaining_seconds <= 0:
+                raise deadline_exceeded()
+            try:
+                kind, value = received.get(timeout=remaining_seconds)
+            except queue.Empty:
+                raise deadline_exceeded()
             elapsed_seconds = monotonic() - started_at
             if elapsed_seconds >= total_deadline_seconds:
-                raise SseCollectionDeadlineExceeded(
-                    "SSE collection deadline exceeded after "
-                    f"{total_deadline_seconds} seconds"
-                )
+                raise deadline_exceeded()
+            if kind == "exception":
+                raise value
+            if kind == "end":
+                break
+            line = value
             if line == "":
                 if data_lines:
                     events.append(json.loads("\n".join(data_lines)))
@@ -132,21 +172,16 @@ def collect_events(
                     value = value[1:]
                 data_lines.append(value)
         if monotonic() - started_at >= total_deadline_seconds:
-            raise SseCollectionDeadlineExceeded(
-                "SSE collection deadline exceeded after "
-                f"{total_deadline_seconds} seconds"
-            )
+            raise deadline_exceeded()
         if data_lines:
             events.append(json.loads("\n".join(data_lines)))
         return events
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
         if monotonic() - started_at >= total_deadline_seconds:
-            raise SseCollectionDeadlineExceeded(
-                "SSE collection deadline exceeded after "
-                f"{total_deadline_seconds} seconds"
-            ) from exc
+            raise deadline_exceeded() from exc
         raise
     finally:
+        stop_reader.set()
         close = getattr(response, "close", None)
         if close is not None:
             close()

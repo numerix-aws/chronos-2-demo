@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
@@ -270,7 +272,7 @@ def test_collect_events_bounds_blocked_read_at_total_deadline(monkeypatch):
     monotonic = iter((0.0, 0.0, 3.0)).__next__
 
     def get(*args, timeout, **kwargs):
-        assert timeout == (10, 3.0)
+        assert timeout == (3.0, 3.0)
         return response
 
     monkeypatch.setattr(verifier.requests, "get", get)
@@ -288,6 +290,47 @@ def test_collect_events_bounds_blocked_read_at_total_deadline(monkeypatch):
         )
 
     assert response.closed is True
+
+
+def test_collect_events_closes_slow_partial_line_at_wall_clock_deadline(
+    monkeypatch,
+):
+    class Response:
+        def __init__(self):
+            self.closed = threading.Event()
+            self.partial_line_started = threading.Event()
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self, decode_unicode):
+            self.partial_line_started.set()
+            self.closed.wait(timeout=1)
+            if False:
+                yield "data: incomplete"
+
+        def close(self):
+            self.closed.set()
+
+    response = Response()
+    monkeypatch.setattr(verifier.requests, "get", lambda *args, **kwargs: response)
+
+    started_at = time.monotonic()
+    with pytest.raises(
+        verifier.SseCollectionDeadlineExceeded,
+        match="SSE collection deadline exceeded after 0.05 seconds",
+    ):
+        verifier.collect_events(
+            "https://stream.example/",
+            "secret",
+            "run",
+            total_deadline_seconds=0.05,
+        )
+    elapsed_seconds = time.monotonic() - started_at
+
+    assert response.partial_line_started.is_set()
+    assert response.closed.is_set()
+    assert elapsed_seconds < 0.25
 
 
 def test_swapped_event_order_passes():
@@ -682,9 +725,60 @@ def test_runbook_builds_only_clean_exported_commit_and_hashes_frontend():
     assert '-f "$BUILD_ROOT/agent/runtime/Dockerfile"' in runbook
     assert 'export FRONTEND_SHA256=' in runbook
     assert '"frontend_artifact_sha256":$frontend_sha256' in runbook
-    assert runbook.index("false # BLOCKED: approved frontend-auth") < runbook.index(
-        "aws ecr get-login-password"
+    assert "false # BLOCKED: approved frontend-auth" not in runbook
+
+
+def test_task11_runbook_honors_an_externally_supplied_aws_profile():
+    runbook = _task11_runbook()
+
+    assert 'export AWS_PROFILE="${AWS_PROFILE:-default}"' in runbook
+    assert "export AWS_PROFILE=chronos2-demo" not in runbook
+
+
+def test_runbook_updates_the_access_code_and_checks_both_endpoints():
+    runbook = _task11_runbook()
+    rotation = runbook[
+        runbook.index("### 0e. API key rotation acceptance"):
+        runbook.index("### 0f. Streaming-edge and live stop gates")
+    ]
+
+    assert "aws secretsmanager rotate-secret" not in rotation
+    assert "openssl rand -hex 32" in rotation
+    assert "aws secretsmanager put-secret-value" in rotation
+    assert '--secret-string "$NEW_API_KEY"' in rotation
+    assert rotation.count('x-api-key: $OLD_API_KEY') == 2
+    assert rotation.count('x-api-key: $NEW_API_KEY') == 2
+    assert 'echo "$OLD_API_KEY"' not in rotation
+    assert 'echo "$NEW_API_KEY"' not in rotation
+
+
+def test_runbook_stages_canonical_curated_data_before_hashing_it():
+    runbook = _task11_runbook()
+    provenance = runbook[
+        runbook.index("### 0c. Pin data and deployment provenance"):
+        runbook.index("### 0d. Deploy in dependency-safe order")
+    ]
+
+    assert 'mkdir -p "$BUILD_ROOT/data/curated"' in provenance
+    for filename in ("panel.parquet", "covariates.parquet", "regimes.parquet"):
+        source = f'"s3://$DATA_BUCKET/{filename}"'
+        destination = f'"$BUILD_ROOT/data/curated/{filename}"'
+        assert source in provenance
+        assert destination in provenance
+        assert provenance.index(source) < provenance.index(destination)
+    assert provenance.index('"s3://$DATA_BUCKET/panel.parquet"') < provenance.index(
+        "export MARKET_SHA256="
     )
+    assert provenance.index('"s3://$DATA_BUCKET/covariates.parquet"') < provenance.index(
+        "export COVARIATE_SHA256="
+    )
+    assert 'export MARKET_SNAPSHOT_ID="panel.parquet@sha256:${MARKET_SHA256}"' in provenance
+    assert (
+        'export COVARIATE_SNAPSHOT_ID='
+        '"covariates.parquet@sha256:${COVARIATE_SHA256}"'
+    ) in provenance
+    assert 'export MARKET_SNAPSHOT_ID="panel.parquet@${GIT_SHA}"' not in provenance
+    assert 'export COVARIATE_SNAPSHOT_ID="covariates.parquet@${GIT_SHA}"' not in provenance
 
 
 def test_runbook_agentcore_and_amplify_waiters_are_bounded_and_fail_closed():
@@ -763,3 +857,8 @@ def test_runbook_captures_durable_rollback_inputs_and_restores_semantics():
         assert required in runbook
     assert 'test "$RESTORED_BASELINE_TASK" = "$PREVIOUS_BASELINE_TASK"' not in runbook
     assert 'test "$RESTORED_CHRONOS_TASK" = "$PREVIOUS_CHRONOS_TASK"' not in runbook
+    assert (
+        '[.job.steps[] | select(.stepName=="DEPLOY") | .artifactsUrl '
+        '| select(length > 0)] | last // empty'
+    ) in runbook
+    assert "[.job.steps[]?.artifactsUrl | select(length > 0)] | last // empty" not in runbook
