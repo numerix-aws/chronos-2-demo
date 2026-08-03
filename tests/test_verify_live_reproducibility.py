@@ -959,6 +959,13 @@ def test_task11_runbook_honors_an_externally_supplied_aws_profile():
     assert "export AWS_PROFILE=chronos2-demo" not in runbook
 
 
+def test_task11_runbook_uses_a_finch_shared_build_root():
+    runbook = _task11_runbook()
+
+    assert 'mktemp -d "$(dirname "$REPO_ROOT")/.chronos2-task11-build.XXXXXX"' in runbook
+    assert "mktemp -d /tmp/chronos2-task11-build" not in runbook
+
+
 def test_runbook_updates_the_access_code_and_checks_both_endpoints():
     runbook = _task11_runbook()
     rotation = runbook[

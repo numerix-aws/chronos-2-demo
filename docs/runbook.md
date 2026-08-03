@@ -65,7 +65,8 @@ DEPLOY_INPUTS=(src tools agent infra frontend pyproject.toml)
 git diff --quiet "$GIT_SHA" -- "${DEPLOY_INPUTS[@]}"
 git diff --cached --quiet "$GIT_SHA" -- "${DEPLOY_INPUTS[@]}"
 git cat-file -e "$GIT_SHA^{commit}"
-export BUILD_ROOT=$(mktemp -d /tmp/chronos2-task11-build.XXXXXX)
+# Finch shares the repository's /Users parent with its VM; /tmp is not shared.
+export BUILD_ROOT=$(mktemp -d "$(dirname "$REPO_ROOT")/.chronos2-task11-build.XXXXXX")
 git archive "$GIT_SHA" | tar -x -C "$BUILD_ROOT"
 export BUILD_ARCHIVE_SHA256=$(git archive "$GIT_SHA" | shasum -a 256 | awk '{print $1}')
 test -n "$BUILD_ARCHIVE_SHA256"
