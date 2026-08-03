@@ -174,7 +174,7 @@ async def invoke(payload: dict):
             "type": "run_spec",
             "execution_id": compiled.execution_id,
             "spec_hash": compiled.spec_hash,
-            "run_spec": canonical_run_payload(compiled),
+            "run_spec": _run_spec_document(compiled),
         }
         with _gateway() as gateway:
             try:

@@ -284,7 +284,7 @@ def test_supported_run_persists_and_emits_run_spec_before_workflow_and_model(
         "type": "run_spec",
         "execution_id": "run-1",
         "spec_hash": events[0]["spec_hash"],
-        "run_spec": canonical_run_payload(
+        "run_spec": module._run_spec_document(
             compile_run_spec(
                 HEADLINE_PROMPT,
                 provenance=PROVENANCE,
