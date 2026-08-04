@@ -231,6 +231,25 @@ test('handles byte-split UTF-8, LF and CRLF frames, and a trailing frame', async
   assert.match(writes.join(''), /\n\n$/);
 });
 
+test('turns an incomplete trailing SSE frame into a structured error', async () => {
+  const { forwardAgentResponse } = await loadProtocol();
+  const writes = [];
+
+  const outcome = await forwardAgentResponse(
+    {
+      contentType: 'text/event-stream',
+      response: chunks('data: {"type":"text","text":"unterminated'),
+    },
+    (value) => writes.push(value),
+  );
+
+  assert.deepEqual(parsedEvents(writes.join('')), [{
+    type: 'error',
+    message: 'AgentCore stream ended with an incomplete SSE frame',
+  }]);
+  assert.deepEqual(outcome, { doneSeen: false, errorSeen: true });
+});
+
 test('keeps exactly one upstream done as the final successful frame', async () => {
   const { forwardAgentResponse } = await loadProtocol();
   const writes = [];

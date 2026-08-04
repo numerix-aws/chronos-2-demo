@@ -100,7 +100,21 @@ async function forwardSseText(textChunks, initialBuffer, write) {
     buffer += text;
     await flushFrames();
   }
-  if (buffer) await forwardFrame(`${buffer}\n\n`);
+  if (buffer) {
+    const trailingFrame = `${buffer}\n\n`;
+    const hasData = buffer
+      .split(/\r?\n/)
+      .some((line) => line.startsWith('data:'));
+    if (!validSseFrame(trailingFrame) || (hasData && frameObject(trailingFrame) === null)) {
+      errorSeen = true;
+      errorFrame = sseEvent({
+        type: 'error',
+        message: 'AgentCore stream ended with an incomplete SSE frame',
+      });
+    } else {
+      await forwardFrame(trailingFrame);
+    }
+  }
   if (errorFrame !== null) {
     await write(errorFrame);
   } else if (doneFrame !== null) {
