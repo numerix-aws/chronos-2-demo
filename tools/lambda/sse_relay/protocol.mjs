@@ -2,12 +2,16 @@ export function sseEvent(event) {
   return `data: ${JSON.stringify(event)}\n\n`;
 }
 
-function frameObject(frame) {
-  const data = frame
+function frameData(frame) {
+  return frame
     .split(/\r?\n/)
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).replace(/^ /, ''))
     .join('\n');
+}
+
+function frameObject(frame) {
+  const data = frameData(frame);
   if (!data) return null;
   try {
     const value = JSON.parse(data);
@@ -73,7 +77,19 @@ async function forwardSseText(textChunks, initialBuffer, write) {
   let errorSeen = false;
 
   async function forwardFrame(frame) {
+    const data = frameData(frame);
     const event = frameObject(frame);
+    if (data && event === null) {
+      if (/^\s*\{\s*"type"\s*:\s*"text"\s*,\s*"text"\s*:/.test(data)) return;
+      errorSeen = true;
+      if (errorFrame === null) {
+        errorFrame = sseEvent({
+          type: 'error',
+          message: 'AgentCore emitted malformed structured SSE data',
+        });
+      }
+      return;
+    }
     if (event?.type === 'done') {
       doneSeen = true;
       if (doneFrame === null) doneFrame = frame;

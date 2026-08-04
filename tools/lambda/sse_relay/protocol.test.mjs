@@ -250,6 +250,29 @@ test('turns an incomplete trailing SSE frame into a structured error', async () 
   assert.deepEqual(outcome, { doneSeen: false, errorSeen: true });
 });
 
+test('drops malformed delimited text frames without losing structured completion', async () => {
+  const { forwardAgentResponse } = await loadProtocol();
+  const writes = [];
+
+  const outcome = await forwardAgentResponse(
+    {
+      contentType: 'text/event-stream',
+      response: chunks(
+        'data: {"type":"text","text":"unterminated\n\n',
+        'data: {"type":"exposure_result","scenario_role":"baseline"}\n\n',
+        'data: {"type":"done"}\n\n',
+      ),
+    },
+    (value) => writes.push(value),
+  );
+
+  assert.deepEqual(parsedEvents(writes.join('')), [
+    { type: 'exposure_result', scenario_role: 'baseline' },
+    { type: 'done' },
+  ]);
+  assert.deepEqual(outcome, { doneSeen: true, errorSeen: false });
+});
+
 test('keeps exactly one upstream done as the final successful frame', async () => {
   const { forwardAgentResponse } = await loadProtocol();
   const writes = [];
