@@ -506,14 +506,30 @@ done
 test "$AGENT_RUNTIME_READY" = 1 \
   || { echo "agent runtime did not become READY" >&2; exit 1; }
 
+LATEST_AGENT_RUNTIME_VERSION=$(aws bedrock-agentcore-control get-agent-runtime \
+  --agent-runtime-id "$AGENT_RUNTIME_ID" \
+  --query agentRuntimeVersion --output text)
+printf '%s\n' "$LATEST_AGENT_RUNTIME_VERSION" | grep -Eq '^[0-9]+$'
+aws bedrock-agentcore-control update-agent-runtime-endpoint \
+  --agent-runtime-id "$AGENT_RUNTIME_ID" --endpoint-name live \
+  --agent-runtime-version "$LATEST_AGENT_RUNTIME_VERSION"
+
 AGENT_ENDPOINT_READY=0
 for ((ATTEMPT=1; ATTEMPT<=AGENT_MAX_ATTEMPTS; ATTEMPT++)); do
-  AGENT_ENDPOINT_STATUS=$(aws bedrock-agentcore-control \
+  AGENT_ENDPOINT=$(aws bedrock-agentcore-control \
     get-agent-runtime-endpoint \
     --agent-runtime-id "$AGENT_RUNTIME_ID" --endpoint-name live \
-    --query status --output text)
+    --output json)
+  AGENT_ENDPOINT_STATUS=$(jq -r .status <<<"$AGENT_ENDPOINT")
   case "$AGENT_ENDPOINT_STATUS" in
-    READY) AGENT_ENDPOINT_READY=1; break ;;
+    READY)
+      if test "$(jq -r .liveVersion <<<"$AGENT_ENDPOINT")" \
+        = "$LATEST_AGENT_RUNTIME_VERSION"; then
+        AGENT_ENDPOINT_READY=1
+        break
+      fi
+      sleep 10
+      ;;
     CREATING|UPDATING) sleep 10 ;;
     *) printf 'Agent endpoint failed closed in status %s\n' \
          "$AGENT_ENDPOINT_STATUS" >&2; exit 1 ;;

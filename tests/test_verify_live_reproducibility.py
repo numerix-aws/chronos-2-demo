@@ -1228,6 +1228,10 @@ def test_runbook_agentcore_and_amplify_waiters_are_bounded_and_fail_closed():
     runbook = _task11_runbook()
 
     assert "set -euo pipefail" in runbook
+    assert "LATEST_AGENT_RUNTIME_VERSION=$(aws bedrock-agentcore-control" in runbook
+    assert "update-agent-runtime-endpoint" in runbook
+    assert 'test "$(jq -r .liveVersion <<<"$AGENT_ENDPOINT")"' in runbook
+    assert '= "$LATEST_AGENT_RUNTIME_VERSION"' in runbook
     assert "AGENT_MAX_ATTEMPTS=" in runbook
     assert "agent runtime did not become READY" in runbook
     assert "agent endpoint did not become READY" in runbook
