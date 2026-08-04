@@ -2,6 +2,9 @@
   "name": "sse-relay",
   "version": "0.1.0",
   "type": "module",
+  "scripts": {
+    "test": "node --test protocol.test.mjs"
+  },
   "dependencies": {
     "@aws-sdk/client-bedrock-agentcore": "^3.600.0",
     "@aws-sdk/client-secrets-manager": "^3.600.0"

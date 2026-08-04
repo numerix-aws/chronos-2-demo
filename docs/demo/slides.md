@@ -5,16 +5,30 @@ paginate: true
 backgroundColor: #fff
 color: #1a1a2e
 header: 'Chronos-2 × Numerix — PFE/XVA Augmentation PoC'
+style: |
+  section {
+    font-size: 24px;
+    padding: 45px 60px;
+  }
+  section h1 {
+    font-size: 1.6em;
+  }
+  section h2 {
+    font-size: 1.4em;
+  }
+  section table {
+    font-size: 0.9em;
+  }
 ---
 
 <!-- _class: lead -->
 
-# Chronos-2 × Numerix
+# Chronos-2 with Agentic AI for financial forecasting
 
 ## Augmenting hybrid Monte Carlo for PFE/XVA with a time-series foundation model
 
-**Presenter:** _<name>_
-**Date:** 2026-06
+**Presenter:** <name>
+**Date:** 2026-07
 
 <!-- presenter note: Set expectations early — this is a PoC sample book, not a calibrated production system, though the headline is now a live-endpoint measurement. The audience are quants; lead with mechanism, not marketing. -->
 
@@ -34,7 +48,7 @@ The question is not "replace MC." It is: **can we add a calibrated correction wh
 
 ## The thesis: "correct + reweight" 🎯
 
-> **Chronos-2 augments — does not replace — Numerix's parametric Monte Carlo by capturing joint-tail dynamics and regime-driven correlation breakdown, improving PFE precision under stress, while the same downstream pricing/exposure code consumes either path set.**
+> **Chronos-2 augments — does not replace — parametric Monte Carlo by capturing joint-tail dynamics and regime-driven correlation breakdown, improving PFE precision under stress, while the same downstream pricing/exposure code consumes either path set.**
 
 - Both engines produce path sets in the **same tensor contract**.
 - A **deterministic** regime detector emits `w_stress ∈ [0,1]`.
@@ -47,7 +61,7 @@ The question is not "replace MC." It is: **can we add a calibrated correction wh
 
 **Dual engines → regime detector → blender → shared pricing.** Only the *input path set* to pricing ever changes.
 
-![Augmentation flow](app-flow.svg)
+![Augmentation flow h:230](app-flow.svg)
 
 - **Engine 1:** parametric baseline (PCA + Hull-White + GBM).
 - **Engine 2:** Chronos-2 foundation model (quantiles → joint paths).
@@ -71,7 +85,7 @@ returns → PCA factors → HW (rates) + GBM (FX)
         → Cholesky joint draw → PathSet(n_paths, horizon, n_series)
 ```
 
-This is the **reference engine** — fast, well-understood, fully auditable. It does **not** ingest VIX/MOVE/WTI. That asymmetry is intentional (next slides).
+This is the **reference engine** — fast, well-understood, fully auditable. It does **not** ingest VIX/MOVE/WTI intentionally.
 
 ---
 
@@ -211,7 +225,7 @@ An **Amazon Bedrock AgentCore** copilot — a containerized **Strands** agent on
 
 ## AWS infrastructure 🏗️
 
-![AWS infrastructure](infra-architecture.svg)
+![AWS infrastructure h:210](infra-architecture.svg)
 
 - **SSE streaming edge:** CloudFront (OAC, SigV4) + **WAF** in front of a Lambda Function URL (`RESPONSE_STREAM`).
 - **API:** API Gateway + authorizer (`x-api-key`).
