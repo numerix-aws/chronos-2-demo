@@ -1,14 +1,374 @@
 {
-  "status": "measured",
-  "baseline_pfe_975": 5605184.38,
-  "augmented_pfe_975": 6631623.85,
-  "delta_pct": 18.31,
-  "delta_usd": 1026439.46,
-  "as_of": "2022-09-30",
-  "stress_window": "2022_rate_hike",
-  "w_stress": 0.5305,
-  "n_paths": 5000,
-  "endpoint_name": "chronos2-demo-ep",
-  "git_sha": "677e485",
-  "timestamp": "2026-06-08T18:51:53.844366+00:00"
+  "diagnostics": {
+    "attribution": {
+      "final_blend": {
+        "delta_pfe_975": 617241.671833124,
+        "delta_pfe_975_pct": 12.592476812916662,
+        "scenario_role": "augmented",
+        "terminal": {
+          "date": "2023-09-19",
+          "ee": 805159.9907522264,
+          "es_975": 6192694.333793035,
+          "pfe_975": 5518911.780131373
+        }
+      },
+      "reweighted_chronos": {
+        "delta_pfe_975": -971823.7940538633,
+        "delta_pfe_975_pct": -19.826381061602266,
+        "scenario_role": "chronos_component",
+        "terminal": {
+          "date": "2023-09-19",
+          "ee": 602999.6423835815,
+          "es_975": 4812098.259581673,
+          "pfe_975": 3929846.3142443853
+        }
+      },
+      "reweighted_parametric": {
+        "delta_pfe_975": 1199982.345969553,
+        "delta_pfe_975_pct": 24.48109153527185,
+        "scenario_role": "baseline_component",
+        "terminal": {
+          "date": "2023-09-19",
+          "ee": 1007320.3391208714,
+          "es_975": 6765868.1660537645,
+          "pfe_975": 6101652.454267802
+        }
+      },
+      "uniform_chronos": {
+        "delta_pfe_975": -3956825.7073768517,
+        "delta_pfe_975_pct": -80.72403119659504,
+        "scenario_role": "chronos_only",
+        "terminal": {
+          "date": "2023-09-19",
+          "ee": 71677.13974357457,
+          "es_975": 2383952.472612561,
+          "pfe_975": 944844.400921397
+        }
+      },
+      "uniform_parametric": {
+        "delta_pfe_975": 0.0,
+        "delta_pfe_975_pct": 0.0,
+        "scenario_role": "baseline",
+        "terminal": {
+          "date": "2023-09-19",
+          "ee": 450586.45535621623,
+          "es_975": 5828331.62893851,
+          "pfe_975": 4901670.108298249
+        }
+      }
+    },
+    "factor_coverage": {
+      "available": true,
+      "results": {
+        "augmented": {
+          "calm": {
+            "EUR_10Y": 1.0,
+            "EUR_2Y": 1.0,
+            "EUR_5Y": 1.0,
+            "GBP_10Y": 1.0,
+            "GBP_2Y": 1.0,
+            "GBP_5Y": 1.0,
+            "JPY_10Y": 1.0,
+            "JPY_2Y": 1.0,
+            "JPY_5Y": 1.0,
+            "NIKKEI225": 0.6208333333333333,
+            "SPX": 0.9833333333333333,
+            "USDCAD": 1.0,
+            "USDCHF": 0.575,
+            "USDEUR": 0.18333333333333332,
+            "USDGBP": 0.3375,
+            "USDJPY": 0.825,
+            "USD_10Y": 1.0,
+            "USD_2Y": 1.0,
+            "USD_5Y": 1.0,
+            "US_HY_OAS": 0.9958333333333333,
+            "US_IG_OAS": 0.9958333333333333
+          },
+          "coverage": 0.8805744520030235,
+          "distance_from_nominal": 0.06942554799697642,
+          "nominal": 0.95,
+          "per_series": {
+            "EUR_10Y": 1.0,
+            "EUR_2Y": 1.0,
+            "EUR_5Y": 1.0,
+            "GBP_10Y": 1.0,
+            "GBP_2Y": 1.0,
+            "GBP_5Y": 1.0,
+            "JPY_10Y": 1.0,
+            "JPY_2Y": 1.0,
+            "JPY_5Y": 1.0,
+            "NIKKEI225": 0.6388888888888888,
+            "SPX": 0.9841269841269841,
+            "USDCAD": 1.0,
+            "USDCHF": 0.5753968253968254,
+            "USDEUR": 0.1746031746031746,
+            "USDGBP": 0.32142857142857145,
+            "USDJPY": 0.8055555555555556,
+            "USD_10Y": 1.0,
+            "USD_2Y": 1.0,
+            "USD_5Y": 1.0,
+            "US_HY_OAS": 0.996031746031746,
+            "US_IG_OAS": 0.996031746031746
+          },
+          "stress": {
+            "EUR_10Y": 1.0,
+            "EUR_2Y": 1.0,
+            "EUR_5Y": 1.0,
+            "GBP_10Y": 1.0,
+            "GBP_2Y": 1.0,
+            "GBP_5Y": 1.0,
+            "JPY_10Y": 1.0,
+            "JPY_2Y": 1.0,
+            "JPY_5Y": 1.0,
+            "NIKKEI225": 1.0,
+            "SPX": 1.0,
+            "USDCAD": 1.0,
+            "USDCHF": 0.5833333333333334,
+            "USDEUR": 0.0,
+            "USDGBP": 0.0,
+            "USDJPY": 0.4166666666666667,
+            "USD_10Y": 1.0,
+            "USD_2Y": 1.0,
+            "USD_5Y": 1.0,
+            "US_HY_OAS": 1.0,
+            "US_IG_OAS": 1.0
+          }
+        },
+        "baseline": {
+          "calm": {
+            "EUR_10Y": 1.0,
+            "EUR_2Y": 1.0,
+            "EUR_5Y": 1.0,
+            "GBP_10Y": 1.0,
+            "GBP_2Y": 1.0,
+            "GBP_5Y": 1.0,
+            "JPY_10Y": 1.0,
+            "JPY_2Y": 1.0,
+            "JPY_5Y": 1.0,
+            "NIKKEI225": 0.49166666666666664,
+            "SPX": 0.8958333333333334,
+            "USDCAD": 1.0,
+            "USDCHF": 0.825,
+            "USDEUR": 0.1125,
+            "USDGBP": 0.09583333333333334,
+            "USDJPY": 0.49166666666666664,
+            "USD_10Y": 1.0,
+            "USD_2Y": 1.0,
+            "USD_5Y": 1.0,
+            "US_HY_OAS": 0.9,
+            "US_IG_OAS": 0.9
+          },
+          "coverage": 0.8427815570672712,
+          "distance_from_nominal": 0.10721844293272875,
+          "nominal": 0.95,
+          "per_series": {
+            "EUR_10Y": 1.0,
+            "EUR_2Y": 1.0,
+            "EUR_5Y": 1.0,
+            "GBP_10Y": 1.0,
+            "GBP_2Y": 1.0,
+            "GBP_5Y": 1.0,
+            "JPY_10Y": 1.0,
+            "JPY_2Y": 1.0,
+            "JPY_5Y": 1.0,
+            "NIKKEI225": 0.5158730158730159,
+            "SPX": 0.9007936507936508,
+            "USDCAD": 1.0,
+            "USDCHF": 0.8293650793650794,
+            "USDEUR": 0.10714285714285714,
+            "USDGBP": 0.09126984126984126,
+            "USDJPY": 0.46825396825396826,
+            "USD_10Y": 1.0,
+            "USD_2Y": 1.0,
+            "USD_5Y": 1.0,
+            "US_HY_OAS": 0.8928571428571429,
+            "US_IG_OAS": 0.8928571428571429
+          },
+          "stress": {
+            "EUR_10Y": 1.0,
+            "EUR_2Y": 1.0,
+            "EUR_5Y": 1.0,
+            "GBP_10Y": 1.0,
+            "GBP_2Y": 1.0,
+            "GBP_5Y": 1.0,
+            "JPY_10Y": 1.0,
+            "JPY_2Y": 1.0,
+            "JPY_5Y": 1.0,
+            "NIKKEI225": 1.0,
+            "SPX": 1.0,
+            "USDCAD": 1.0,
+            "USDCHF": 0.9166666666666666,
+            "USDEUR": 0.0,
+            "USDGBP": 0.0,
+            "USDJPY": 0.0,
+            "USD_10Y": 1.0,
+            "USD_2Y": 1.0,
+            "USD_5Y": 1.0,
+            "US_HY_OAS": 0.75,
+            "US_IG_OAS": 0.75
+          }
+        },
+        "chronos_only": {
+          "calm": {
+            "EUR_10Y": 1.0,
+            "EUR_2Y": 1.0,
+            "EUR_5Y": 1.0,
+            "GBP_10Y": 1.0,
+            "GBP_2Y": 1.0,
+            "GBP_5Y": 1.0,
+            "JPY_10Y": 0.9708333333333333,
+            "JPY_2Y": 0.9708333333333333,
+            "JPY_5Y": 0.9708333333333333,
+            "NIKKEI225": 0.6208333333333333,
+            "SPX": 0.9833333333333333,
+            "USDCAD": 1.0,
+            "USDCHF": 0.49166666666666664,
+            "USDEUR": 0.18333333333333332,
+            "USDGBP": 0.3375,
+            "USDJPY": 0.825,
+            "USD_10Y": 0.9875,
+            "USD_2Y": 1.0,
+            "USD_5Y": 0.9958333333333333,
+            "US_HY_OAS": 1.0,
+            "US_IG_OAS": 1.0
+          },
+          "coverage": 0.8673469387755103,
+          "distance_from_nominal": 0.08265306122448968,
+          "nominal": 0.95,
+          "per_series": {
+            "EUR_10Y": 1.0,
+            "EUR_2Y": 1.0,
+            "EUR_5Y": 1.0,
+            "GBP_10Y": 1.0,
+            "GBP_2Y": 1.0,
+            "GBP_5Y": 1.0,
+            "JPY_10Y": 0.9444444444444444,
+            "JPY_2Y": 0.9444444444444444,
+            "JPY_5Y": 0.9444444444444444,
+            "NIKKEI225": 0.6388888888888888,
+            "SPX": 0.9841269841269841,
+            "USDCAD": 1.0,
+            "USDCHF": 0.4722222222222222,
+            "USDEUR": 0.1746031746031746,
+            "USDGBP": 0.32142857142857145,
+            "USDJPY": 0.8055555555555556,
+            "USD_10Y": 0.9880952380952381,
+            "USD_2Y": 1.0,
+            "USD_5Y": 0.996031746031746,
+            "US_HY_OAS": 1.0,
+            "US_IG_OAS": 1.0
+          },
+          "stress": {
+            "EUR_10Y": 1.0,
+            "EUR_2Y": 1.0,
+            "EUR_5Y": 1.0,
+            "GBP_10Y": 1.0,
+            "GBP_2Y": 1.0,
+            "GBP_5Y": 1.0,
+            "JPY_10Y": 0.4166666666666667,
+            "JPY_2Y": 0.4166666666666667,
+            "JPY_5Y": 0.4166666666666667,
+            "NIKKEI225": 1.0,
+            "SPX": 1.0,
+            "USDCAD": 1.0,
+            "USDCHF": 0.08333333333333333,
+            "USDEUR": 0.0,
+            "USDGBP": 0.0,
+            "USDJPY": 0.4166666666666667,
+            "USD_10Y": 1.0,
+            "USD_2Y": 1.0,
+            "USD_5Y": 1.0,
+            "US_HY_OAS": 1.0,
+            "US_IG_OAS": 1.0
+          }
+        }
+      }
+    },
+    "portfolio_coverage": {
+      "available": true,
+      "results": {
+        "augmented": {
+          "average_breach": 0.0,
+          "breach_count": 0,
+          "coverage": 1.0,
+          "distance_from_nominal": 0.025000000000000022,
+          "maximum_breach": 0.0,
+          "nominal": 0.975
+        },
+        "baseline": {
+          "average_breach": 0.0,
+          "breach_count": 0,
+          "coverage": 1.0,
+          "distance_from_nominal": 0.025000000000000022,
+          "maximum_breach": 0.0,
+          "nominal": 0.975
+        },
+        "chronos_only": {
+          "average_breach": 0.0,
+          "breach_count": 0,
+          "coverage": 1.0,
+          "distance_from_nominal": 0.025000000000000022,
+          "maximum_breach": 0.0,
+          "nominal": 0.975
+        }
+      }
+    }
+  },
+  "inputs": {
+    "covariate_rows": 1260,
+    "panel_rows": 1260
+  },
+  "run_spec": {
+    "as_of_date": "2022-09-30",
+    "baseline_components": 5,
+    "baseline_seed": 0,
+    "book_id": "cross_asset_demo_v1",
+    "chronos_seed": 0,
+    "conditioning": null,
+    "execution_id": "1a6e3fca9acb4f48b1caa92bbe5fbace",
+    "horizon": 252,
+    "lookback_days": 1260,
+    "n_paths": 500,
+    "profile": "stage_safe_headline_v1",
+    "provenance": {
+      "agent_image_digest": "sha256:a0a191f2e52bfccf11ef09980ca6fd4b3a99820db49d8c3a269ac6e0544627f2",
+      "baseline_image_digest": "sha256:16e7e5eeccf18a11e4dd92f1ad91d93cdf5d19a5c04473d2496341f95c73399e",
+      "blend_version": "importance_weight_v1",
+      "book_version": "cross_asset_demo_v1",
+      "chronos_endpoint": "chronos2-demo-ep",
+      "chronos_image_digest": "sha256:90157af9984b3eb06caf63555680a3deedb57d616db1681812a7848745853b71",
+      "chronos_model_version": "chronos-2",
+      "covariate_sha256": "66df518a444fdae72f31a6f20a7373f60eb4a57e548e17e12ab3e267a3261359",
+      "covariate_snapshot_id": "covariates.parquet@sha256:66df518a444fdae72f31a6f20a7373f60eb4a57e548e17e12ab3e267a3261359",
+      "market_sha256": "d7f022cb2de43a9cd8da6ee62959f844803ae7d2ada3e9155a213036948ed84b",
+      "market_snapshot_id": "panel.parquet@sha256:d7f022cb2de43a9cd8da6ee62959f844803ae7d2ada3e9155a213036948ed84b",
+      "pricing_version": "cross_asset_v1",
+      "strands_version": "1.30.0",
+      "tool_bundle_version": "git:eed7dd0b14c9419d9db453e4ccbc19a80cebc411"
+    },
+    "regime_threshold": 0.7,
+    "schema_version": "1",
+    "spec_hash": "15c9224031327eef3f21a0465f144e1f86470ea3dc5f7b77a000eac334332521",
+    "w_stress": 0.5305
+  },
+  "terminal_metrics": {
+    "augmented": {
+      "date": "2023-09-19",
+      "ee": 805159.9907522264,
+      "es_975": 6192694.333793035,
+      "pfe_975": 5518911.780131373
+    },
+    "baseline": {
+      "date": "2023-09-19",
+      "ee": 450586.45535621623,
+      "es_975": 5828331.62893851,
+      "pfe_975": 4901670.108298249
+    },
+    "chronos_only": {
+      "date": "2023-09-19",
+      "ee": 71677.13974357457,
+      "es_975": 2383952.472612561,
+      "pfe_975": 944844.400921397
+    }
+  }
 }
