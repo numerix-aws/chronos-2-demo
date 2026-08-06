@@ -65,6 +65,10 @@ def build_request_frame(
         if covariates is not None:
             for c in covariates.columns:
                 block[c] = covariates[c].values
+        if conditioning is not None:
+            # Chronos-2 requires future covariates to be a subset of past
+            # covariates; the anchor is zero over history (no shift applied).
+            block["anchor"] = 0.0
         blocks.append(block)
     data_frame = pd.concat(blocks, ignore_index=True)
 

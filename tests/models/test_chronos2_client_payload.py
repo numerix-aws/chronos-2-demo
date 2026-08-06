@@ -58,6 +58,22 @@ def test_build_request_frame_encodes_conditioning_as_known_covariate():
     assert (a_future["anchor"].iloc[3:] == 0.0).all()
 
 
+def test_build_request_frame_anchor_present_in_history_when_conditioning():
+    # Chronos-2 rejects requests whose future covariates are not a subset of
+    # the past covariates, so a conditional request must carry `anchor` (as
+    # zeros -- no shift in the past) in the history frame too.
+    panel = _panel()
+    cov = pd.DataFrame(np.zeros((20, 2)) + 0.5, index=panel.index,
+                       columns=["VIX", "MOVE"])
+    cond = c2.Conditioning(series_shifts={"A": 0.1}, n_anchor_days=3)
+    frame, known = c2.build_request_frame(panel, horizon=10, covariates=cov,
+                                          conditioning=cond)
+    past_covariates = set(frame.columns) - {"item_id", "timestamp", "target"}
+    future_covariates = set(known.columns) - {"item_id", "timestamp"}
+    assert future_covariates <= past_covariates
+    assert (frame["anchor"] == 0.0).all()
+
+
 def test_decode_response_returns_quantile_block():
     # AutoGluon long-format quantile frame: 2 series x horizon 4.
     rows = []
