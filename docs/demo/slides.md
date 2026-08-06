@@ -239,13 +239,21 @@ An **Amazon Bedrock AgentCore** copilot — a containerized **Strands** agent on
 
 ## Live demo — what you'll see 🎬
 
-High-level beats (detailed script is separate):
+High-level beats (detailed script: `demo-script.md`):
 
-1. Load the cross-asset panel; show the **regime detector** lighting up under stress.
-2. Run **both engines** (async Fargate) and watch them complete.
-3. **Blend** and price the book — compare baseline vs augmented **PFE/EE/ES**.
-4. Ask a **natural-language what-if** ("EUR rates −50bps") and watch the agent sequence the tools.
-5. Inspect the **weighted-percentile** exposure profiles side by side.
+1. Ask the copilot one natural-language question; watch the **Tool trace panel** light up as it sequences the tools.
+2. See the **regime ribbon**, run **both engines** (async Fargate), **blend** and price the book — baseline vs augmented **PFE/EE/ES**.
+3. Ask a **natural-language what-if** ("EUR rates −50bps") and watch the agent re-run the tools.
+
+Stage-safe settings: **500 paths/engine**, as-of `2022-09-30`, stress weight `0.5305` — verified live run ≈ 3 min.
+
+| Metric | Baseline | Augmented | Δ |
+|---|---:|---:|---:|
+| Terminal PFE 97.5% | $4.90M | $5.35M | **+9.08%** |
+
+<!-- presenter note: Use the app-generated values live; the 5,000-path artifact (+18.3%, slide 12) is the higher-path reference run. -->
+
+---
 
 ---
 

@@ -7,7 +7,7 @@ from chronos2_demo.models import baseline_mc
 from chronos2_demo.pricing import book, exposure
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "docs" / "demo" / "demo-first-presenter-script.md"
+SCRIPT = Path(__file__).resolve().parents[1] / "docs" / "demo" / "demo-script.md"
 
 
 def test_stage_safe_demo_prompt_has_nonzero_baseline_pfe():

@@ -1,15 +1,27 @@
 # Presenter Script — Chronos-2 × Numerix PFE/XVA Augmentation PoC
 
+> **This is the single consolidated presenter script** (the former separate demo-first script and slides have been merged in). The flow is **presenter first, demo second**: walk the slides (`docs/demo/slides.md`) to explain the mechanism, then run the live demo, then close.
+>
 > **How to use this script.** Read it as a teleprompter. The **SAY:** blocks are verbatim — you can read them word for word and sound credible. **DO / SHOW:** are stage directions (clicks, gestures, what to point at). **TRANSITION:** is the bridge sentence into the next slide.
 >
-> **Your audience are quant experts.** They know PFE, XVA, Monte Carlo, copulas, importance sampling cold. You do **not** need to teach them those concepts — you need to show that *this PoC respects them*. Lead with mechanism, not marketing. When in doubt, be more honest, not more impressive.
+> **Your audience is mixed:** quant experts, product stakeholders, and partner/alliance leaders. Quants know PFE, XVA, Monte Carlo, copulas, importance sampling cold — you do **not** need to teach them those concepts; you need to show that *this PoC respects them*. Lead with mechanism, not marketing. When in doubt, be more honest, not more impressive.
 >
-> **The three rules that keep you safe** (full list at the bottom):
+> **The rules that keep you safe** (full list at the bottom):
 > 1. Never call this "production" or a "calibrated production risk number." It's a PoC sample book measured against the live endpoint.
 > 2. You *can* cite the measured ~2,000× latency — but frame it as the structural closed-form-vs-nested-MC gap, not a tuned production SLA.
 > 3. Never claim regulatory approval, and never say it "replaces" Numerix. It **augments**.
+> 4. If a quant asks a deep question, answer simply and offer the exact mechanism. Do not bluff.
 >
 > If you forget everything else, the headline caveat is: **"measured live: +18.3% on the PoC sample book, as-of 2022-09-30 — a real endpoint result, but one window on a sample book, not a calibrated production number."** Say it out loud on Slide 12. Quants trust the honest version far more than a fragile precise claim.
+
+## Run Of Show
+
+Target length: 25 to 30 minutes.
+
+1. Slides 1–15 (mechanism and architecture): 12 to 15 minutes.
+2. Live demo (Slide 16 → app): 5 to 7 minutes.
+3. Closing slides 17–20: 3 to 4 minutes.
+4. Questions: remaining time.
 
 ---
 
@@ -181,12 +193,231 @@
 ## Slide 16 — Live demo
 
 **SAY:**
-"I'll keep the beats simple. We'll load the cross-asset panel and watch the regime detector light up under stress. We'll run both engines — those are the async Fargate tasks — and watch them complete. We'll blend and price the book, and compare baseline against augmented PFE, EE, and ES. Then I'll ask a natural-language what-if — EUR rates down fifty basis points — and you'll watch the agent sequence the tools itself. And finally we'll look at the weighted-percentile exposure profiles side by side. The detailed walkthrough is scripted, so let me switch over."
+"I'll keep the beats simple. We'll ask the copilot one natural-language question and watch it run the workflow through tools: load the cross-asset panel, show the regime detector lighting up under stress, run both engines — those are the async Fargate tasks — blend and price the book, and compare baseline against augmented PFE, EE, and ES. Then I'll ask a natural-language what-if — EUR rates down fifty basis points — and you'll watch the agent sequence the tools itself. The detailed walkthrough is scripted, so let me switch over."
 
-**DO / SHOW:** Switch to the live SPA now. Follow the detailed walkthrough section below. Have the fallback (pre-baked plots from the committed calibration run, `docs/results`) ready in a second tab in case the endpoint is slow.
+**DO / SHOW:** Switch to the live SPA now and follow the "Live Demo" section below. Have the fallback (the committed calibration artifact in `docs/results`) ready in a second tab in case the endpoint is slow.
 
-**TRANSITION (after demo):** "So that's the system working end to end. Let me close by being very precise about what this is — and what it isn't."
+---
+---
 
+# Live Demo
+
+## Live Demo Setup
+
+Use the deployed app:
+
+```text
+https://main.d1ufy1thaj7uv6.amplifyapp.com
+```
+
+On first load, the app creates a demo session and stores it in localStorage using the deployed demo API key. There is no login flow in this PoC. Wait for the brief `Connecting to the demo copilot...` status to disappear before typing.
+
+If the app shows `Connection failed` during prep, use the runbook's API key setup flow. Do this before the meeting, not on stage.
+
+As a manual fallback, open DevTools on the app page and run this after replacing `<demo API key>`:
+
+```javascript
+localStorage.setItem(
+  "chronos2-demo-session",
+  JSON.stringify({ sessionId: crypto.randomUUID(), apiKey: "<demo API key>" }),
+);
+location.reload();
+```
+
+Known live endpoints from the current deployment:
+
+```text
+API_URL    = https://gulhcvbva4.execute-api.us-east-1.amazonaws.com/prod/
+STREAM_URL = https://d1jp01nk04lrmo.cloudfront.net/
+Chronos-2  = chronos2-demo-ep
+```
+
+## Pre-Demo Health Check
+
+Do this before the presentation:
+
+1. Open the app URL.
+2. Confirm the page title contains `Numerix` and `Chronos-2`.
+3. Wait 3 to 5 seconds after the page loads so the conversation panel can finish its initial session read.
+4. Type a quick low-cost prompt:
+
+```text
+Say hello and confirm the Chronos-2 demo copilot is reachable. Do not run tools.
+```
+
+5. Confirm the assistant streams a response.
+6. Do not start the full scenario run until you are ready to demo.
+
+## Demo Step 1 - Start In The App
+
+Switch from Slide 16 to the browser.
+
+SAY:
+
+"This is the live demo app. It is a Cloudscape front end connected to the AgentCore copilot we just looked at. I will ask one natural-language question, and the copilot will run the workflow through tools."
+
+"For the live walkthrough, I am using 500 paths so the run finishes in a stage-safe window. We will generate the baseline and augmented result live in the app, then I will point to the committed 5,000-path artifact as the higher-path reference run."
+
+DO:
+
+Wait 3 to 5 seconds after the browser page loads before sending the first prompt. This avoids racing the app's initial conversation read.
+
+Paste this exact prompt into the chat:
+
+```text
+Run the stage-safe headline demo for September 30, 2022. Use five years of trading history, project one trading year into the future, and generate 500 scenarios with each engine. Apply a 53.05% stress weight. Show the market regime and compare baseline exposure with Chronos-2-augmented exposure. Report the final EE, 97.5% PFE, 97.5% ES, and the PFE change.
+```
+
+Click Send.
+
+SAY WHILE IT STARTS:
+
+"The agent is now planning and calling tools. The important thing to watch is not just the answer, but the sequence: load the market data, show the regime ribbon, run the baseline Monte Carlo, run Chronos-2, blend the scenario sets, price the book, then plot the result."
+
+Point briefly to the Tool trace panel:
+
+"This panel is the stage view of the agent workflow. It is not a decorative progress bar; it is driven by the tool sequence the agent is executing."
+
+## Demo Step 2 - Narrate The Wait
+
+When the scenario jobs are running, do not stand silently.
+
+SAY:
+
+"Two of the steps are real compute jobs. They run as asynchronous Fargate tasks, so the agent launches them and polls until they are ready. That is why this takes longer than a simple chatbot response. We are asking it to run the scenario workflow, not just summarize text."
+
+Timing note: the verified 500-path live run completed in about 3 minutes. If the run goes beyond 4 minutes, move to the fallback calibration result and come back to the browser when it finishes.
+
+Fill the wait with the mechanism (this is where the architecture explanation earns its keep):
+
+"The baseline is doing its PCA-Hull-White-GBM Cholesky draw. Chronos-2 is hitting the serverless SageMaker endpoint and getting back per-series quantile curves — and then, client-side, we're doing the inverse-CDF sampling and the lookback Gaussian copula to rebuild the joint tensor. The reason it's Fargate and not a plain Lambda is that the AutoGluon dependency is too heavy for a Lambda layer — so we bundle it in a container and run it as a task."
+
+Plain-English version for the mixed audience:
+
+"The baseline path is the familiar Monte Carlo view. Chronos-2 is the second scenario lens. The regime ribbon shows why the selected window is a stress window. The blend step decides how much weight to give that second lens under stress. Then the same pricing code computes the exposure chart and the EE, PFE, and ES summary."
+
+If a quant asks what Chronos-2 returns:
+
+"Chronos-2 returns per-series quantile curves. The code reconstructs joint paths client-side using inverse-CDF sampling and a lookback Gaussian copula. The endpoint does not directly emit joint paths."
+
+## Demo Step 3 - Point At The Output
+
+When the regime ribbon, chart, and exposure summary appear:
+
+SAY:
+
+"This is the payoff. The regime ribbon shows the stress score for the selected window. The exposure overlay shows the weighted-percentile PFE profile over time, and the table gives us the final EE, PFE, and ES numbers for baseline versus augmented."
+
+If the chart shows baseline and augmented lines:
+
+"The exact values depend on the run settings, but the interpretation is simple: the augmented line includes the Chronos-2 stress-aware path set. If it moves higher in the tail, that is the signal this PoC is designed to examine."
+
+Point at the exposure summary table:
+
+"For the presenter view, this table is the simplest readout. EE is the average exposure, PFE is the high-percentile tail number, and ES is the average beyond that tail threshold."
+
+For the verified 500-path live demo run, the app-generated result was:
+
+```text
+Baseline terminal PFE 97.5%  = $4.90M
+Augmented terminal PFE 97.5% = $5.35M
+Absolute lift                = +$445K
+Percent lift                 = +9.08%
+```
+
+Use this as the live demo headline. The 5,000-path artifact (Slide 12's +18.3%) is the higher-path reference run.
+
+Live demo settings, if asked:
+
+- As-of date: `2022-09-30`
+- Paths: `500` per engine
+- Stress weight: `0.5305`
+- Baseline PCA components: `5`
+
+If the live chart is flat or visually subtle:
+
+"The live run proves the orchestration path end to end and gives us an app-generated delta. For the higher-path reference run, I will point to the committed 5,000-path artifact in the repo."
+
+Do not overclaim:
+
+"This is a PoC sample book, not a production risk number."
+
+## Demo Step 4 - Natural-Language What-If
+
+For the staged demo, use the chat rather than the What-if panel. The panel stays in the app as a playground for follow-up exploration, but the live presentation should show the agent translating a business-language stress into tool calls.
+
+DO:
+
+Paste this exact prompt into the chat:
+
+```text
+What happens to exposure if EUR rates fall 50 basis points across the two-, five-, and ten-year tenors for the first 30 business days? Use the same stage-safe setup as the headline demo, compare baseline exposure with the conditional Chronos-2 augmentation, and show the resulting exposure profile and final EE, 97.5% PFE, and 97.5% ES.
+```
+
+SAY:
+
+"This is the conversational part of the demo. I am not filling out a form or reciting implementation fields. I am asking a scenario question, and the agent translates it into the tools for data, baseline, conditional Chronos-2, blending, pricing, and plotting."
+
+While it runs:
+
+"A 50 basis point EUR-rates move is easier for this audience to reason about than an arbitrary FX level shift. It touches the rates block directly, it maps cleanly to the EUR two-, five-, and ten-year series, and it makes the conditional scenario feel like a real risk-manager question. The conditioning matters here: the EUR-rates shift flows into Chronos-2 as covariate context, which is exactly the signal the parametric baseline structurally can't see."
+
+When the what-if output appears:
+
+"Now we have the exposure profiles side by side again, but this time the Chronos-2 path set was conditioned on an explicit EUR-rates stress. The chart is the weighted-percentile PFE profile; the table gives the final EE, PFE, and ES readout."
+
+## Demo Step 5 - Adjacent Use Cases
+
+If there is time after the chart:
+
+DO:
+
+Ask:
+
+```text
+What other Numerix workflows could Chronos-2 augment?
+```
+
+SAY:
+
+"This last question is for partner leaders. The point is not only this one PFE workflow. The same pattern can apply to stress testing, margin forecasting, market data gap filling, and scenario-based limits monitoring."
+
+## Fallback If The Live Run Is Slow
+
+Use this if the scenario run takes too long or the room is losing patience.
+
+SAY:
+
+"This is a real scenario run, and the compute jobs can take a few minutes. Rather than make everyone watch a spinner, I am going to use the recorded calibration result from the same live endpoint and then come back to the app when it finishes."
+
+Then cite the recorded calibration artifact:
+
+```text
+Baseline PFE 97.5%  = $5.61M
+Augmented PFE 97.5% = $6.63M
+Change              = +18.3%, about +$1.03M
+As-of date          = 2022-09-30
+Endpoint            = chronos2-demo-ep
+Source              = docs/results/headline_calibration.json
+```
+
+DO:
+
+If you want to make the artifact tangible, briefly show:
+
+```text
+docs/results/headline_calibration.json
+```
+
+SAY THE CAVEAT:
+
+"This is a real live-endpoint measurement, but it is one PoC sample book and one measured stress window. It is directional evidence, not a production-calibrated risk number."
+
+Never apologize at length or fumble. One sentence, switch to the fallback, keep the narration going. The mechanism is the same whether the paths are live or frozen — say that.
+
+**TRANSITION (after demo, back to slides):** "So that's the system working end to end. Let me close by being very precise about what this is — and what it isn't."
+
+---
 ---
 
 ## Slide 17 — What this is, and isn't
@@ -225,69 +456,14 @@
 ## Slide 20 — Q&A / closing
 
 **SAY:**
-"To leave you with the one-liner: correct and reweight — augment the tails, keep the pricing code. Thank you. What have I got wrong, or what would you want to see before you'd trust the number?"
+"To leave you with the one-liner: correct and reweight — augment the tails, keep the pricing code. Chronos-2 gives us a stress-aware scenario lens beside the existing Monte Carlo workflow; the value is not replacing the risk engine, it's showing where a different view of the future may change tail exposure, then validating that carefully. Thank you. What have I got wrong, or what would you want to see before you'd trust the number?"
 
-**DO / SHOW:** Invite questions openly. Use the Anticipated Q&A section below. If you don't know something, say "I don't know — let me follow up" rather than bluffing. With this audience a confident bluff is the only way to actually lose them.
-
----
----
-
-## A) Live Demo Walkthrough — detailed narration
-
-> **Goal:** show the agent loading data, running both engines async, blending under the current w_stress, pricing, and plotting — while you narrate over the latency. Keep talking through the async waits; never stand in silence watching a spinner.
-
-### Step 0 — Before you click anything (have these ready)
-- The Cloudscape SPA open and logged in (x-api-key already in the client).
-- A **second browser tab** with pre-baked plots from the committed live calibration run (the PFE overlay and the regime ribbon) — your fallback.
-- Know your fallback number cold: **baseline ≈ $5.6M, augmented ≈ $6.6M, +18.3%, live endpoint, as-of 2022-09-30, PoC sample book / one window.**
-
-### Step 1 — Open the app, set the scene
-**DO:** Bring up the Cloudscape SPA, chat panel on one side, charts area on the other.
-**SAY:** "This is the analyst-facing app — Cloudscape front end, talking to the AgentCore copilot. Everything you'll see the agent do maps to one of the nine tools we just looked at."
-
-### Step 2 — Type the natural-language what-if
-**DO:** Type into the chat, verbatim:
-> *"What's my PFE on the XCCY book if EUR rates sell off 50bps and equity vol spikes?"*
-Hit send.
-**SAY:** "I'm asking in plain English — no scenario IDs, no config files. The agent has to figure out the tool sequence itself."
-
-### Step 3 — Narrate the agent's plan as tokens stream
-**DO:** Point at the streaming tokens appearing in the chat (this is the SSE stream — CloudFront → Function URL → browser via fetch + ReadableStream).
-**SAY:** "Notice the response is streaming token by token — that's server-sent events coming through CloudFront in front of a Lambda Function URL. The agent is laying out its plan: load the panel, launch both engines, blend, price, plot. Watch it call the tools in order."
-
-### Step 4 — load_data fires
-**SAY:** "First it calls load_data — pulling the cross-asset panel, our twenty-one series, and slicing it as-of the scenario date. The EUR-rates shift and the vol spike get encoded as the what-if conditioning."
-
-### Step 5 — Both engines launch (the async wait — cover it)
-**DO:** The agent calls `run_baseline_mc` and `run_chronos2`; both are async ECS Fargate launches, then it polls with `check_baseline_mc` / `check_chronos2`. There will be a wait here.
-**SAY (fill the wait — this is where the architecture explanation earns its keep):**
-"Both engines are launching right now as asynchronous Fargate tasks — the agent fires them off and polls for completion, so they run in parallel rather than blocking. The baseline is doing its PCA-Hull-White-GBM Cholesky draw. Chronos-2 is hitting the serverless SageMaker endpoint and getting back per-series quantile curves — and then, client-side, we're doing the inverse-CDF sampling and the lookback Gaussian copula to rebuild the joint tensor. The reason it's Fargate and not a plain Lambda is the AutoGluon dependency is too heavy for a Lambda layer — so we bundle it in a container and run it as a task. While that finishes — the conditioning matters here: the EUR-rates sell-off and the vol spike both flow into Chronos-2 as covariate context, which is exactly the signal the parametric baseline structurally can't see."
-*(If still waiting:)* "And because Chronos-2 ingests VIX, MOVE, and WTI zero-shot, a vol spike like this is precisely the regime where the two engines should diverge — which is what the blender is about to exploit."
-
-### Step 6 — blend_paths with current w_stress
-**DO:** Agent calls `blend_paths`.
-**SAY:** "Both path sets are back, in the same tensor shape. The regime detector has computed w-stress for this scenario — under a vol spike it'll be elevated — and the blender is importance-weighting: tail toward Chronos-2 by w-stress, body kept parametric-heavy, every path retained with a non-zero weight."
-
-### Step 7 — price_book
-**DO:** Agent calls `price_book`.
-**SAY:** "Now the shared pricing engine reprices the cross-currency book — closed form, no nested MC — and produces EE, PFE, and ES as weighted percentiles over the blended set. Same code that would price the baseline-only paths."
-
-### Step 8 — plot, and the payoff
-**DO:** Agent calls `plot`; chart renders in the charts area — PFE overlay (baseline vs augmented) and the regime ribbon.
-**SAY:** "And here's the payoff: the PFE profile with baseline and augmented overlaid, and the regime ribbon showing where w-stress flagged stress. You can see the augmentation lifting the tail in the stressed region — which is the directional result. I'll repeat the caveat: that lift is about eighteen percent on the 97.5 PFE — measured live, as-of September 30th 2022; it's our PoC sample book on one window, so directional, not a production number."
-
-### Step 9 — (optional) point at the side-by-side profiles
-**SAY:** "If you want, we can flip to the side-by-side weighted-percentile profiles — baseline, Chronos-only, and blended — so you can see how much of the move comes from the tail reweighting versus the body."
-
-### Fallback plan (endpoint slow or unavailable)
-**DO:** Switch to the second tab with pre-baked plots.
-**SAY:** "The live endpoint's taking longer than I want to make you watch — let me show you the same result from our committed calibration run, which is what our regression test actually pins. Here's the PFE overlay and the regime ribbon from that run." Then narrate Steps 6–8 against the static images.
-**SAY (the honest framing):** "These are from the committed live calibration run in `docs/results` — same pipeline, measured against the live endpoint. Baseline about 5.6 million, augmented about 6.6, plus eighteen percent on the 97.5 PFE, as-of September 30th 2022. Multi-window backtesting is exactly what's next on the roadmap."
-> Never apologize at length or fumble. One sentence, switch to the fallback, keep the narration going. The mechanism is the same whether the paths are live or frozen — say that.
+**DO / SHOW:** Invite questions openly. Use the Anticipated Q&A sections below. If you don't know something, say "I don't know — let me follow up" rather than bluffing. With this audience a confident bluff is the only way to actually lose them.
 
 ---
+---
 
-## B) Anticipated Q&A
+## A) Anticipated Q&A — quant experts
 
 > Answers are 2–4 sentences, defensible, honest. If a question goes past what you know, say "I'd have to check / follow up" — do not invent.
 
@@ -327,6 +503,25 @@ They're deliberate, transparent defaults for the PoC, not fitted optima — fift
 **Q12. "Does the same downstream code really consume either path set unchanged?"**
 Yes — that's the core design invariant. Both engines emit the identical PathSet tensor — n-paths by horizon by n-series — plus weights, and the pricing engine takes that contract regardless of source. We test all three inputs — baseline-only, Chronos-only, blended — through the same compute-metrics path.
 
+**Q13. "Why use Fargate instead of Lambda for the heavy jobs?"**
+The baseline and Chronos-2 jobs are longer-running containerized workloads, and the Chronos-2 path includes AutoGluon dependencies that are too heavy for a simple Lambda layer.
+
+---
+
+## B) Anticipated Q&A — partner / alliance leaders
+
+**Q: What is the business value?**
+It shows how AWS can add AI-assisted scenario exploration to an existing risk workflow without forcing a platform replacement.
+
+**Q: Why is this relevant to Numerix?**
+Numerix owns trusted pricing and risk workflows. This PoC shows how Chronos-2 can augment scenario generation and interactive what-if exploration around that workflow.
+
+**Q: What should happen next?**
+Backtest across many dates and stress windows, broaden the book, harden governance, and define a partner-ready joint demo or offer.
+
+**Q: How should we position this externally?**
+As a PoC for stress-aware scenario augmentation, not as a production risk engine.
+
 ---
 
 ## C) Presenter cheat-sheet
@@ -356,12 +551,21 @@ Yes — that's the core design invariant. Both engines emit the identical PathSe
 - **SA-CCR:** Standardized Approach for Counterparty Credit Risk — a regulatory exposure formula.
 - **IMM:** Internal Model Method — a bank's own approved exposure model. *(We're a challenger to these, not approved by them.)*
 
+**Words to use**
+- "Augment"
+- "Second scenario lens"
+- "Stress-aware view"
+- "Same downstream pricing code"
+- "Directional PoC result"
+- "Validation and governance are next"
+
 ### Things to NEVER say / overclaim
 - ❌ Don't call it **"production"** or a **"calibrated production risk number."** It's a PoC sample book.
 - ✅ **Do** cite the measured **~2,000×** — but always as the structural closed-form-vs-nested-MC gap, never as a production SLA.
 - ❌ Don't claim **regulatory approval or compliance** (FRTB / SA-CCR / IMM). It's a human-in-the-loop challenger.
 - ❌ Don't say it **"replaces"** Numerix / the parametric model. It **augments** — runs alongside, never instead.
 - ❌ Don't say Chronos-2 **"outputs joint paths."** It outputs **per-series quantiles**; *we* reconstruct the joint tensor.
-- ✅ Cite **+18.3%** (live, as-of 2022-09-30), but always pair it with "PoC sample book, one window — directional, not a calibrated production number."
+- ✅ Cite **+18.3%** (live, as-of 2022-09-30, 5,000 paths), but always pair it with "PoC sample book, one window — directional, not a calibrated production number." The stage-safe 500-path live run is **+9.08%**.
 - ❌ Don't claim the **Gaussian copula captures tail dependence.** Be honest: it couples marginals; richer copulas are roadmap.
+- ❌ Don't promise **"guaranteed lift"** or say the **"model is validated."** Multi-window backtesting is the next step.
 - ✅ When unsure, say **"I don't know — let me follow up."** With quants, that beats a confident bluff every time.

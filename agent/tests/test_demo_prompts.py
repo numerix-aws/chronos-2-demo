@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[2]
-SCRIPT = (REPO / "docs/demo/demo-first-presenter-script.md").read_text()
+SCRIPT = (REPO / "docs/demo/demo-script.md").read_text()
 E2E = (REPO / "frontend/tests/e2e/happy_path.spec.ts").read_text()
 
 

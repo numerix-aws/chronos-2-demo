@@ -421,7 +421,7 @@ def test_clean_archive_rehearsal_stages_inputs_and_installs_relay_hermetically(t
     build_root = tmp_path / "build"
     for relative_path in (
         "docs/runbook.md",
-        "docs/demo/demo-first-presenter-script.md",
+        "docs/demo/demo-script.md",
         "tools/lambda/sse_relay/package.json",
         "tools/lambda/sse_relay/package-lock.json",
         "tools/lambda/sse_relay/protocol.test.mjs",
