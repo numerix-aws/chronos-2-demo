@@ -218,8 +218,8 @@ test.describe('Numerix × Chronos-2 demo live happy path', () => {
       timeout: 6 * 60 * 1000,
     });
     const toolTrace = page.getByRole('region', { name: /tool trace/i });
-    await expect(toolTrace).toContainText(/Load data/i, { timeout: 6 * 60 * 1000 });
-    await expect(toolTrace).toContainText(/Price book/i, { timeout: 6 * 60 * 1000 });
+    await expect(toolTrace).toContainText(/Market data/i, { timeout: 6 * 60 * 1000 });
+    await expect(toolTrace).toContainText(/Pricing/i, { timeout: 6 * 60 * 1000 });
 
     const exposureSummary = page.getByRole('region', { name: /exposure summary/i });
     await expect(exposureSummary).toContainText(/Baseline/, { timeout: 6 * 60 * 1000 });
