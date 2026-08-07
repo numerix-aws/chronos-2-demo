@@ -540,9 +540,17 @@ def run_quantitative_workflow(
         "spec": "regime_ribbon",
         "regimes_uri": loaded["regimes_uri"],
     }, expected_plot_role="regime_ribbon")
+    # Launch both engines before polling either so the Fargate tasks run
+    # concurrently; polls stay sequential (baseline first) so the event
+    # stream remains deterministic.
     baseline_launch = yield from runner.call("run_baseline_mc", {
         **execution,
         "panel_uri": loaded["panel_uri"],
+    })
+    chronos_launch = yield from runner.call("run_chronos2", {
+        **execution,
+        "panel_uri": loaded["panel_uri"],
+        "covariates_uri": loaded["covariates_uri"],
     })
     baseline = yield from runner.poll(
         "check_baseline_mc",
@@ -552,11 +560,6 @@ def run_quantitative_workflow(
         expected_source="parametric",
         expected_role="baseline",
     )
-    chronos_launch = yield from runner.call("run_chronos2", {
-        **execution,
-        "panel_uri": loaded["panel_uri"],
-        "covariates_uri": loaded["covariates_uri"],
-    })
     chronos = yield from runner.poll(
         "check_chronos2",
         execution_id=spec.execution_id,

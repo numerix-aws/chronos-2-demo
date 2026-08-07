@@ -386,13 +386,16 @@ def test_fixed_dag_repeats_polls_and_emits_structured_results():
     )
 
     names = [name for name, _arguments in client.calls]
+    # Both engines launch before either poll loop so the Fargate tasks
+    # overlap; polls stay sequential (baseline first) to keep the event
+    # stream deterministic.
     assert names == [
         "load_data",
         "plot",
         "run_baseline_mc",
-        "check_baseline_mc",
-        "check_baseline_mc",
         "run_chronos2",
+        "check_baseline_mc",
+        "check_baseline_mc",
         "check_chronos2",
         "check_chronos2",
         "blend_paths",
