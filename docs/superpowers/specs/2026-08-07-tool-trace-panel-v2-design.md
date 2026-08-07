@@ -127,12 +127,20 @@ else `plots`. When the result arrives, the call is moved to the stage its
 `plot_role` dictates (the reducer re-homes it; provisional placement is only
 cosmetic while running).
 
-**Poll collapse:** `check_baseline_mc` / `check_chronos2` events never create
-`TraceCall`s. Each `running` arrival increments `polling.attempts`; each
-`done` result updates `polling.lastStatus` from `task_status` and, when
-`ready === true`, sets `endedAt`. A `failed` check event sets
-`polling.failed`, stamps `endedAt`, and records its `errorMessage` on the
-stage's launch call (or a synthetic call row if the launch call is absent).
+**Poll collapse:** successful `check_baseline_mc` / `check_chronos2` events
+never create `TraceCall`s. Each `running` arrival increments
+`polling.attempts`; each `done` result updates `polling.lastStatus` from
+`task_status` and, when `ready === true`, sets `endedAt`.
+
+A **failed** check event is the exception: it materializes as its own
+`TraceCall` row in the stage (name `check_baseline_mc`/`check_chronos2`,
+status `failed`, `startedAt` = the poll summary's `startedAt`, `endedAt` =
+arrival, `errorMessage` from the event). It also sets `polling.failed` and
+stamps `polling.endedAt`. The launch call keeps its own true status — a
+successfully launched task whose polling later fails shows `run_*` done and
+the check row failed, which matches what actually happened (and matches the
+real incident this design grew out of: the chronos2 task launched fine, then
+died mid-run).
 
 **Result envelope tolerance:** `done` events from the deterministic workflow
 path carry `result = {status: 'ok', result: {...}}` (see `workflow.py`
@@ -210,7 +218,11 @@ Vitest (existing frontend suite conventions):
 
 **Reducer tests** (new `toolTrace.test.ts`, replacing marker-parse tests):
 - groups events into run → stage → call per the mapping table
-- collapses `check_*` events into `PollSummary` (attempts, lastStatus, ready)
+- collapses successful `check_*` events into `PollSummary` (attempts,
+  lastStatus, ready)
+- a failed `check_*` materializes its own failed call row (with the poll
+  summary's start time and the event's error message) while the `run_*`
+  launch call keeps its done status
 - envelope-wrapped and bare payloads both yield correct summaries
 - `price_book` summary formats terminal PFE compactly
 - failed event captures `result.message`; failed check marks stage failed
