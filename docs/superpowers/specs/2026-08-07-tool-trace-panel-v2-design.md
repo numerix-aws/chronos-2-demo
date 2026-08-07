@@ -123,9 +123,11 @@ always render (pending skeleton from run start).
 **Plot disambiguation:** a `plot` call's stage is decided by `plot_role` in
 its result. While a plot is still `running` (no result yet), it is
 provisionally assigned: `regime` if the regime stage has no done plot yet,
-else `plots`. When the result arrives, the call is moved to the stage its
-`plot_role` dictates (the reducer re-homes it; provisional placement is only
-cosmetic while running).
+else `plots`. When the result arrives with status `done`, the call is moved
+to the stage its `plot_role` dictates (the reducer re-homes it; provisional
+placement is only cosmetic while running). A `failed` plot call has no
+`plot_role` available, so it is not re-homed — it stays in the provisional
+stage where its running row was placed.
 
 **Poll collapse:** successful `check_baseline_mc` / `check_chronos2` events
 never create `TraceCall`s. Each `running` arrival increments
@@ -170,9 +172,11 @@ all are done (and polling, if any, ended ready); else `pending`.
 `traceReducer(runs: TraceRun[], action) => TraceRun[]` with actions
 `run_started {runId, promptPreview, at}`,
 `tool_event {event, at}` (applies to the newest run only),
-`run_ended {at}` (marks still-running calls/stages `failed` with a generic
-"stream ended before completion" message only when triggered by a stream
-error; a clean `done` leaves states as they are).
+`run_ended {at, failed}` (stamps `endedAt` on the run; when `failed` is
+true, marks still-running calls/stages as failed with a generic "stream ended
+before completion" message, and adds a synthetic failed check call for any
+stage with active polling so the error is visible in the UI; a clean
+completion with `failed: false` only stamps `endedAt`).
 
 ## 2. App wiring — `App.tsx`
 
@@ -203,8 +207,9 @@ error; a clean `done` leaves states as they are).
   latest done call.
 - **Poll heartbeat:** while an engine stage is polling, its summary line
   shows `Fargate task {lastStatus} · attempt {n} · {elapsed}` with a
-  1-second interval ticker (single `setInterval` for the panel, active only
-  while any stage is polling; cleared otherwise).
+  1-second interval ticker (single `setInterval` for the panel, active
+  while any run is unfinished; cleared when all runs are done, keeping
+  call durations live throughout execution).
 - **Call detail:** a stage with >1 call (e.g. Pricing's three `price_book`
   calls) gets a small expand toggle revealing per-call rows (name, summary,
   duration, status). Collapsed by default.
