@@ -3,6 +3,7 @@ import {
   formatDuration,
   stripToolTraceMarkers,
   traceReducer,
+  summaryFor,
   type ToolStreamEvent,
   type TraceRun,
 } from '../src/toolTrace';
@@ -109,5 +110,82 @@ describe('formatDuration', () => {
     expect(formatDuration(850)).toBe('850ms');
     expect(formatDuration(12_000)).toBe('12s');
     expect(formatDuration(94_000)).toBe('1m 34s');
+  });
+});
+
+describe('traceReducer: poll collapse', () => {
+  const launch = (runs: TraceRun[]) =>
+    tool(
+      tool(runs, { toolUseId: 'l1', name: 'run_chronos2', status: 'running' }, 1100),
+      {
+        toolUseId: 'l1', name: 'run_chronos2', status: 'done',
+        result: { status: 'ok', result: { task_arn: 'arn:aws:ecs:...:task/x' } },
+      },
+      1200,
+    );
+
+  it('successful checks collapse into a PollSummary, never call rows', () => {
+    let runs = launch(start());
+    for (let i = 0; i < 3; i += 1) {
+      runs = tool(runs, { toolUseId: `c${i}`, name: 'check_chronos2', status: 'running' }, 2000 + i * 100);
+      runs = tool(runs, {
+        toolUseId: `c${i}`, name: 'check_chronos2', status: 'done',
+        result: { status: 'ok', result: { task_status: 'RUNNING', ready: false } },
+      }, 2050 + i * 100);
+    }
+    runs = tool(runs, { toolUseId: 'c9', name: 'check_chronos2', status: 'running' }, 3000);
+    runs = tool(runs, {
+      toolUseId: 'c9', name: 'check_chronos2', status: 'done',
+      result: { status: 'ok', result: { task_status: 'STOPPED', ready: true } },
+    }, 3100);
+
+    const s = stage(runs, 'chronos');
+    expect(s.calls).toHaveLength(1); // only the launch call
+    expect(s.polling).toMatchObject({ attempts: 4, lastStatus: 'STOPPED', failed: false });
+    expect(s.polling!.endedAt).toBe(3100);
+    expect(s.status).toBe('done');
+  });
+
+  it('a failed check materializes its own failed row; launch stays done', () => {
+    let runs = launch(start());
+    runs = tool(runs, { toolUseId: 'c1', name: 'check_chronos2', status: 'running' }, 2000);
+    runs = tool(runs, {
+      toolUseId: 'c1', name: 'check_chronos2', status: 'failed',
+      result: { status: 'error', message: 'chronos2 task arn:... failed: Essential container in task exited (exit code 1)' },
+    }, 2500);
+
+    const s = stage(runs, 'chronos');
+    expect(s.status).toBe('failed');
+    const launchCall = s.calls.find((c) => c.name === 'run_chronos2')!;
+    expect(launchCall.status).toBe('done');
+    const checkCall = s.calls.find((c) => c.name === 'check_chronos2')!;
+    expect(checkCall.status).toBe('failed');
+    expect(checkCall.startedAt).toBe(2000); // poll summary start, not event arrival
+    expect(checkCall.errorMessage).toMatch(/exit code 1/);
+  });
+});
+
+describe('summaryFor', () => {
+  it('reads envelope-wrapped and bare payloads identically', () => {
+    const bare = { n_rows: 1260, as_of_date: '2022-09-30' };
+    const wrapped = { status: 'ok', result: bare };
+    expect(summaryFor('load_data', bare)).toBe('1,260 rows · as-of 2022-09-30');
+    expect(summaryFor('load_data', wrapped)).toBe('1,260 rows · as-of 2022-09-30');
+  });
+
+  it('formats blend, pricing, plot, and launch summaries', () => {
+    expect(summaryFor('blend_paths', { w_stress: 0.5305, n_paths: 1000 }))
+      .toBe('w_stress 0.53 · 1,000 paths');
+    expect(summaryFor('price_book', {
+      scenario_role: 'baseline', terminal: { pfe_975: 4_900_000 },
+    })).toBe('baseline · terminal PFE $4.9M');
+    expect(summaryFor('plot', { plot_role: 'pfe_overlay' })).toBe('pfe_overlay');
+    expect(summaryFor('run_baseline_mc', { task_arn: 'arn:x' })).toBe('Fargate task launched');
+  });
+
+  it('returns undefined on missing fields instead of throwing', () => {
+    expect(summaryFor('load_data', {})).toBeUndefined();
+    expect(summaryFor('price_book', { scenario_role: 'baseline' })).toBeUndefined();
+    expect(summaryFor('load_data', undefined)).toBeUndefined();
   });
 });
