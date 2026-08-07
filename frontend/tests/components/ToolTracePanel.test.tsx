@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ToolTracePanel } from '../../src/components/ToolTracePanel';
 import type { TraceRun } from '../../src/toolTrace';
@@ -20,6 +20,14 @@ const skeleton = (over: Partial<TraceRun> = {}): TraceRun => ({
 });
 
 describe('ToolTracePanel', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-07T10:00:00Z'));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it('renders a quiet empty state with no runs', () => {
     render(<ToolTracePanel runs={[]} />);
     expect(screen.getByText(/No tool activity yet/i)).toBeInTheDocument();
@@ -36,19 +44,21 @@ describe('ToolTracePanel', () => {
   });
 
   it('shows a poll heartbeat line while an engine stage is polling', () => {
-    const run = skeleton();
+    const now = Date.now();
+    const run = skeleton({ startedAt: now - 95_000 }); // 1m 35s ago
     run.stages[3] = {
       ...run.stages[3],
       status: 'running',
       calls: [{
         toolUseId: 'l1', name: 'run_chronos2', status: 'done',
-        startedAt: 1000, endedAt: 1200, summary: 'Fargate task launched',
+        startedAt: now - 95_000, endedAt: now - 94_000, summary: 'Fargate task launched',
       }],
-      polling: { attempts: 47, lastStatus: 'RUNNING', startedAt: 1200, failed: false },
+      polling: { attempts: 47, lastStatus: 'RUNNING', startedAt: now - 94_000, failed: false },
     };
     render(<ToolTracePanel runs={[run]} />);
     expect(screen.getByText(/attempt 47/i)).toBeInTheDocument();
     expect(screen.getByText(/RUNNING/)).toBeInTheDocument();
+    expect(screen.getByText(/1m 34s/)).toBeInTheDocument(); // elapsed from polling.startedAt
   });
 
   it('renders failure messages for failed stages', () => {
@@ -74,5 +84,17 @@ describe('ToolTracePanel', () => {
     expect(screen.getByText(/first run/)).toBeInTheDocument();
     expect(screen.getByText(/second run/)).toBeInTheDocument();
     expect(screen.getAllByText('Market data')).toHaveLength(1);
+  });
+
+  it('renders humanized status in run header', () => {
+    const now = Date.now();
+    const run = skeleton({ startedAt: now - 5000 });
+    run.stages[0].status = 'running';
+    run.stages[0].calls = [{
+      toolUseId: 'a', name: 'load_data', status: 'running', startedAt: now - 5000,
+    }];
+    render(<ToolTracePanel runs={[run]} />);
+    // Header description should show 'Running' (capitalized) not 'running'
+    expect(screen.getByText(/Running · 5s/)).toBeInTheDocument();
   });
 });

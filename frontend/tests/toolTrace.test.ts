@@ -103,6 +103,21 @@ describe('traceReducer: runs and stages', () => {
     expect(stage(runs, 'plots').calls[0].status).toBe('done');
     expect(stage(runs, 'regime').calls).toHaveLength(1);
   });
+
+  it('failed plot stays in provisional stage (no plot_role to re-home)', () => {
+    let runs = start();
+    runs = tool(runs, { toolUseId: 'p1', name: 'plot', status: 'running' }, 1100);
+    expect(stage(runs, 'regime').calls).toHaveLength(1);
+    runs = tool(runs, {
+      toolUseId: 'p1', name: 'plot', status: 'failed',
+      result: { status: 'error', message: 'covariate missing' },
+    }, 1200);
+    // Failed call remains in regime (no re-homing)
+    expect(stage(runs, 'regime').calls).toHaveLength(1);
+    expect(stage(runs, 'regime').calls[0].status).toBe('failed');
+    expect(stage(runs, 'regime').status).toBe('failed');
+    expect(stage(runs, 'plots').calls).toHaveLength(0);
+  });
 });
 
 describe('formatDuration', () => {
@@ -162,6 +177,28 @@ describe('traceReducer: poll collapse', () => {
     expect(checkCall.status).toBe('failed');
     expect(checkCall.startedAt).toBe(2000); // poll summary start, not event arrival
     expect(checkCall.errorMessage).toMatch(/exit code 1/);
+  });
+
+  it('run_ended with active polling adds a synthetic failed call', () => {
+    let runs = launch(start());
+    runs = tool(runs, { toolUseId: 'c1', name: 'check_chronos2', status: 'running' }, 2000);
+    runs = tool(runs, {
+      toolUseId: 'c1', name: 'check_chronos2', status: 'done',
+      result: { status: 'ok', result: { task_status: 'RUNNING', ready: false } },
+    }, 2100);
+    // Stream ends while poll still active
+    runs = traceReducer(runs, { type: 'run_ended', at: 2500, failed: true });
+
+    const s = stage(runs, 'chronos');
+    expect(s.status).toBe('failed');
+    expect(s.polling!.failed).toBe(true);
+    const syntheticCall = s.calls.find((c) => c.toolUseId === 'run-ended-chronos')!;
+    expect(syntheticCall).toBeDefined();
+    expect(syntheticCall.name).toBe('check_chronos2');
+    expect(syntheticCall.status).toBe('failed');
+    expect(syntheticCall.startedAt).toBe(2000); // polling.startedAt
+    expect(syntheticCall.endedAt).toBe(2500);
+    expect(syntheticCall.errorMessage).toMatch(/stream ended before completion/);
   });
 });
 

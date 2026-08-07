@@ -128,17 +128,27 @@ function runStatus(run: TraceRun): TraceStageStatus {
   return 'pending';
 }
 
+function humanizeStatus(status: TraceStageStatus): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
 function RunSection({ run, isNewest, now }: { run: TraceRun; isNewest: boolean; now: number }) {
   const [expanded, setExpanded] = useState(isNewest);
   useEffect(() => setExpanded(isNewest), [isNewest]);
   const visibleStages = run.stages.filter((s) => s.key !== 'other' || s.calls.length > 0);
+  const status = runStatus(run);
   return (
     <ExpandableSection
       variant="footer"
       expanded={expanded}
       onChange={({ detail }) => setExpanded(detail.expanded)}
-      headerText={run.promptPreview}
-      headerDescription={`${runStatus(run)} · ${durationOf(run.startedAt, run.endedAt, now)}`}
+      headerText={
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Dot status={status} />
+          {run.promptPreview}
+        </span>
+      }
+      headerDescription={`${humanizeStatus(status)} · ${durationOf(run.startedAt, run.endedAt, now)}`}
     >
       {expanded && (
         <SpaceBetween size="xs">

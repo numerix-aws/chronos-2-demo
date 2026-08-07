@@ -223,10 +223,13 @@ function applyCall(run: TraceRun, event: ToolStreamEvent, at: number): void {
   } else {
     call.summary = summaryFor(event.name, event.result);
   }
-  const target = stageKeyFor(event, run);
-  if (from.key !== target) {
-    from.calls = from.calls.filter((c) => c.toolUseId !== event.toolUseId);
-    ensureStage(run, target).calls.push(call);
+  // Only re-home when status is 'done' — failed calls lack plot_role so target is unknowable
+  if (event.status === 'done') {
+    const target = stageKeyFor(event, run);
+    if (from.key !== target) {
+      from.calls = from.calls.filter((c) => c.toolUseId !== event.toolUseId);
+      ensureStage(run, target).calls.push(call);
+    }
   }
   for (const s of run.stages) s.status = rollupStatus(s);
 }
@@ -263,6 +266,16 @@ export function traceReducer(runs: TraceRun[], action: TraceAction): TraceRun[] 
       if (s.polling && s.polling.endedAt === undefined) {
         s.polling.failed = true;
         s.polling.endedAt = action.at;
+        // Add synthetic failed call row so the error is visible in the UI
+        const checkToolName = s.key === 'baseline' ? 'check_baseline_mc' : 'check_chronos2';
+        s.calls.push({
+          toolUseId: `run-ended-${s.key}`,
+          name: checkToolName,
+          status: 'failed',
+          startedAt: s.polling.startedAt,
+          endedAt: action.at,
+          errorMessage: 'stream ended before completion',
+        });
       }
       s.status = rollupStatus(s);
     }
