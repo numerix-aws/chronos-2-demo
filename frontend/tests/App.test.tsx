@@ -333,16 +333,13 @@ describe('App', () => {
     expect(prompt).not.toContain('exposure_summary');
   });
 
-  it('renders streamed tool trace markers outside the chat transcript', async () => {
+  it('strips legacy trace markers from chat text without creating trace rows', async () => {
     async function* traceStream() {
       yield {
         type: 'chunk' as const,
         text: 'Starting\n::tool-trace{name="load_data" status="running" label="Load data"}\n',
       };
-      yield {
-        type: 'chunk' as const,
-        text: '::tool-trace{name="load_data" status="done" label="Load data"}\nDone.',
-      };
+      yield { type: 'chunk' as const, text: 'Done.' };
     }
     streamAgentMock.mockReturnValue(traceStream());
 
@@ -350,12 +347,14 @@ describe('App', () => {
     await userEvent.type(screen.getByLabelText(/message/i), 'run demo');
     await userEvent.click(screen.getByRole('button', { name: /send/i }));
 
-    const trace = await screen.findByRole('region', { name: /tool trace/i });
-    expect(trace).toHaveTextContent('Load data');
-    expect(trace).toHaveTextContent('Done');
-
     const chat = screen.getByRole('region', { name: /^chat$/i });
+    await screen.findByText(/Done\./);
     expect(chat).not.toHaveTextContent('::tool-trace');
+
+    const trace = screen.getByRole('region', { name: /tool trace/i });
+    // Markers no longer feed the trace; the run skeleton renders instead.
+    expect(trace).toHaveTextContent('Market data');
+    expect(trace).not.toHaveTextContent('Load data');
   });
 
   it('renders structured exposure by role regardless of arrival order and keeps text, trace, and HTTPS plots', async () => {
@@ -435,8 +434,9 @@ describe('App', () => {
     await userEvent.click(screen.getByRole('button', { name: /send/i }));
 
     const trace = await screen.findByRole('region', { name: /tool trace/i });
-    expect(trace).toHaveTextContent('Load data');
-    expect(trace).toHaveTextContent('Failed');
+    expect(trace).toHaveTextContent('Market data');
+    expect(trace).toHaveTextContent('Pricing');
+    expect(trace).toHaveTextContent('not a completed result');
     expect(screen.getByText('Baseline')).toBeInTheDocument();
     expect(screen.getByText('Chronos-only')).toBeInTheDocument();
     expect(screen.getByText('Augmented')).toBeInTheDocument();

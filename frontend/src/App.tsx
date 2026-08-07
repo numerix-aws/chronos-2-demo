@@ -9,7 +9,7 @@ import {
   SpaceBetween,
 } from '@cloudscape-design/components';
 import '@cloudscape-design/global-styles/index.css';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { ChatPanel, type PlotArtifact } from './components/ChatPanel';
 import {
   ExposureSummary,
@@ -29,10 +29,9 @@ import {
 } from './api/stream';
 import { clearSession, loadSession, saveSession } from './state/session';
 import {
-  parseToolTraceEvents,
-  reduceToolTraceEvents,
   stripToolTraceMarkers,
-  type ToolTraceEvent,
+  traceReducer,
+  type TraceRun,
 } from './toolTrace';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -85,7 +84,7 @@ export function App() {
   const connectingRef = useRef(false);
   const connectAttemptRef = useRef(0);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [toolTraceEvents, setToolTraceEvents] = useState<ToolTraceEvent[]>([]);
+  const [traceRuns, dispatchTrace] = useReducer(traceReducer, [] as TraceRun[]);
   const [activeIdentity, setActiveIdentity] = useState<ArtifactIdentity | null>(null);
   const [runSpec, setRunSpec] = useState<RunSpecEvent | null>(null);
   const [exposureByIdentity, setExposureByIdentity] = useState<Record<string, ExposureRow>>({});
@@ -112,7 +111,6 @@ export function App() {
       .then((r) => {
         if (cancelled) return;
         setSessionError(null);
-        setToolTraceEvents(r.messages.flatMap((m) => parseToolTraceEvents(m.content)));
         setMessages((prev) =>
           prev.length > 0
             ? prev
@@ -171,8 +169,6 @@ export function App() {
   const handleSend = async (text: string) => {
     if (!client || !session) return;
     setStreaming(true);
-    const priorTraceEvents = toolTraceEvents;
-    const structuredTraceEvents: ToolTraceEvent[] = [];
     let boundIdentity: ArtifactIdentity | null = null;
     const admitIdentity = (identity: ArtifactIdentity, artifactName: string) => {
       if (!boundIdentity) {
@@ -192,6 +188,13 @@ export function App() {
       return true;
     };
 
+    dispatchTrace({
+      type: 'run_started',
+      runId: `run-${Date.now()}`,
+      promptPreview: text.length > 60 ? `${text.slice(0, 60)}…` : text,
+      at: Date.now(),
+    });
+
     setActiveIdentity(null);
     setRunSpec(null);
     setExposureByIdentity({});
@@ -204,6 +207,7 @@ export function App() {
       { role: 'user', content: text, turn_id: `local-${Date.now()}` },
     ]);
     let rawAcc = '';
+    let runEndedDispatched = false;
     setMessages((prev) => [
       ...prev,
       { role: 'assistant', content: '', turn_id: `local-asst-${Date.now()}` },
@@ -240,11 +244,6 @@ export function App() {
         }
       } else if (ev.type === 'chunk') {
         rawAcc += ev.text;
-        setToolTraceEvents([
-          ...priorTraceEvents,
-          ...structuredTraceEvents,
-          ...parseToolTraceEvents(rawAcc),
-        ]);
         const visibleText = stripToolTraceMarkers(rawAcc);
         setMessages((prev) => {
           const next = [...prev];
@@ -252,16 +251,16 @@ export function App() {
           return next;
         });
       } else if (ev.type === 'tool') {
-        structuredTraceEvents.push({
-          id: ev.toolUseId,
-          name: ev.name,
-          status: ev.status,
+        dispatchTrace({
+          type: 'tool_event',
+          at: Date.now(),
+          event: {
+            toolUseId: ev.toolUseId,
+            name: ev.name,
+            status: ev.status,
+            ...(ev.result !== undefined ? { result: ev.result } : {}),
+          },
         });
-        setToolTraceEvents([
-          ...priorTraceEvents,
-          ...structuredTraceEvents,
-          ...parseToolTraceEvents(rawAcc),
-        ]);
         if (ev.status === 'done' && ev.name === 'plot') {
           const artifact = plotArtifactFromToolResult(ev.result);
           if (artifact && admitIdentity(artifact, 'plot')) {
@@ -282,9 +281,21 @@ export function App() {
           next[next.length - 1] = { ...next[next.length - 1], content: rawAcc };
           return next;
         });
+        if (!runEndedDispatched) {
+          dispatchTrace({ type: 'run_ended', at: Date.now(), failed: true });
+          runEndedDispatched = true;
+        }
       }
+      }
+      if (!runEndedDispatched) {
+        dispatchTrace({ type: 'run_ended', at: Date.now(), failed: false });
+        runEndedDispatched = true;
       }
     } catch (error: unknown) {
+      if (!runEndedDispatched) {
+        dispatchTrace({ type: 'run_ended', at: Date.now(), failed: true });
+        runEndedDispatched = true;
+      }
       if (isUnauthorized(error)) {
         clearSession();
         setSession(null);
@@ -391,7 +402,7 @@ export function App() {
             </section>
             <section aria-label="Tool trace" role="region">
               <Header variant="h2">Tool trace</Header>
-              <ToolTracePanel items={reduceToolTraceEvents(toolTraceEvents)} />
+              <ToolTracePanel runs={traceRuns} />
             </section>
             <section aria-label="Exposure summary" role="region">
               <Header variant="h2">Exposure summary</Header>
