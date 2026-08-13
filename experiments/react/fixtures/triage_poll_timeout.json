@@ -1,0 +1,133 @@
+{
+  "artifact_manifest": [
+    {
+      "kind": "paths",
+      "scenario_role": "baseline",
+      "sha256": "e9ee90512b2f4d7a76722edea5fefdf4f622f62beb3db49b263f059f157061ea",
+      "uri": "s3://chronos2demostorage-databuckete3889a50-sls6gcmkasdh/runs/05bdeb0a5fbe4835a8952254fe95bc46/baseline.pkl"
+    }
+  ],
+  "defect": "poll_timeout",
+  "diagnostics": null,
+  "events": [
+    {
+      "name": "load_data",
+      "seq": 0,
+      "status": "done",
+      "type": "tool"
+    },
+    {
+      "name": "plot",
+      "plot_role": "regime_ribbon",
+      "seq": 1,
+      "status": "done",
+      "type": "tool"
+    },
+    {
+      "name": "run_baseline_mc",
+      "seq": 2,
+      "status": "done",
+      "type": "tool"
+    },
+    {
+      "name": "run_chronos2",
+      "seq": 3,
+      "status": "done",
+      "type": "tool"
+    },
+    {
+      "name": "check_baseline_mc",
+      "ready": true,
+      "seq": 4,
+      "status": "done",
+      "task_status": "STOPPED",
+      "type": "tool"
+    },
+    {
+      "attempt": 1,
+      "name": "check_chronos2",
+      "ready": false,
+      "seq": 5,
+      "status": "done",
+      "task_status": "RUNNING",
+      "type": "tool"
+    },
+    {
+      "attempt": 2,
+      "name": "check_chronos2",
+      "ready": false,
+      "seq": 6,
+      "status": "done",
+      "task_status": "RUNNING",
+      "type": "tool"
+    },
+    {
+      "attempt": 3,
+      "name": "check_chronos2",
+      "ready": false,
+      "seq": 7,
+      "status": "done",
+      "task_status": "RUNNING",
+      "type": "tool"
+    },
+    {
+      "message": "check_chronos2 failed: poll attempt limit exhausted; latest task_status=RUNNING",
+      "name": "check_chronos2",
+      "seq": 8,
+      "status": "failed",
+      "type": "tool"
+    }
+  ],
+  "expected_posture": "degraded",
+  "exposure": {},
+  "ground_truth": {
+    "defect": "poll_timeout",
+    "failed_step": "check_chronos2",
+    "keywords": [
+      "timeout",
+      "timed out",
+      "poll",
+      "still running",
+      "running",
+      "exhausted",
+      "chronos"
+    ]
+  },
+  "run_spec": {
+    "as_of_date": "2022-09-30",
+    "baseline_components": 5,
+    "baseline_seed": 0,
+    "book_id": "cross_asset_demo_v1",
+    "chronos_seed": 0,
+    "conditioning": null,
+    "execution_id": "05bdeb0a5fbe4835a8952254fe95bc46",
+    "horizon": 252,
+    "lookback_days": 1260,
+    "n_paths": 500,
+    "profile": "stage_safe_headline_v1",
+    "provenance": {
+      "agent_image_digest": "sha256:04e56ae654c9a1b33b5ee1e884ead961ea5e90fa503e2d3d0a8aae28b643f744",
+      "baseline_image_digest": "sha256:1ea87251c22e5040fe466d2fd79d7f99e0dbb1a915136fd5d96f4b07aa8bb5f5",
+      "blend_version": "importance_weight_v1",
+      "book_version": "cross_asset_demo_v1",
+      "chronos_endpoint": "chronos2-demo-ep",
+      "chronos_image_digest": "sha256:0ae3e67789e92bc8ebb829d01f5f5fafae7a19189d9bb2d5a54bfb46237e0914",
+      "chronos_model_version": "chronos-2",
+      "covariate_sha256": "66df518a444fdae72f31a6f20a7373f60eb4a57e548e17e12ab3e267a3261359",
+      "covariate_snapshot_id": "covariates.parquet@sha256:66df518a444fdae72f31a6f20a7373f60eb4a57e548e17e12ab3e267a3261359",
+      "market_sha256": "d7f022cb2de43a9cd8da6ee62959f844803ae7d2ada3e9155a213036948ed84b",
+      "market_snapshot_id": "panel.parquet@sha256:d7f022cb2de43a9cd8da6ee62959f844803ae7d2ada3e9155a213036948ed84b",
+      "pricing_version": "cross_asset_v1",
+      "strands_version": "1.30.0",
+      "tool_bundle_version": "git:9419e1854e549898310dc9aab2df025e1b70ac38"
+    },
+    "regime_threshold": 0.7,
+    "schema_version": "1",
+    "spec_hash": "7a386c7ae0f943ec7d579ff8e888c0b348fd34a1c6ac9e9c2e811bf5a6945156",
+    "w_stress": 0.5305
+  },
+  "task_status": {
+    "baseline_mc": "STOPPED",
+    "chronos2": "RUNNING"
+  }
+}
