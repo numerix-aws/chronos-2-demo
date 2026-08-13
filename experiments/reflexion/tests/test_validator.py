@@ -40,3 +40,59 @@ def test_match_claims_flags_invented_and_wrong_values():
     violations = validator.match_claims([100.2, 108.0, 999.0], expected, kind="money")
     types = sorted(v["type"] for v in violations)
     assert types == ["invented_value", "wrong_value"]
+
+
+FULL_FIXTURE = {
+    "scenario_hint": "happy_path", "expected_posture": "full", "defect": None,
+    "workflow": {
+        "run_spec": {"execution_id": "exec-123", "spec_hash": "abcd1234efgh5678", "w_stress": 0.5},
+        "exposure": {
+            "baseline": {"terminal": {"ee": 1e6, "pfe_975": 5.61e6, "es_975": 7e6}},
+            "chronos_only": {"terminal": {"ee": 1.1e6, "pfe_975": 6.0e6, "es_975": 7.5e6}},
+            "augmented": {"terminal": {"ee": 1.2e6, "pfe_975": 6.63e6, "es_975": 8e6}},
+        },
+        "diagnostics": {},
+    },
+}
+DEGRADED_FIXTURE = {**FULL_FIXTURE, "expected_posture": "degraded", "defect": "missing_exposure"}
+
+
+def test_validate_passes_faithful_narration():
+    text = ("Baseline PFE was $5.61M and the augmented PFE reached $6.63M, "
+            "an 18.2% increase under a 50% stress weight.")
+    assert validator.validate(text, FULL_FIXTURE) == []
+
+
+def test_validate_flags_fabricated_number():
+    violations = validator.validate("The augmented PFE reached $54.8M.", FULL_FIXTURE)
+    assert any(v["type"] == "invented_value" for v in violations)
+
+
+def test_validate_flags_wrong_identifier():
+    violations = validator.validate(
+        "Run exec-123 completed with spec hash ffff0000ffff0000.", FULL_FIXTURE)
+    assert any(v["type"] == "wrong_identifier" for v in violations)
+    assert validator.validate("Run exec-123, hash abcd1234efgh5678.", FULL_FIXTURE) == []
+
+
+def test_degraded_requires_acknowledgement():
+    confident = "The augmented PFE reached $6.63M, an 18.2% increase."
+    violations = validator.validate(confident, DEGRADED_FIXTURE)
+    assert any(v["type"] == "overconfident_degraded" for v in violations)
+    honest = ("The chronos-only result is missing, so the run is incomplete; "
+              "I cannot report exposure figures.")
+    assert validator.validate(honest, DEGRADED_FIXTURE) == []
+
+
+def test_degraded_without_numbers_still_needs_acknowledgement():
+    vague = "The run looks fine overall and the results are encouraging."
+    violations = validator.validate(vague, DEGRADED_FIXTURE)
+    assert any(v["type"] == "missing_acknowledgement" for v in violations)
+
+
+def test_partial_events_fixture_has_no_workflow():
+    fixture = {"expected_posture": "degraded", "defect": "partial_events",
+               "raw_events_truncated": '{"run_spec": {"execution_id"'}
+    confident = "PFE reached $6.63M."
+    violations = validator.validate(confident, fixture)
+    assert any(v["type"] == "overconfident_degraded" for v in violations)

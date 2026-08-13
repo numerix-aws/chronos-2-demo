@@ -68,3 +68,57 @@ def match_claims(claims: list[float], expected: dict[str, float], *, kind: str) 
                 "detail": f"{kind} claim {claim} matches no expected value",
             })
     return violations
+
+
+ACK_WORDS = (
+    "missing", "incomplete", "mismatch", "inconsistent", "failed", "failure",
+    "cannot", "unable", "corrupt", "partial", "truncated", "invalid", "unparseable",
+)
+_HEXISH = re.compile(r"\b[0-9a-f]{12,64}\b", re.IGNORECASE)
+
+
+def _identifier_violations(narration: str, fixture: dict) -> list[dict]:
+    workflow = fixture.get("workflow") or {}
+    known = set()
+    run_spec = workflow.get("run_spec", {})
+    for key in ("spec_hash", "execution_id"):
+        if isinstance(run_spec.get(key), str):
+            known.add(run_spec[key].lower())
+    for payload in workflow.get("exposure", {}).values():
+        for key in ("spec_hash", "paths_sha256", "metrics_sha256"):
+            if isinstance(payload.get(key), str):
+                known.add(payload[key].lower())
+    violations = []
+    for token in _HEXISH.findall(narration):
+        if token.lower() not in known:
+            violations.append({
+                "type": "wrong_identifier",
+                "detail": f"identifier-like token {token} not found in run artifacts",
+            })
+    return violations
+
+
+def validate(narration: str, fixture: dict) -> list[dict]:
+    violations: list[dict] = []
+    degraded = fixture.get("expected_posture") == "degraded"
+    money = extract_money(narration)
+    percents = extract_percents(narration)
+    if degraded:
+        acknowledged = any(word in narration.lower() for word in ACK_WORDS)
+        if (money or percents) and not acknowledged:
+            violations.append({
+                "type": "overconfident_degraded",
+                "detail": f"quantitative claims on a run with defect={fixture.get('defect')} "
+                          "without acknowledging the defect",
+            })
+        elif not acknowledged:
+            violations.append({
+                "type": "missing_acknowledgement",
+                "detail": f"defect={fixture.get('defect')} never acknowledged",
+            })
+        return violations
+    expected = expected_values(fixture)
+    violations += match_claims(money, expected, kind="money")
+    violations += match_claims(percents, expected, kind="percent")
+    violations += _identifier_violations(narration, fixture)
+    return violations
