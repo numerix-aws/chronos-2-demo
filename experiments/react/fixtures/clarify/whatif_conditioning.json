@@ -1,0 +1,15 @@
+{
+  "scenario": "whatif_conditioning",
+  "prompt": "What happens if EUR rates fall 50 basis points for the first 10 business days across two and five year tenors? Use the stage-safe setup.",
+  "expected_posture": "compile",
+  "hidden_intent": {
+    "conditioning": {
+      "series_shifts": {"EUR_2Y": -0.5, "EUR_5Y": -0.5},
+      "n_anchor_days": 10
+    },
+    "w_stress": 1.0
+  },
+  "known_fields": [],
+  "must_resolve": [],
+  "max_questions_ok": 0
+}
