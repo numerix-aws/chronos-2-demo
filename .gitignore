@@ -24,3 +24,5 @@ infra/node_modules/
 infra/dist/
 frontend/node_modules/
 frontend/dist/
+experiments/reflexion/results/*
+!experiments/reflexion/results/.gitkeep
