@@ -1,5 +1,6 @@
 """Single point of cross-experiment reuse (read-only, by sys.path)."""
 import importlib
+import importlib.util
 import json
 import os
 import pathlib
