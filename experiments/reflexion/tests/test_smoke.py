@@ -40,3 +40,20 @@ def test_build_prompt_appends_feedback_block():
 
 def test_system_prompt_loads_from_production():
     assert len(generator.SYSTEM_PROMPT) > 100
+
+
+import critic  # noqa: E402
+
+
+def test_critic_prompt_contains_narration_fixture_and_rubric():
+    prompt = critic.build_critic_prompt("The PFE rose.", WORKFLOW_FIXTURE)
+    assert "The PFE rose." in prompt
+    assert '"execution_id": "e1"' in prompt
+    assert "augments" in prompt  # narrative rubric present
+
+
+def test_critic_verdict_schema():
+    verdict = critic.CriticVerdict(passed=False, violations=[
+        critic.CriticViolation(type="narrative_violation", claim="c", evidence="e"),
+    ])
+    assert verdict.violations[0].type == "narrative_violation"
