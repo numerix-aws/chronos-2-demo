@@ -1,5 +1,7 @@
 """Demo Director: coded control plane. No LLM in this module."""
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+
+import bridge
 
 
 @dataclass(frozen=True)
@@ -60,3 +62,58 @@ def apply_outcome(state: DirectorState, bundle: dict,
         diagnostics_ok=outcome == "complete"
         and "factor_coverage" in bundle.get("diagnostics", {}),
     )
+
+
+DEGRADED_INSTRUCTION = (
+    "DEGRADED MODE: your previous answers failed validation. Write a "
+    "caveat-first summary: state that the narration could not be validated "
+    "against the run artifacts, acknowledge any defect, and make NO numeric "
+    "claim that is not verbatim from the structured results. Prefer no "
+    "numbers at all."
+)
+
+
+@dataclass
+class Publication:
+    text: str
+    channel: str  # narrator | degraded | template
+    iterations: int
+    attempts: list = field(default_factory=list)
+
+
+def render_failure_template(state: DirectorState, violations: list) -> str:
+    kinds = ", ".join(sorted({v["type"] for v in violations})) or "unknown"
+    return (
+        f"Run {state.execution_id or 'unknown'} finished, but its narration "
+        f"failed validation after retries ({len(violations)} unresolved "
+        f"issue(s): {kinds}). The structured artifacts for spec_hash "
+        f"{state.spec_hash or 'unknown'} are authoritative; please read the "
+        "exposure and diagnostics values from the artifact bundle directly."
+    )
+
+
+def publish_narration(user_prompt: str, fixture: dict, state: DirectorState, *,
+                      generate_fn=None, validate_fn=None, critique_fn=None,
+                      model_id: str | None = None) -> Publication:
+    generate_fn = generate_fn or (lambda feedback: bridge.reflexion_generator.generate(
+        user_prompt, fixture, feedback, model_id=model_id))
+    validate_fn = validate_fn or (
+        lambda text: bridge.reflexion_validator.validate(text, fixture))
+    critique_fn = critique_fn or (
+        lambda text: bridge.reflexion_critic.critique(text, fixture, model_id=model_id))
+
+    result = bridge.reflexion_loop.run_reflexion(
+        generate_fn, validate_fn, critique_fn, max_iters=3)
+    if result.converged:
+        return Publication(result.final, "narrator", result.iterations, result.attempts)
+
+    last = result.attempts[-1]
+    feedback = bridge.reflexion_loop.format_feedback(
+        last.oracle_violations, last.critic_verdict)
+    degraded = generate_fn(f"{feedback}\n\n{DEGRADED_INSTRUCTION}")
+    degraded_violations = validate_fn(degraded.text)
+    if not degraded_violations:
+        return Publication(degraded.text, "degraded",
+                           result.iterations + 1, result.attempts)
+    return Publication(render_failure_template(state, degraded_violations),
+                       "template", result.iterations + 1, result.attempts)
