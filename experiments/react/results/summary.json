@@ -1,0 +1,56 @@
+{
+  "clarify": {
+    "a": {
+      "errors": 0,
+      "mean_latency_s": 0.0,
+      "mean_output_tokens": null,
+      "mean_tool_calls": 0.0,
+      "pass_rate": 0.3333333333333333,
+      "trials": 18
+    },
+    "b": {
+      "errors": 0,
+      "mean_latency_s": 10.647814277876428,
+      "mean_output_tokens": 499.8888888888889,
+      "mean_tool_calls": 2.2222222222222223,
+      "pass_rate": 0.8333333333333334,
+      "trials": 18
+    }
+  },
+  "drilldown": {
+    "a": {
+      "errors": 0,
+      "mean_latency_s": 32.62420372207804,
+      "mean_output_tokens": 2346.266666666667,
+      "mean_tool_calls": 0.0,
+      "pass_rate": 0.0,
+      "trials": 15
+    },
+    "b": {
+      "errors": 0,
+      "mean_latency_s": 33.02159449454242,
+      "mean_output_tokens": 1968.8,
+      "mean_tool_calls": 5.8,
+      "pass_rate": 0.0,
+      "trials": 15
+    }
+  },
+  "triage": {
+    "a": {
+      "errors": 3,
+      "mean_latency_s": 68.68626756961264,
+      "mean_output_tokens": 4914.0,
+      "mean_tool_calls": 0.0,
+      "pass_rate": 1.0,
+      "trials": 15
+    },
+    "b": {
+      "errors": 0,
+      "mean_latency_s": 74.96697971120787,
+      "mean_output_tokens": 5381.066666666667,
+      "mean_tool_calls": 14.333333333333334,
+      "pass_rate": 0.8,
+      "trials": 15
+    }
+  }
+}
