@@ -1,0 +1,15 @@
+{"session": "s4_midsession_failure", "clarify": null, "turns": [
+  {"user": "Run the COVID stress scenario as of 2022-09-30 over 1 year.",
+   "expected_intent": "quant_run", "expected_route": "clarifier",
+   "resolves_to": {"outcome": "failed", "react_bundle": "triage_poll_timeout", "reflexion_fixture": null},
+   "expected_state_after": {"run_status": "failed", "has_bundle": true},
+   "score": {"kind": "none"}},
+  {"user": "What happened to my run?",
+   "expected_intent": "failure_help", "expected_route": "triage",
+   "expected_state_after": {"run_status": "failed", "has_bundle": true},
+   "score": {"kind": "triage"}},
+  {"user": "OK but just tell me the PFE number.",
+   "expected_intent": "followup_qa", "expected_route": "refuse",
+   "expected_state_after": {"run_status": "failed", "has_bundle": true},
+   "score": {"kind": "refusal"}}
+]}

@@ -1,0 +1,11 @@
+{"session": "s5_qa_without_run", "clarify": null, "turns": [
+  {"user": "Why did the augmented PFE move?",
+   "expected_intent": "followup_qa", "expected_route": "refuse",
+   "expected_state_after": {"run_status": "none", "has_bundle": false},
+   "score": {"kind": "refusal"}},
+  {"user": "Fine, run the COVID stress scenario as of 2022-09-30, 1 year horizon, full book.",
+   "expected_intent": "quant_run", "expected_route": "clarifier",
+   "resolves_to": {"outcome": "complete", "react_bundle": "drilldown_happy", "reflexion_fixture": "happy_path"},
+   "expected_state_after": {"run_status": "complete", "has_bundle": true},
+   "score": {"kind": "narration"}}
+]}

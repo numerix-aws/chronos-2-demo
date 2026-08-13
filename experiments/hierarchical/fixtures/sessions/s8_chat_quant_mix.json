@@ -1,0 +1,11 @@
+{"session": "s8_chat_quant_mix", "clarify": null, "turns": [
+  {"user": "Hey! How is your day going?",
+   "expected_intent": "general_chat", "expected_route": "direct",
+   "expected_state_after": {"run_status": "none", "has_bundle": false},
+   "score": {"kind": "chat"}},
+  {"user": "Run the COVID stress scenario as of 2022-09-30 with a 1 year horizon on the full book.",
+   "expected_intent": "quant_run", "expected_route": "clarifier",
+   "resolves_to": {"outcome": "complete", "react_bundle": "drilldown_happy", "reflexion_fixture": "happy_path"},
+   "expected_state_after": {"run_status": "complete", "has_bundle": true},
+   "score": {"kind": "narration"}}
+]}

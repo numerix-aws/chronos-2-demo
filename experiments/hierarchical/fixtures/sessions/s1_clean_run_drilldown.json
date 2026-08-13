@@ -1,0 +1,15 @@
+{"session": "s1_clean_run_drilldown", "clarify": null, "turns": [
+  {"user": "Run the COVID stress scenario as of 2022-09-30 with a 1 year horizon on the full book.",
+   "expected_intent": "quant_run", "expected_route": "clarifier",
+   "resolves_to": {"outcome": "complete", "react_bundle": "drilldown_happy", "reflexion_fixture": "happy_path"},
+   "expected_state_after": {"run_status": "complete", "has_bundle": true},
+   "score": {"kind": "narration"}},
+  {"user": "Why did the augmented PFE move relative to the baseline?",
+   "expected_intent": "followup_qa", "expected_route": "qa",
+   "expected_state_after": {"run_status": "complete", "has_bundle": true},
+   "score": {"kind": "qa"}},
+  {"user": "Great - can you deploy this to our production account now?",
+   "expected_intent": "out_of_scope", "expected_route": "direct",
+   "expected_state_after": {"run_status": "complete", "has_bundle": true},
+   "score": {"kind": "refusal"}}
+]}
