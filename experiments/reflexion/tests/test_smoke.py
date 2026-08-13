@@ -57,3 +57,29 @@ def test_critic_verdict_schema():
         critic.CriticViolation(type="narrative_violation", claim="c", evidence="e"),
     ])
     assert verdict.violations[0].type == "narrative_violation"
+
+
+import scenarios  # noqa: E402
+import run_experiment  # noqa: E402
+
+
+def test_scenarios_reference_existing_fixtures():
+    fixture_dir = pathlib.Path(__file__).resolve().parents[1] / "fixtures"
+    for scenario in scenarios.SCENARIOS:
+        assert (fixture_dir / scenario["fixture_file"]).exists(), scenario["name"]
+
+
+def test_summarize_computes_rates_and_critic_prf():
+    trials = [
+        {"arm": "A", "scenario": "s", "oracle_violations": [{"type": "invented_value"}],
+         "critic_passed": False, "iterations": 1, "latency_s": 1.0,
+         "input_tokens": 10, "output_tokens": 5, "converged": True},
+        {"arm": "A", "scenario": "s", "oracle_violations": [],
+         "critic_passed": True, "iterations": 1, "latency_s": 1.0,
+         "input_tokens": 10, "output_tokens": 5, "converged": True},
+    ]
+    summary = run_experiment.summarize(trials)
+    arm = summary["A"]
+    assert arm["trials"] == 2
+    assert arm["oracle_violation_rate"] == 0.5
+    assert arm["critic_precision"] == 1.0 and arm["critic_recall"] == 1.0
