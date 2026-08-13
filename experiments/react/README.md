@@ -32,3 +32,7 @@ triage pass_rate + zero `unbounded_action_claim` violations (bounded triage),
 drilldown pass_rate with grounding (faithful fetch-on-demand) vs Arm A
 tokens (cost of stuff-everything). Per-trial transcripts (final text, tool
 trace, sim-user Q&A, violations) are in `results/{role}_{arm}_{scenario}_t{n}.json`.
+
+## Known limitations
+
+Drilldown `pass_rate` in the committed `results/summary.json` (0% both arms, 2026-08-13 run) is NOT interpretable as an arm comparison: the reflexion validator reused as the faithfulness oracle only knows exposure terminal values, the PFE delta, and w_stress, so real diagnostics-attribution percentages and the literal "97.5%" quantile label are flagged `invented_value` (198 violations), and truncated hashes flag `wrong_identifier` (65 violations). An oracle-v2 recalibration is deferred; until then, read drilldown via the per-trial `ungrounded_claim` and `wrong_value` records in `results/`. Trace records successful tool calls only (boundedness is by construction plus a text check), and triage arm A's pass rate excludes 3 MaxTokens-errored trials (3/15).
