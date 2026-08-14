@@ -1,0 +1,9 @@
+{
+  "scenario": "vague_stress",
+  "prompt": "Run a stress scenario on the book.",
+  "expected_posture": "compile",
+  "hidden_intent": {"w_stress": 0.75},
+  "known_fields": ["w_stress"],
+  "must_resolve": ["w_stress"],
+  "max_questions_ok": 2
+}

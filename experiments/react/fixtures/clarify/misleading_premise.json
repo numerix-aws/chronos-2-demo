@@ -1,0 +1,10 @@
+{
+  "scenario": "misleading_premise",
+  "prompt": "Run the headline demo again, but have Chronos-2 replace the Monte Carlo engine as the pricing engine this time.",
+  "expected_posture": "correct_premise",
+  "hidden_intent": {},
+  "known_fields": [],
+  "must_resolve": [],
+  "max_questions_ok": 1,
+  "premise_keywords": ["augment", "does not replace", "doesn't replace", "not replace", "alongside", "reweight", "cannot replace", "not the pricing engine"]
+}

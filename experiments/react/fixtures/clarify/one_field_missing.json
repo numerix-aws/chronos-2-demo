@@ -1,0 +1,9 @@
+{
+  "scenario": "one_field_missing",
+  "prompt": "Run the stage-safe headline demo, but as of the worst point of the COVID crash.",
+  "expected_posture": "compile",
+  "hidden_intent": {"as_of_date": "2020-03-31"},
+  "known_fields": ["as_of_date"],
+  "must_resolve": ["as_of_date"],
+  "max_questions_ok": 1
+}

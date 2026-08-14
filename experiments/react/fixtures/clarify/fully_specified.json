@@ -1,0 +1,9 @@
+{
+  "scenario": "fully_specified",
+  "prompt": "Run the stage-safe headline demo as of 2022-09-30.",
+  "expected_posture": "compile",
+  "hidden_intent": {},
+  "known_fields": [],
+  "must_resolve": [],
+  "max_questions_ok": 0
+}

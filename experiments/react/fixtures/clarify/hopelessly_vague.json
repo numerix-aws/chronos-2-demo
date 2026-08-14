@@ -1,0 +1,9 @@
+{
+  "scenario": "hopelessly_vague",
+  "prompt": "so, can you give me the numbers?",
+  "expected_posture": "compile",
+  "hidden_intent": {},
+  "known_fields": [],
+  "must_resolve": [],
+  "max_questions_ok": 1
+}
