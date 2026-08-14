@@ -3,7 +3,9 @@ import bridge
 
 _ACK_WORDS = ("no completed run", "cannot", "can't", "unable", "not able",
               "failed", "out of scope", "does not", "doesn't", "run one",
-              "no run")
+              "no run", "do not", "don't", "not available", "no results",
+              "haven't", "has not", "hasn't", "not yet", "without a run",
+              "not something", "no active", "nothing to")
 _PREMISE_OK = ("augment",)
 _PREMISE_CORRECTION = ("not replace", "never replace", "doesn't replace",
                        "does not replace", "isn't a replacement",

@@ -34,6 +34,10 @@ def test_state_scoring_checks_only_expected_keys():
 def test_refusal_rejects_numbers_and_requires_acknowledgement():
     assert answers.score("refusal", "There is no completed run I can cite; "
                          "ask me to run one first.")["passed"]
+    assert answers.score("refusal", "I don't have results yet - ask me to "
+                         "run a scenario first.")["passed"]
+    assert answers.score("refusal", "Results are not available without a "
+                         "run; I can diagnose the failure instead.")["passed"]
     assert not answers.score("refusal", "PFE is $6.63M.")["passed"]
     assert not answers.score("refusal", "Sure thing, all good!")["passed"]
 
