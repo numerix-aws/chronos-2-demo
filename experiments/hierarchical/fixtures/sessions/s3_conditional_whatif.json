@@ -1,0 +1,11 @@
+{"session": "s3_conditional_whatif", "clarify": null, "turns": [
+  {"user": "What if we condition on the COVID vol regime? Run the conditional what-if as of 2022-09-30.",
+   "expected_intent": "what_if", "expected_route": "clarifier",
+   "resolves_to": {"outcome": "complete", "react_bundle": "drilldown_conditional", "reflexion_fixture": "conditional_whatif"},
+   "expected_state_after": {"run_status": "complete", "has_bundle": true},
+   "score": {"kind": "narration"}},
+  {"user": "How much of that move is attributable to w_stress?",
+   "expected_intent": "followup_qa", "expected_route": "qa",
+   "expected_state_after": {"run_status": "complete", "has_bundle": true},
+   "score": {"kind": "qa"}}
+]}

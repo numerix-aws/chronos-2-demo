@@ -1,0 +1,16 @@
+{"session": "s2_vague_quant",
+ "clarify": {"scenario": "vague_stress", "prompt": "Run a stress scenario",
+             "expected_posture": "compile", "hidden_intent": {"w_stress": 0.75},
+             "known_fields": ["w_stress", "as_of_date"],
+             "must_resolve": ["w_stress"], "max_questions_ok": 1},
+ "turns": [
+  {"user": "Run a stress scenario",
+   "expected_intent": "quant_run", "expected_route": "clarifier",
+   "resolves_to": {"outcome": "complete", "react_bundle": "drilldown_happy", "reflexion_fixture": "happy_path"},
+   "expected_state_after": {"run_status": "complete", "has_bundle": true},
+   "score": {"kind": "narration"}},
+  {"user": "So what is the headline takeaway?",
+   "expected_intent": "followup_qa", "expected_route": "qa",
+   "expected_state_after": {"run_status": "complete", "has_bundle": true},
+   "score": {"kind": "qa"}}
+]}

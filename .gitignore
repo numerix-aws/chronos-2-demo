@@ -28,3 +28,5 @@ experiments/reflexion/results/*
 !experiments/reflexion/results/.gitkeep
 experiments/react/results/*
 !experiments/react/results/.gitkeep
+experiments/hierarchical/results/*
+!experiments/hierarchical/results/.gitkeep

@@ -1,0 +1,99 @@
+{
+  "run": "experiment_1786747538 (2026-08-14, 2 arms x 8 sessions x 3 trials, us.anthropic.claude-opus-5)",
+  "summary": {
+    "by_arm": [
+      {
+        "arm": "director",
+        "turns": 42,
+        "failed_trials": 6,
+        "intent_accuracy": 1.0,
+        "route_accuracy": 1.0,
+        "state_accuracy": 1.0,
+        "boundary_violations": 0,
+        "answer_pass_rate": 0.9761904761904762,
+        "answer_pass_rate_by_kind": {
+          "narration": 1.0,
+          "refusal": 1.0,
+          "chat": 1.0,
+          "none": 1.0,
+          "triage": 1.0,
+          "qa": 1.0,
+          "qa_premise": 0.5
+        },
+        "clarify_pass_rate": 1.0,
+        "publication_channels": {
+          "template": 1,
+          "narrator": 11,
+          "degraded": 3
+        },
+        "publication_tokens": {
+          "input": 1107993,
+          "output": 92906
+        },
+        "mean_latency_s": 63.34884153288745
+      },
+      {
+        "arm": "monolith",
+        "turns": 54,
+        "failed_trials": 0,
+        "intent_accuracy": null,
+        "route_accuracy": null,
+        "state_accuracy": null,
+        "boundary_violations": 0,
+        "answer_pass_rate": 0.6481481481481481,
+        "answer_pass_rate_by_kind": {
+          "narration": 0.3333333333333333,
+          "refusal": 0.6666666666666666,
+          "chat": 1.0,
+          "none": 1.0,
+          "triage": 1.0,
+          "qa": 0.9166666666666666,
+          "qa_premise": 0.6666666666666666
+        },
+        "clarify_pass_rate": null,
+        "publication_channels": {},
+        "publication_tokens": null,
+        "mean_latency_s": 33.692619250852324
+      }
+    ]
+  },
+  "failed_trials": [
+    {
+      "arm": "director",
+      "session": "s3_conditional_whatif",
+      "trial": 1,
+      "error": "MaxTokensReachedException: Agent has reached an unrecoverable state due to max_tokens limit. For more information see: https://strandsagents.com/latest/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
+    },
+    {
+      "arm": "director",
+      "session": "s3_conditional_whatif",
+      "trial": 2,
+      "error": "MaxTokensReachedException: Agent has reached an unrecoverable state due to max_tokens limit. For more information see: https://strandsagents.com/latest/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
+    },
+    {
+      "arm": "director",
+      "session": "s5_qa_without_run",
+      "trial": 1,
+      "error": "ValidationError: 1 validation error for CriticVerdict\nviolations\n  Input should be a valid list [type=list_type, input_value='[{\"type\": \"numerical_ove...ot referenced here).\"}]', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type"
+    },
+    {
+      "arm": "director",
+      "session": "s6_misleading_premise",
+      "trial": 2,
+      "error": "MaxTokensReachedException: Agent has reached an unrecoverable state due to max_tokens limit. For more information see: https://strandsagents.com/latest/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
+    },
+    {
+      "arm": "director",
+      "session": "s7_degraded_publish",
+      "trial": 0,
+      "error": "MaxTokensReachedException: Agent has reached an unrecoverable state due to max_tokens limit. For more information see: https://strandsagents.com/latest/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
+    },
+    {
+      "arm": "director",
+      "session": "s8_chat_quant_mix",
+      "trial": 2,
+      "error": "MaxTokensReachedException: Agent has reached an unrecoverable state due to max_tokens limit. For more information see: https://strandsagents.com/latest/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
+    }
+  ],
+  "full_records": "results/experiment_1786747538.json (local only, gitignored)"
+}
