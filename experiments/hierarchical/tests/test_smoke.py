@@ -107,3 +107,35 @@ def test_harness_captures_clarify_outcome(tmp_path):
     assert "questions" in clarify_turn["clarify_outcome"]
     director_row = [r for r in summary["by_arm"] if r["arm"] == "director"][0]
     assert director_row.get("clarify_pass_rate") is not None
+
+
+def test_clarifier_route_guard_when_no_resolves_to(tmp_path):
+    import run_experiment
+    def misclassifying_seams(model_id):
+        seams = _fake_seams()
+        orig_classify = seams.classify
+        def classify_with_misclass(user, summary):
+            # Misclassify turn 2 (out-of-scope) as what_if (always routes to clarifier)
+            if "deploy this to our produ" in user:
+                return SimpleNamespace(intent="what_if", confidence=0.9)
+            return orig_classify(user, summary)
+        seams.classify = classify_with_misclass
+        return seams
+    summary = run_experiment.run_matrix(
+        trials=1, seams_factory=misclassifying_seams,
+        out_dir=tmp_path, session_filter=["s1_clean_run_drilldown"])
+    results_file = list(tmp_path.glob("experiment_*.json"))[0]
+    import json
+    data = json.loads(results_file.read_text())
+    director_result = [r for r in data["results"] if r["arm"] == "director"][0]
+    assert len(director_result["turns"]) == 3  # Session completed
+    # Turn 2 was routed to clarifier but has no resolves_to
+    turn2 = director_result["turns"][2]
+    assert turn2["route"] == "clarifier"
+    # Should use coded string
+    assert turn2["reply"] in (
+        "A run was compiled, but this turn was not scripted to execute one.",
+        "Clarification needed."
+    )
+    # State should be unchanged from turn 1
+    assert turn2["state_after"]["run_status"] == director_result["turns"][1]["state_after"]["run_status"]
