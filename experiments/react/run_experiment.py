@@ -70,7 +70,7 @@ def summarize(records: list[dict]) -> dict:
         cell = summary.setdefault(record["role"], {}).setdefault(
             record["arm"],
             {"trials": 0, "errors": 0, "_passed": [], "_tools": [],
-             "_tokens": [], "_latency": []})
+             "_tokens": [], "_latency": [], "_vtypes": {}})
         cell["trials"] += 1
         if record["error"] is not None:
             cell["errors"] += 1
@@ -80,12 +80,16 @@ def summarize(records: list[dict]) -> dict:
         if record["output_tokens"] is not None:
             cell["_tokens"].append(record["output_tokens"])
         cell["_latency"].append(record["latency_s"])
+        for violation in (record.get("report") or {}).get("violations", []):
+            kind = violation.get("type", "unknown")
+            cell["_vtypes"][kind] = cell["_vtypes"].get(kind, 0) + 1
     for arms in summary.values():
         for cell in arms.values():
             scored = cell.pop("_passed")
             tools_used = cell.pop("_tools")
             tokens = cell.pop("_tokens")
             latency = cell.pop("_latency")
+            cell["violation_types"] = cell.pop("_vtypes")
             cell["pass_rate"] = (sum(scored) / len(scored)) if scored else None
             cell["mean_tool_calls"] = (sum(tools_used) / len(tools_used)
                                        if tools_used else None)
@@ -94,6 +98,14 @@ def summarize(records: list[dict]) -> dict:
             cell["mean_latency_s"] = (sum(latency) / len(latency)
                                       if latency else None)
     return summary
+
+
+def merge_summary(existing: dict, new: dict) -> dict:
+    """Overlay a partial-role run's summary onto an existing one."""
+    merged = {role: arms for role, arms in existing.items()}
+    for role, arms in new.items():
+        merged[role] = arms
+    return merged
 
 
 def main() -> None:
@@ -130,8 +142,13 @@ def main() -> None:
                     print(f"{role:9s} {arm} {sid:22s} t{trial} {status}")
 
     summary = summarize(records)
-    (RESULTS / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    summary_path = RESULTS / "summary.json"
+    if summary_path.exists():
+        merged = merge_summary(json.loads(summary_path.read_text()), summary)
+    else:
+        merged = summary
+    summary_path.write_text(
+        json.dumps(merged, indent=2, sort_keys=True) + "\n")
     print(f"\n{'role':9s} {'arm':3s} {'pass':>6s} {'tools':>6s} "
           f"{'tokens':>8s} {'lat(s)':>7s} {'err':>4s}")
     for role, arms in summary.items():

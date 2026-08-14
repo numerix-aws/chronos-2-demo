@@ -26,13 +26,28 @@ required for the harness only.
 ## Read the numbers
 
 `results/summary.json` / printed table: per role×arm — `pass_rate` (oracle),
-`mean_tool_calls`, `mean_output_tokens`, `mean_latency_s`, `errors`.
+`mean_tool_calls`, `mean_output_tokens`, `mean_latency_s`, `errors`, and
+`violation_types` (per-cell violation counts, cells scored since oracle v2).
 The experiment's claims map to: clarify pass_rate (intent resolution),
 triage pass_rate + zero `unbounded_action_claim` violations (bounded triage),
 drilldown pass_rate with grounding (faithful fetch-on-demand) vs Arm A
 tokens (cost of stuff-everything). Per-trial transcripts (final text, tool
 trace, sim-user Q&A, violations) are in `results/{role}_{arm}_{scenario}_t{n}.json`.
+Partial-role reruns (`--roles drilldown`) merge into the existing
+`summary.json` instead of overwriting it; the committed summary mixes the
+2026-08-13 clarify/triage cells with the 2026-08-14 drilldown rerun (oracle
+v2).
 
 ## Known limitations
 
-Drilldown `pass_rate` in the committed `results/summary.json` (0% both arms, 2026-08-13 run) is NOT interpretable as an arm comparison: the reflexion validator reused as the faithfulness oracle only knows exposure terminal values, the PFE delta, and w_stress, so real diagnostics-attribution percentages and the literal "97.5%" quantile label are flagged `invented_value` (198 violations), and truncated hashes flag `wrong_identifier` (65 violations). An oracle-v2 recalibration is deferred; until then, read drilldown via the per-trial `ungrounded_claim` and `wrong_value` records in `results/`. Trace records successful tool calls only (boundedness is by construction plus a text check), and triage arm A's pass rate excludes 3 MaxTokens-errored trials (3/15).
+The drilldown faithfulness oracle (v2, `oracles/drilldown.py`) accepts any
+numeric payload leaf, bounded derived percent-changes/ratios over headline
+scalars at tight tolerance, absolute-value citations of negative deltas, and
+round-to-integer citations — so a claim derived from exposure-*series*
+arithmetic can still flag `wrong_value` (1 such borderline case in the
+2026-08-13 transcripts). Deterministic verification of arbitrary derived
+arithmetic is deliberately out of scope: widening further would make the
+check vacuous. Trace records successful tool calls only (boundedness is by
+construction plus a text check), and triage arm A's pass rate excludes 3
+MaxTokens-errored trials (3/15) — the stuffed-prompt baseline's own failure
+mode.

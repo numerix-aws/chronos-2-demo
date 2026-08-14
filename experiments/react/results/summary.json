@@ -20,19 +20,21 @@
   "drilldown": {
     "a": {
       "errors": 0,
-      "mean_latency_s": 32.62420372207804,
-      "mean_output_tokens": 2346.266666666667,
+      "mean_latency_s": 32.91651573346462,
+      "mean_output_tokens": 2410.266666666667,
       "mean_tool_calls": 0.0,
-      "pass_rate": 0.0,
-      "trials": 15
+      "pass_rate": 1.0,
+      "trials": 15,
+      "violation_types": {}
     },
     "b": {
       "errors": 0,
-      "mean_latency_s": 33.02159449454242,
-      "mean_output_tokens": 1968.8,
-      "mean_tool_calls": 5.8,
-      "pass_rate": 0.0,
-      "trials": 15
+      "mean_latency_s": 28.25990381668477,
+      "mean_output_tokens": 1823.8,
+      "mean_tool_calls": 5.333333333333333,
+      "pass_rate": 1.0,
+      "trials": 15,
+      "violation_types": {}
     }
   },
   "triage": {

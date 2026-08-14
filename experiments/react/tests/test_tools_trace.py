@@ -60,6 +60,13 @@ def test_observed_numbers_collects_numeric_leaves():
     assert boolean_only.observed_numbers() == set()
 
 
+def test_observed_numbers_skip_keys():
+    trace = Trace()
+    trace.record("x", {}, {"seq": 3, "nested": {"attempt": 4, "v": 5.5}})
+    assert trace.observed_numbers() == {3.0, 4.0, 5.5}
+    assert trace.observed_numbers(skip_keys={"seq", "attempt"}) == {5.5}
+
+
 def test_strands_wrapping():
     fns, b, trace = _env()
     wrapped = tools.make_evidence_tools(b, trace)
