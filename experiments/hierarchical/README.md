@@ -9,7 +9,7 @@ This experiment evaluates a hierarchical agent architecture (Arm B: Director + S
 
 ## Prerequisite
 
-The `experiments/react/` ReAct implementation must be built and tested first. This experiment's `bridge.py` loads the ReAct drilldown oracle for clarification and QA specialist tool implementations.
+The `experiments/react/` ReAct implementation must be built and tested first. This experiment's `bridge.py` loads ReAct's clarify/evidence TOOLS for specialists and ReAct's triage/drilldown/clarify ORACLES for scoring.
 
 ## Running the Experiment
 
@@ -30,7 +30,7 @@ From `experiments/hierarchical/`:
 python run_experiment.py --trials 3
 ```
 
-This executes 48 session runs (2 arms × 8 sessions × 3 trials) against live Bedrock endpoints and writes:
+This executes 48 session runs (2 arms × 8 sessions × 3 trials, ~108 scored turns) against live Bedrock endpoints and writes:
 - A `results/experiment_<unix_ts>.json` file with per-turn records and aggregated summary
 - A two-row summary table printed to stdout
 
@@ -57,9 +57,11 @@ Each row reports one arm's performance across all turns:
 - If `route_accuracy < 1.0`, inspect Director routing logic or the route table.
 - If `state_accuracy < 1.0`, inspect Director state updates in `apply_outcome`.
 - If `boundary_violations > 0` for Arm B, the specialist construction is broken (it hard-wires allowlists, so violations should be impossible).
-- If `table_error > 0` (counted in `routing.score_turn`), the route table has entries not covered by test sessions — this is a route-table bug, not a model failure.
+- If `table_error > 0` (counted in `routing.score_turn`), the intent was classified correctly but the coded route table produced a route different from ground truth — a route-table code bug, not a model failure.
 
 **Answer scoring caveat**: The `qa` and `qa_premise` rubrics depend on the ReAct drilldown oracle's extraction correctness. That oracle is being recalibrated separately; live answer pass-rates for QA turns may be artificially low until recalibration completes.
+
+**Arm A narration caveat**: Arm A (monolith) generates its reply on run turns BEFORE the fixture DAG resolves, so narration-turn scores are not comparable across arms (Arm A can pass vacuously with a number-free reply, and s7's degraded acknowledgement is structurally unavailable to it). Read narration rows per-kind and cross-arm compare on qa/triage/refusal/chat kinds instead.
 
 ## Cost Expectations
 
@@ -68,11 +70,11 @@ Per-turn costs are dominated by:
 - Specialist/monolith answers: 1 Claude call per turn (varies by tool usage; clarify turns may be 2–5K tokens in, 200–500 out; QA turns 3–6K in, 300–800 out)
 - Narration generation (Arm B only): 1 Claude call (~1K in, ~200 out) + up to 3 critique/refinement calls if validation fails
 
-A full 3-trial run (48 sessions, ~120 turns total) costs approximately:
-- **Arm A (monolith)**: ~60 turns × ~4K tokens avg ≈ 240K tokens in, 40K out
-- **Arm B (hierarchical)**: ~60 turns × (300 + 4K + 1K narration) ≈ 300K tokens in, 50K out
+A full 3-trial run (48 sessions, ~108 turns total) costs approximately:
+- **Arm A (monolith)**: ~54 turns × ~4K tokens avg ≈ 216K tokens in, 36K out
+- **Arm B (hierarchical)**: ~54 turns × (300 + 4K + 1K narration) ≈ 270K tokens in, 45K out
 
-At Claude Sonnet pricing (~$3/M in, ~$15/M out), expect **~$2–3 per full run**.
+The pinned model is **us.anthropic.claude-opus-5** (~$5/M in, ~$25/M out). Expect **low tens of dollars** per full run.
 
 ## Experiment Results Location
 

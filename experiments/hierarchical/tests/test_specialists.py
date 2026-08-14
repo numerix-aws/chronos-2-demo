@@ -19,10 +19,11 @@ def test_allowlists_match_spec():
 def test_clarifier_construction_is_offline_and_returns_react_state():
     trace = bridge.react_trace.Trace()
     fixture = specialists.default_clarify_fixture("Run the COVID scenario")
-    agent, state = specialists.make_clarifier(
+    agent, state, sim = specialists.make_clarifier(
         fixture, trace, respond=lambda q: "no preference")
     assert set(state) == {"questions", "compiled"}
     assert state["compiled"] is None and state["questions"] == []
+    assert sim is not None
 
 
 def test_default_clarify_fixture_shape():

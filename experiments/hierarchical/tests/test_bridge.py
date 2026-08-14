@@ -20,6 +20,7 @@ def test_react_interfaces_present():
     assert callable(bridge.react_sim_user.SimUser)
     assert callable(bridge.react_oracle_triage.score)
     assert callable(bridge.react_oracle_drilldown.score)
+    assert callable(bridge.react_oracle_clarify.score)
 
 
 def test_react_bundles_load():

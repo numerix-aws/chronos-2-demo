@@ -61,14 +61,27 @@ def run_director_session(session: dict, seams: Seams) -> dict:
         verdict = seams.classify(turn["user"], state.summary())
         route = director.route(verdict.intent, state)
         channel = None
+        clarify_outcome = None
+        pub_tokens = None
+        sim_transcript = None
         if route == "clarifier":
             fixture = session["clarify"] or specialists.default_clarify_fixture(
                 turn["user"])
-            agent, cstate = specialists.make_clarifier(
+            agent, cstate, sim = specialists.make_clarifier(
                 fixture, trace, respond=seams.respond)
             compiled = seams.clarify(agent, cstate, turn["user"])
+            clarify_outcome = {
+                "compiled": compiled,
+                "questions": list(cstate.get("questions", [])),
+                "final_text": str(cstate.get("final_text") or "")
+            }
+            if hasattr(sim, "transcript"):
+                sim_transcript = sim.transcript
             if compiled is None:
                 reply = str(cstate.get("final_text") or "Clarification needed.")
+            elif "resolves_to" not in turn:
+                # Clarifier compiled but turn has no resolves_to (misclassification)
+                reply = "A run was compiled, but this turn was not scripted to execute one."
             else:
                 bundle, nfix, outcome = sessions.resolve_outcome(
                     turn["resolves_to"])
@@ -76,6 +89,11 @@ def run_director_session(session: dict, seams: Seams) -> dict:
                 if outcome == "complete":
                     pub = seams.publish(turn["user"], nfix, state)
                     reply, channel = pub.text, pub.channel
+                    if hasattr(pub, "attempts") and pub.attempts:
+                        pub_tokens = {
+                            "input": sum(a.input_tokens or 0 for a in pub.attempts),
+                            "output": sum(a.output_tokens or 0 for a in pub.attempts)
+                        }
                 else:
                     reply = render_run_failed_notice(state)
         elif route in ("qa", "triage"):
@@ -87,7 +105,11 @@ def run_director_session(session: dict, seams: Seams) -> dict:
             "user": turn["user"], "intent": verdict.intent,
             "confidence": getattr(verdict, "confidence", None), "route": route,
             "reply": reply, "tool_calls": trace.tool_names(),
+            "tool_calls_full": trace.calls,
             "publication_channel": channel,
+            "publication_tokens": pub_tokens,
+            "clarify_outcome": clarify_outcome,
+            "sim_user_transcript": sim_transcript,
             "state_after": _state_snapshot(state),
             "latency_s": time.monotonic() - turn_started,
         })
@@ -103,22 +125,35 @@ def run_monolith_session(session: dict, seams: Seams) -> dict:
         trace = bridge.react_trace.Trace()
         clarify_fixture = session["clarify"] or (
             specialists.default_clarify_fixture(turn["user"]))
-        agent, cstate = monolith.make_monolith_agent(
+        agent, cstate, sim = monolith.make_monolith_agent(
             clarify_fixture, bundle, trace, respond=seams.respond)
         prompt = monolith.build_turn_prompt(transcript, bundle, turn["user"])
         reply = seams.answer(agent, prompt)
+        clarify_outcome = None
+        sim_transcript = None
         if "resolves_to" in turn and cstate["compiled"] is None:
             # Give the seam a chance to report a compile the stuffed agent
             # made mid-answer (live: cstate already updated by the tool call;
             # smoke: the fake returns a compiled dict).
             cstate["compiled"] = seams.clarify(agent, cstate, turn["user"])
         if "resolves_to" in turn and cstate["compiled"] is not None:
+            clarify_outcome = {
+                "compiled": cstate["compiled"],
+                "questions": list(cstate.get("questions", [])),
+                "final_text": reply
+            }
+            if hasattr(sim, "transcript"):
+                sim_transcript = sim.transcript
             bundle, _, outcome = sessions.resolve_outcome(turn["resolves_to"])
             run_status = outcome
         records.append({
             "user": turn["user"], "intent": None, "confidence": None,
             "route": None, "reply": reply, "tool_calls": trace.tool_names(),
+            "tool_calls_full": trace.calls,
             "publication_channel": None,
+            "publication_tokens": None,
+            "clarify_outcome": clarify_outcome,
+            "sim_user_transcript": sim_transcript,
             "state_after": {"run_status": run_status,
                             "has_bundle": bundle is not None,
                             "execution_id": (bundle or {}).get(

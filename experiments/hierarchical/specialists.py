@@ -74,7 +74,7 @@ def make_clarifier(clarify_fixture: dict, trace, model_id: str | None = None,
     sim = bridge.react_sim_user.SimUser(clarify_fixture, model_id=model_id,
                                         respond=respond)
     tools, state = bridge.react_clarify_tools.make_clarify_tools(sim, trace)
-    return _agent(CLARIFIER_SYSTEM, tools, model_id), state
+    return _agent(CLARIFIER_SYSTEM, tools, model_id), state, sim
 
 
 def make_specialist(route: str, bundle: dict, trace, model_id: str | None = None):

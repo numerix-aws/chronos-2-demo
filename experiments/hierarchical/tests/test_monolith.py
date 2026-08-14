@@ -29,13 +29,13 @@ def test_turn_prompt_without_bundle_says_so():
 def test_tool_surface_grows_with_bundle():
     trace = bridge.react_trace.Trace()
     fixture = specialists.default_clarify_fixture("run it")
-    _, state = monolith.make_monolith_agent(
+    _, state, _ = monolith.make_monolith_agent(
         fixture, None, trace, respond=lambda q: "ok")
     assert state["compiled"] is None
-    agent_no_bundle, _ = monolith.make_monolith_agent(
+    agent_no_bundle, _, _ = monolith.make_monolith_agent(
         fixture, None, trace, respond=lambda q: "ok")
     bundle = bridge.load_react_bundle("drilldown_happy")
-    agent_with_bundle, _ = monolith.make_monolith_agent(
+    agent_with_bundle, _, _ = monolith.make_monolith_agent(
         fixture, bundle, trace, respond=lambda q: "ok")
     assert len(monolith.tool_names(agent_with_bundle)) == 9
     assert len(monolith.tool_names(agent_no_bundle)) == 3

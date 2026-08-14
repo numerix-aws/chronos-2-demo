@@ -66,4 +66,44 @@ def test_harness_scores_hermetically(tmp_path):
     director_row = [r for r in summary["by_arm"] if r["arm"] == "director"][0]
     assert director_row["route_accuracy"] == 1.0
     assert director_row["boundary_violations"] == 0
+    assert director_row["failed_trials"] == 0
     assert list(tmp_path.glob("experiment_*.json"))
+
+
+def test_harness_survives_failed_trial(tmp_path):
+    import run_experiment
+    call_count = [0]
+    def failing_seams(model_id):
+        seams = _fake_seams()
+        orig_classify = seams.classify
+        def classify_once_then_fail(user, summary):
+            call_count[0] += 1
+            if call_count[0] == 2:  # Fail on second turn of director arm
+                raise RuntimeError("intentional failure")
+            return orig_classify(user, summary)
+        seams.classify = classify_once_then_fail
+        return seams
+    summary = run_experiment.run_matrix(
+        trials=1, seams_factory=failing_seams,
+        out_dir=tmp_path, session_filter=["s4_midsession_failure"])
+    director_row = [r for r in summary["by_arm"] if r["arm"] == "director"][0]
+    assert director_row["failed_trials"] >= 1
+    assert list(tmp_path.glob("experiment_*.json"))
+
+
+def test_harness_captures_clarify_outcome(tmp_path):
+    import run_experiment
+    summary = run_experiment.run_matrix(
+        trials=1, seams_factory=lambda model_id: _fake_seams(),
+        out_dir=tmp_path, session_filter=["s2_vague_quant"])
+    results_file = list(tmp_path.glob("experiment_*.json"))[0]
+    import json
+    data = json.loads(results_file.read_text())
+    director_turns = [t for r in data["results"] if r["arm"] == "director"
+                      for t in r["turns"]]
+    clarify_turn = [t for t in director_turns if t["route"] == "clarifier"][0]
+    assert clarify_turn["clarify_outcome"] is not None
+    assert "compiled" in clarify_turn["clarify_outcome"]
+    assert "questions" in clarify_turn["clarify_outcome"]
+    director_row = [r for r in summary["by_arm"] if r["arm"] == "director"][0]
+    assert director_row.get("clarify_pass_rate") is not None

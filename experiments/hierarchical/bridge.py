@@ -41,6 +41,7 @@ react_sim_user = _load_react("react_sim_user", "sim_user.py")
 # hierarchical's own package is called `scoring/` precisely for this).
 react_oracle_triage = importlib.import_module("oracles.triage")
 react_oracle_drilldown = importlib.import_module("oracles.drilldown")
+react_oracle_clarify = importlib.import_module("oracles.clarify")
 
 DEFAULT_MODEL_ID = os.environ.get("HIER_MODEL_ID", "us.anthropic.claude-opus-5")
 PROVENANCE = dict(react_clarify_tools.DUMMY_PROVENANCE)

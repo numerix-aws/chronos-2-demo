@@ -1,7 +1,7 @@
 """The Director's only routing LLM: one schema-forced classification call."""
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import bridge
 
@@ -25,7 +25,7 @@ _DESCRIPTIONS = {
 class IntentVerdict(BaseModel):
     intent: Literal["quant_run", "what_if", "followup_qa",
                     "failure_help", "out_of_scope", "general_chat"]
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
 def build_intent_prompt(user_text: str, state_summary: str) -> str:

@@ -41,4 +41,4 @@ def make_monolith_agent(clarify_fixture: dict, bundle: dict | None, trace,
     tools = list(clarify)
     if bundle is not None:
         tools += bridge.react_tools.make_evidence_tools(bundle, trace)
-    return specialists._agent(MONOLITH_SYSTEM, tools, model_id), state
+    return specialists._agent(MONOLITH_SYSTEM, tools, model_id), state, sim
