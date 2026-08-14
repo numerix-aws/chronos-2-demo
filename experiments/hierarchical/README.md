@@ -78,4 +78,23 @@ The pinned model is **us.anthropic.claude-opus-5** (~$5/M in, ~$25/M out). Expec
 
 ## Experiment Results Location
 
-All `results/experiment_*.json` files are gitignored. Headline metrics are recorded in task summaries and commit messages only.
+All `results/experiment_*.json` files are gitignored (full per-turn transcripts). The headline metrics of each accepted live run are committed in `results/summary.json`.
+
+## Live Results (2026-08-14, drilldown oracle v2)
+
+2 arms × 8 sessions × 3 trials, `us.anthropic.claude-opus-5` (`results/summary.json`):
+
+| Metric | Director (Arm B) | Monolith (Arm A) |
+|---|---|---|
+| Intent / route / state accuracy | 1.00 / 1.00 / 1.00 | n/a (no routing) |
+| Boundary violations | **0** (structural) | 0 |
+| Answer pass rate (overall) | **0.98** | 0.65 |
+| — narration | 1.00 | 0.33 (not cross-arm comparable, see caveat) |
+| — refusal / chat / triage / qa | 1.00 each | 0.67 / 1.00 / 1.00 / 0.92 |
+| — qa_premise | 0.50 | 0.67 |
+| Clarify pass rate | 1.00 | n/a |
+| Publication channels | 11 narrator / 3 degraded / 1 template | — |
+| Mean latency per turn | 63.3 s | 33.7 s |
+| Failed trials (recorded) | 6 of 24 | 0 of 24 |
+
+Readings: the control plane's structural guarantees all held live (routing, state, boundaries, gated publication — including the degraded→template path firing on the `hash_mismatch` session). The hierarchy's cost is ~2× per-turn latency plus the critic-loop tokens (~1.1M in / ~93k out across narration turns). The 6 failed Director trials are 5 specialist `MaxTokensReachedException`s (8192-token cap on Opus 5 with thinking) and 1 critic structured-output validation error — recorded as failed trials per spec §9, every session retains scored trials. `qa_premise` 0.50 (n=2 scored) is the one weak Director cell; the premise-correction check is strict (requires both "augment" and a not-replace phrase). Raising specialist `max_tokens` is the obvious lever before any rerun.
