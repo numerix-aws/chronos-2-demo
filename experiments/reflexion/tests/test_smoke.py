@@ -83,3 +83,57 @@ def test_summarize_computes_rates_and_critic_prf():
     assert arm["trials"] == 2
     assert arm["oracle_violation_rate"] == 0.5
     assert arm["critic_precision"] == 1.0 and arm["critic_recall"] == 1.0
+
+
+def test_checkpoint_round_trip(tmp_path):
+    chk = tmp_path / "checkpoint.jsonl"
+    trial1 = {"arm": "A", "scenario": "s1", "narration": "text", "oracle_violations": [],
+              "critic_passed": True, "iterations": 1, "converged": True, "latency_s": 1.0,
+              "input_tokens": 10, "output_tokens": 5}
+    trial2 = {"arm": "B", "scenario": "s2", "narration": "more text",
+              "oracle_violations": [{"type": "invented_value"}], "critic_passed": False,
+              "iterations": 2, "converged": False, "latency_s": 2.0,
+              "input_tokens": 20, "output_tokens": 10}
+    run_experiment.append_checkpoint(chk, trial1)
+    run_experiment.append_checkpoint(chk, trial2)
+    loaded = run_experiment.load_checkpoint(chk)
+    assert len(loaded) == 2
+    assert loaded[0]["arm"] == "A" and loaded[0]["scenario"] == "s1"
+    assert loaded[1]["arm"] == "B" and loaded[1]["scenario"] == "s2"
+
+
+def test_checkpoint_skips_corrupt_trailing_line(tmp_path):
+    chk = tmp_path / "checkpoint.jsonl"
+    trial1 = {"arm": "A", "scenario": "s", "oracle_violations": [], "critic_passed": True,
+              "iterations": 1, "converged": True, "latency_s": 1.0,
+              "input_tokens": 10, "output_tokens": 5}
+    trial2 = {"arm": "B", "scenario": "s", "oracle_violations": [], "critic_passed": True,
+              "iterations": 1, "converged": True, "latency_s": 1.0,
+              "input_tokens": 10, "output_tokens": 5}
+    run_experiment.append_checkpoint(chk, trial1)
+    run_experiment.append_checkpoint(chk, trial2)
+    # Append corrupt partial line
+    with open(chk, "a", encoding="utf-8") as fh:
+        fh.write('{"partial')
+    loaded = run_experiment.load_checkpoint(chk)
+    assert len(loaded) == 2  # Two intact rows, corrupt line skipped
+    assert loaded[0]["arm"] == "A"
+    assert loaded[1]["arm"] == "B"
+
+
+def test_completed_per_cell_counts_error_rows():
+    trials = [
+        {"arm": "A", "scenario": "happy", "oracle_violations": [], "critic_passed": True,
+         "iterations": 1, "converged": True, "latency_s": 1.0,
+         "input_tokens": 10, "output_tokens": 5},
+        {"arm": "A", "scenario": "happy", "error": "NetworkError",
+         "oracle_violations": [], "critic_passed": True,
+         "iterations": 0, "converged": False, "latency_s": 0.0,
+         "input_tokens": 0, "output_tokens": 0},
+        {"arm": "B", "scenario": "edge", "oracle_violations": [], "critic_passed": True,
+         "iterations": 2, "converged": True, "latency_s": 2.0,
+         "input_tokens": 20, "output_tokens": 10},
+    ]
+    counts = run_experiment.completed_per_cell(trials)
+    assert counts[("happy", "A")] == 2  # Includes the error row
+    assert counts[("edge", "B")] == 1
