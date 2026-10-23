@@ -61,7 +61,7 @@ Target length: 25 to 30 minutes.
 ## Slide 4 — Architecture at 10,000 ft
 
 **SAY:**
-"The shape is: dual engines, into a regime detector, into a blender, into one shared pricing engine. The key invariant — and I'd ask you to hold onto this — is that the *only* thing that ever changes downstream is the input path set going into pricing. Engine one is the parametric baseline: PCA plus Hull-White plus GBM. Engine two is Chronos-2, which gives us quantiles that we turn into joint paths. The detector turns three deterministic features into w-stress. The blender does importance weighting with a tail-and-body split. And pricing is one closed-form exposure engine that will happily take any of three inputs — baseline-only, Chronos-only, or blended — without knowing the difference."
+"The shape is: dual engines, into a regime detector, into a blender, into one shared pricing engine. The key invariant — and I'd ask you to hold onto this — is that the *only* thing that ever changes downstream is the input path set going into pricing. Engine one is the parametric baseline: PCA factors with AR(1) dynamics. Engine two is Chronos-2, which gives us quantiles that we turn into joint paths. The detector turns three deterministic features into w-stress. The blender does importance weighting with a tail-and-body split. And pricing is one closed-form exposure engine that will happily take any of three inputs — baseline-only, Chronos-only, or blended — without knowing the difference."
 
 **DO / SHOW:** Trace the app-flow diagram left to right with your hand: engines → detector → blender → pricing. Physically point at the single arrow into pricing when you say "only the input path set changes."
 
@@ -72,9 +72,9 @@ Target length: 25 to 30 minutes.
 ## Slide 5 — Engine 1: parametric baseline
 
 **SAY:**
-"Engine one is a conventional joint sampler, and it's deliberately covariate-blind. We run PCA on daily returns to get principal factors, Hull-White one-factor dynamics for the short rate, GBM-style evolution for FX, and we draw them jointly via the Cholesky of the factor covariance. Output is a PathSet with shape n-paths by horizon by n-series. This is our reference engine — fast, well-understood, fully auditable. And I want to be explicit: it does *not* ingest VIX, MOVE, or WTI. That blindness is intentional, and the next two slides are about why."
+"Engine one is a conventional joint sampler, and it's deliberately covariate-blind. We run PCA on standardized daily log-returns to get five principal factors, and each factor follows an AR(1) process with Gaussian shocks — a compact stand-in for Hull-White-style mean reversion on rates and GBM-style evolution on FX. The cross-series correlation comes from the PCA loadings, which are fixed once fitted. Output is a PathSet with shape n-paths by horizon by n-series. This is our reference engine — fast, well-understood, fully auditable. And I want to be explicit: it does *not* ingest VIX, MOVE, or WTI. That blindness is intentional, and the next two slides are about why."
 
-**DO / SHOW:** Point at the code box (returns → PCA → HW/GBM → Cholesky → PathSet). Keep this slide brisk — this audience knows these methods; you're establishing that the baseline is honest and standard, not novel.
+**DO / SHOW:** Point at the code box (log-returns → PCA → AR(1) per factor → project through loadings → PathSet). Keep this slide brisk — this audience knows these methods; you're establishing that the baseline is honest and standard, not novel.
 
 **TRANSITION:** "Now engine two, which is where the foundation model comes in — and there's an important subtlety about *what it actually returns.*"
 
@@ -94,7 +94,7 @@ Target length: 25 to 30 minutes.
 ## Slide 7 — The asymmetry, and why it's the point
 
 **SAY:**
-"Here's the asymmetry side by side. Both engines produce joint paths — the baseline via Cholesky, Chronos-2 via inverse-CDF plus the lookback copula. But on ingesting VIX, MOVE, WTI: the baseline is a 'no,' Chronos-2 is a 'yes, zero-shot.' And to add a new covariate, the baseline needs a re-specify-and-re-fit; Chronos-2, you just feed it in. I want to be clear this is not a defect of the baseline that we're exploiting unfairly — it's a structural property of factor models. The two engines are *meant* to disagree precisely where stress signals matter. That disagreement, captured and weighted, is the correction we're adding."
+"Here's the asymmetry side by side. Both engines produce joint paths — the baseline through its static PCA loadings, Chronos-2 via inverse-CDF plus the lookback copula. But on ingesting VIX, MOVE, WTI: the baseline is a 'no,' Chronos-2 is a 'yes, zero-shot.' And to add a new covariate, the baseline needs a re-specify-and-re-fit; Chronos-2, you just feed it in. I want to be clear this is not a defect of the baseline that we're exploiting unfairly — it's a structural property of factor models. The two engines are *meant* to disagree precisely where stress signals matter. That disagreement, captured and weighted, is the correction we're adding."
 
 **DO / SHOW:** Walk the three table rows top to bottom. Pause on the "Add a new covariate" row — "re-specify and re-fit" vs "feed it in" is the line that lands with quants who've maintained a factor model.
 
@@ -149,7 +149,7 @@ Target length: 25 to 30 minutes.
 ## Slide 12 — Headline result, with the caveat
 
 **SAY:**
-"Measured against the live Chronos-2 endpoint, the 97.5% PFE goes from about 5.6 million on the baseline to about 6.6 million augmented — a plus-eighteen-percent move, about a million dollars, as-of September 30th 2022 in the rate-hike window, with w-stress around 0.53. The setup is five thousand paths per engine, a horizon of about twenty-one days, about twenty-one series. Now the honest part, and I want to say it plainly: **this IS a live-endpoint measurement, not a mock — but it's our PoC sample book on one as-of date, so treat it as directional evidence, not a calibrated production risk number.** Our regression test deliberately asserts only the *direction* — augmented is greater than or equal to baseline — and the order of magnitude. It does *not* pin an exact value, because pinning a single-window number to two decimals would be false precision. The takeaway is directional: under stress, the augmentation pushes PFE up, in the tail, where you'd expect a richer joint-tail model to."
+"Measured against the live Chronos-2 endpoint, the 97.5% PFE goes from about 5.6 million on the baseline to about 6.6 million augmented — a plus-eighteen-percent move, about a million dollars, as-of September 30th 2022 in the rate-hike window, with w-stress around 0.53. The setup is five thousand paths per engine, a one-year horizon — 252 business days — and twenty-one series. Now the honest part, and I want to say it plainly: **this IS a live-endpoint measurement, not a mock — but it's our PoC sample book on one as-of date, so treat it as directional evidence, not a calibrated production risk number.** Our regression test deliberately asserts only the *direction* — augmented is greater than or equal to baseline — and the order of magnitude. It does *not* pin an exact value, because pinning a single-window number to two decimals would be false precision. The takeaway is directional: under stress, the augmentation pushes PFE up, in the tail, where you'd expect a richer joint-tail model to."
 
 **DO / SHOW:** This is the integrity moment of the talk. Say the caveat sentence out loud, unhurried, looking at the room. Do **not** round "+18.3%" into "a few percent" and do **not** oversell it as production — always pair the +18% with the sample-book / one-window scope. If anyone leans in skeptically, you've already disarmed them by volunteering the caveat.
 
@@ -290,7 +290,7 @@ Timing note: the verified 500-path live run completed in about 3 minutes. If the
 
 Fill the wait with the mechanism (this is where the architecture explanation earns its keep):
 
-"The baseline is doing its PCA-Hull-White-GBM Cholesky draw. Chronos-2 is hitting the serverless SageMaker endpoint and getting back per-series quantile curves — and then, client-side, we're doing the inverse-CDF sampling and the lookback Gaussian copula to rebuild the joint tensor. The reason it's Fargate and not a plain Lambda is that the AutoGluon dependency is too heavy for a Lambda layer — so we bundle it in a container and run it as a task."
+"The baseline is doing its PCA-factor AR(1) simulation. Chronos-2 is hitting the serverless SageMaker endpoint and getting back per-series quantile curves — and then, client-side, we're doing the inverse-CDF sampling and the lookback Gaussian copula to rebuild the joint tensor. The reason it's Fargate and not a plain Lambda is that the AutoGluon dependency is too heavy for a Lambda layer — so we bundle it in a container and run it as a task."
 
 Plain-English version for the mixed audience:
 
@@ -398,7 +398,7 @@ Augmented PFE 97.5% = $6.63M
 Change              = +18.3%, about +$1.03M
 As-of date          = 2022-09-30
 Endpoint            = chronos2-demo-ep
-Source              = docs/results/headline_calibration.json
+Source              = docs/results/headline_calibration_5000paths.json
 ```
 
 DO:
@@ -406,7 +406,7 @@ DO:
 If you want to make the artifact tangible, briefly show:
 
 ```text
-docs/results/headline_calibration.json
+docs/results/headline_calibration_5000paths.json
 ```
 
 SAY THE CAVEAT:
@@ -492,7 +492,7 @@ Two things keep that contained. The w-stress gating means in calm regimes the ta
 Yes — it's a genuine live-endpoint measurement: +18.3% as-of September 30th 2022, committed in `docs/results`. The honesty is about *scope*: it's our PoC sample book on a single as-of window, so it's directional evidence, not a multi-window-backtested production number. Our regression test asserts only the direction and order of magnitude, not the exact value, precisely so we don't imply false precision. Broadening to many windows is the top item on the roadmap.
 
 **Q9. "Why not just recalibrate the parametric model instead of adding a second engine?"**
-Because the covariates can't enter the parametric model without re-specifying it. VIX, MOVE, WTI aren't factors in a PCA-plus-Hull-White setup — adding them means a new factor model, re-derivation, re-fit, re-validation. Chronos-2 conditions on them zero-shot, with no re-fit, which is the whole reason it's worth standing up alongside.
+Because the covariates can't enter the parametric model without re-specifying it. VIX, MOVE, WTI aren't inputs to a PCA-plus-AR(1) factor model — adding them means a new factor model, re-derivation, re-fit, re-validation. Chronos-2 conditions on them zero-shot, with no re-fit, which is the whole reason it's worth standing up alongside.
 
 **Q10. "Data leakage or look-ahead in Chronos-2?"**
 We slice the panel as-of the scenario date and the copula uses the lookback window only — no future data enters either the conditioning or the coupling. That as-of discipline is in the data layer. If you want to stress-test it, that's exactly the kind of thing the backtesting work on the roadmap would harden.
@@ -535,9 +535,10 @@ As a PoC for stress-aware scenario augmentation, not as a production risk engine
 - **XVA:** the family of valuation adjustments (credit, funding, capital) layered on derivative prices; PFE feeds them.
 - **XCCY swap (cross-currency swap):** exchange of interest/principal in two different currencies — sensitive to both rates and FX.
 - **CDS protection:** a credit default swap leg — pays out if a reference entity defaults; here valued closed-form.
-- **Hull-White:** a standard one-factor model for how the short interest rate evolves over time.
+- **Hull-White:** a standard one-factor model for how the short interest rate evolves over time. The PoC baseline uses a simpler AR(1) stand-in for its mean reversion.
 - **PCA factor model:** compresses many correlated series into a few principal "factors" that drive them.
-- **Cholesky:** the matrix trick that turns independent random draws into *correlated* ones with a target covariance.
+- **AR(1):** a simple mean-reverting process — each step is a fraction of the previous value plus a random shock.
+- **Cholesky:** the matrix trick that turns independent random draws into *correlated* ones with a target covariance. Used in the Chronos-2 copula step, not the baseline.
 
 **Method terms**
 - **Importance sampling:** reweight paths by how much they matter instead of throwing any away — weights sum to one.

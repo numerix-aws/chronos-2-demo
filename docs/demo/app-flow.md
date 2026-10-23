@@ -18,7 +18,7 @@ flowchart TD
         direction TB
         subgraph EA["Engine A — Parametric baseline MC"]
             direction TB
-            EA_DESC["PCA + Hull-White + GBM<br/>Cholesky joint sampling<br/>(NO covariates)"]
+            EA_DESC["PCA factors + AR(1) dynamics<br/>joint via static loadings<br/>(NO covariates)"]
             PARAM_PS["Parametric PathSet<br/>(N x H x 21)"]
             EA_DESC --> PARAM_PS
         end

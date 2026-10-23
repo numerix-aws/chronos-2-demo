@@ -61,13 +61,9 @@ The question is not "replace MC." It is: **can we add a calibrated correction wh
 
 **Dual engines → regime detector → blender → shared pricing.** Only the *input path set* to pricing ever changes.
 
-![Augmentation flow h:230](app-flow.svg)
+![Augmentation flow w:1150](app-flow-overview.svg)
 
-- **Engine 1:** parametric baseline (PCA + Hull-White + GBM).
-- **Engine 2:** Chronos-2 foundation model (quantiles → joint paths).
-- **Detector:** three deterministic features → `w_stress`.
-- **Blender:** importance weighting, tail/body split.
-- **Pricing:** one closed-form exposure engine, three possible inputs.
+Each stage gets its own slide next. Full detail: [`app-flow.md`](app-flow.md).
 
 ---
 
@@ -75,14 +71,14 @@ The question is not "replace MC." It is: **can we add a calibrated correction wh
 
 A conventional joint sampler, deliberately **covariate-blind**:
 
-- **PCA** on daily returns → principal factors.
-- **Hull-White** one-factor short-rate dynamics.
-- **GBM-style** FX evolution.
-- Jointly sampled via **Cholesky** of the factor covariance.
+- **PCA** on standardized daily log-returns → 5 principal factors.
+- **AR(1)** dynamics per factor with independent Gaussian shocks — a compact stand-in for Hull-White-style mean reversion (rates) and GBM-style evolution (FX).
+- Cross-series correlation comes from the **static PCA loadings**.
+- Factor paths are projected back and re-exponentiated to levels.
 
 ```text
-returns → PCA factors → HW (rates) + GBM (FX)
-        → Cholesky joint draw → PathSet(n_paths, horizon, n_series)
+log-returns → PCA (5 factors) → AR(1) per factor
+            → project through loadings → PathSet(n_paths, horizon, n_series)
 ```
 
 This is the **reference engine** — fast, well-understood, fully auditable. It does **not** ingest VIX/MOVE/WTI intentionally.
@@ -107,7 +103,7 @@ Critically, Chronos-2 **ingests exogenous covariates — VIX, MOVE, WTI — zero
 
 | | Parametric baseline | Chronos-2 |
 |---|---|---|
-| Joint paths | Cholesky draw | inverse-CDF + lookback copula |
+| Joint paths | static PCA loadings | inverse-CDF + lookback copula |
 | Ingests VIX / MOVE / WTI | **No** | **Yes (zero-shot)** |
 | Add a new covariate | re-specify + re-fit | feed it in |
 
@@ -189,8 +185,8 @@ Measured against the **live Chronos-2 endpoint** (`chronos2-demo-ep`), as-of **2
 |---|---|---|---|
 | PFE (97.5%) | **\$5.61M** | **\$6.63M** | **+18.3%** (+\$1.03M) |
 
-- **N = 5,000 paths/engine**, horizon ≈ **21 days**, ≈ **21 series**.
-- Genuine live-endpoint measurement — **not a mock**. Source: `docs/results/headline_calibration.json`.
+- **N = 5,000 paths/engine**, horizon **252 business days** (1 year; script default, not recorded in the artifact), **21 series**.
+- Genuine live-endpoint measurement — **not a mock**. Source: `docs/results/headline_calibration_5000paths.json`.
 - **Caveat:** PoC **sample book** on the curated snapshot panel — directional evidence, **not a production risk number**.
 
 <!-- presenter note: This is now a real live-endpoint number. Still say the scope caveat out loud — PoC sample book, not a calibrated production figure. The +18% lift reflects w_stress≈0.53 in the 2022 rate-hike window. -->
